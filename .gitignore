@@ -6,3 +6,6 @@ data/
 *.grib2
 *.idx
 .ipynb_checkpoints/
+scratch_*.py
+*.egg-info/
+Research.md
