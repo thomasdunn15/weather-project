@@ -11,6 +11,7 @@ dependencies = [
     "cfgrib>=0.9.10",
     "pydantic>=2.5",
     "pydantic-settings>=2.1",
+    "httpx>=0.28.1",
 ]
 
 [build-system]
