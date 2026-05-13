@@ -7,7 +7,6 @@ GEFS publication time of 00, 06, 12, 18 UTC).
 from datetime import datetime, timezone, timedelta
 from weather_markets.gefs import ingest_gefs_run
 
-
 def most_recent_completed_run(now: datetime) -> datetime:
     """
     Return the most recently completed GEFS run init_time.

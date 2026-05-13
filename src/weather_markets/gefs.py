@@ -8,7 +8,7 @@ import math
 from weather_markets.db import get_connection
 
 # GEFS forecast hours: 3-hourly out to 240h, 6-hourly to 384h
-DEFAULT_FORECAST_HOURS = list(range(0, 241, 3)) + list(range(246, 385, 6))
+DEFAULT_FORECAST_HOURS = list(range(0, 241, 3))  # 3-hourly out to 240h (10 days)
 GEFS_VARIABLES_SEARCH = ":(?:TMP|TMAX):2 m above ground:"
 
 def kelvin_to_fahrenheit(kelvin: float) -> float:
@@ -92,22 +92,18 @@ def ingest_gefs_run(run_time: datetime, station_id: str = "KNYC", members: range
 
     with get_connection() as conn:
         for member in members:
-            
             print(f"Processing member {member}...")
-
             for fxx in forecast_hours:
-                path = download_member(run_time, member, fxx)
-                rows = extract_temperatures(path,latitude, longitude)
-                for vt, t_f, tmax_f in rows:
-                    all_rows.append((
-                        run_time,        # init_time
-                        vt,              # valid_time
-                        station_id,      # station_id
-                        "gefs",          # model
-                        member,          # member_id
-                        t_f,             # temperature_f
-                        tmax_f,          # tmax_f
-                    ))
+                try:
+                    path = download_member(run_time, member, fxx)
+                    rows = extract_temperatures(path, latitude, longitude)
+                    for vt, t_f, tmax_f in rows:
+                        all_rows.append((
+                            run_time, vt, station_id, "gefs", member, t_f, tmax_f
+                        ))
+                except ValueError as e:
+                    print(f"  Skipping member={member} fxx={fxx}: {e}")
+                    continue
                 
         count = insert_forecasts(all_rows, conn)
 
