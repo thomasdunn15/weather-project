@@ -5,7 +5,7 @@ from weather_markets.observations import ingest_observations
 
 def main() -> None:
     current_year = date.today().year
-    years = list(range(current_year - 3, current_year + 1))
+    years = list(range(current_year - 9, current_year + 1))  # 10 years
     
     print(f"Backfilling years: {years}")
     result = ingest_observations(years=years)
