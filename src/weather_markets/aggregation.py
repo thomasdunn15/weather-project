@@ -3,11 +3,9 @@ Aggregation functions for ensemble forecasts.
 """
 from datetime import date, datetime
 
-
 class NoForecastDataError(Exception):
     """Raised when no forecast data exists for the requested query."""
     pass
-
 
 def compute_daily_highs(
     init_time: datetime,
@@ -16,25 +14,7 @@ def compute_daily_highs(
     station_id: str = "KNYC",
     timezone_name: str = "America/New_York",
 ) -> dict[int, float]:
-    """
-    Compute the predicted daily high temperature (°F) for each ensemble member.
-    
-    For each member, the daily high is the maximum of tmax_f over all forecasts
-    whose valid_time falls within the target_date in the specified timezone.
-    
-    Args:
-        init_time: The GEFS run init_time (timezone-aware).
-        target_date: The local-day date to compute highs for.
-        conn: An open psycopg connection.
-        station_id: Station identifier (default: KNYC).
-        timezone_name: IANA timezone name (default: America/New_York).
-    
-    Returns:
-        Dict mapping member_id to predicted daily high in °F.
-    
-    Raises:
-        NoForecastDataError: If no forecasts exist for the given inputs.
-    """
+
     sql = """
         SELECT member_id, MAX(tmax_f) AS daily_high_f
         FROM forecasts
@@ -60,3 +40,28 @@ def compute_daily_highs(
         )
     
     return {member_id: high for member_id, high in rows}
+
+def is_yes(high, contract):
+    bracket_type = contract["bracket_type"]
+    if bracket_type == "greater_than":
+        return high >= contract["strike_low"] + 1
+    elif bracket_type == "less_than":
+        return high < contract["strike_high"]
+    elif bracket_type == "between":
+        return (
+            contract["strike_low"] <= high 
+            and high < contract["strike_high"] + 1
+        )
+    else:
+        raise ValueError(f"Unknown bracket_type: {bracket_type!r}")
+
+def compute_ensemble_probabilities(highs, contracts):
+    if not highs:
+        raise ValueError("highs cannot be empty")
+    
+    n_members = len(highs)
+    result = {}
+    for contract in contracts:
+        yes_count = sum(1 for h in highs.values() if is_yes(h, contract))
+        result[contract["ticker"]] = yes_count / n_members
+    return result

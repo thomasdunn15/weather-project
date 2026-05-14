@@ -6,6 +6,7 @@ from pathlib import Path
 import xarray as xr
 import math
 from weather_markets.db import get_connection
+import time
 
 # GEFS forecast hours: 3-hourly out to 240h, 6-hourly to 384h
 DEFAULT_FORECAST_HOURS = list(range(0, 241, 3))  # 3-hourly out to 240h (10 days)
@@ -91,6 +92,7 @@ def ingest_gefs_run(run_time: datetime, station_id: str = "KNYC", members: range
     all_rows = []
 
     with get_connection() as conn:
+        
         for member in members:
             print(f"Processing member {member}...")
             for fxx in forecast_hours:
@@ -101,10 +103,11 @@ def ingest_gefs_run(run_time: datetime, station_id: str = "KNYC", members: range
                         all_rows.append((
                             run_time, vt, station_id, "gefs", member, t_f, tmax_f
                         ))
-                except ValueError as e:
-                    print(f"  Skipping member={member} fxx={fxx}: {e}")
+                except Exception as e:
+                    print(f"  Skipping member={member} fxx={fxx}: {type(e).__name__}: {e}")
                     continue
-                
+            time.sleep(1)
+
         count = insert_forecasts(all_rows, conn)
 
     return {
