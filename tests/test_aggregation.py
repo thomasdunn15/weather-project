@@ -7,11 +7,20 @@ from weather_markets.aggregation import (
     compute_daily_highs,
     compute_ensemble_probabilities,
     NoForecastDataError,
+    fetch_observed_high,
+    fetch_contracts_for_date,
 )
 
-def make_mock_conn(fetchall_returns):
+def make_mock_conn(rows):
+    """
+    Mock psycopg connection.
+    
+    Configures cursor().fetchall() to return rows.
+    Configures cursor().fetchone() to return rows[0] if rows else None.
+    """
     mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = fetchall_returns
+    mock_cursor.fetchall.return_value = rows
+    mock_cursor.fetchone.return_value = rows[0] if rows else None
     
     mock_conn = MagicMock()
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
@@ -130,3 +139,54 @@ def test_empty_contracts_returns_empty_dict():
     highs = {0: 70.0, 1: 72.0}
     probs = compute_ensemble_probabilities(highs, [])
     assert probs == {}
+
+def test_returns_observation_when_exists():
+    conn = make_mock_conn([(73,)])  # one row, one column
+    result = fetch_observed_high(date(2026, 5, 10), conn)
+    assert result == 73.0
+
+
+def test_returns_none_when_missing():
+    conn = make_mock_conn([])  # no rows
+    result = fetch_observed_high(date(2026, 12, 25), conn)
+    assert result is None
+
+
+def test_returns_float_type():
+    conn = make_mock_conn([(73,)])
+    result = fetch_observed_high(date(2026, 5, 10), conn)
+    assert isinstance(result, float)
+
+def test_fetch_contracts_returns_list_of_dicts():
+    rows = [
+        ("KXHIGHNY-26MAY14-T70", "greater_than", 70, None),
+        ("KXHIGHNY-26MAY14-T63", "less_than", None, 63),
+        ("KXHIGHNY-26MAY14-B67.5", "between", 67, 68),
+    ]
+    conn = make_mock_conn(rows)
+    
+    contracts = fetch_contracts_for_date(date(2026, 5, 14), conn)
+    
+    assert len(contracts) == 3
+    assert contracts[0] == {
+        "ticker": "KXHIGHNY-26MAY14-T70",
+        "bracket_type": "greater_than",
+        "strike_low": 70,
+        "strike_high": None,
+    }
+
+
+def test_fetch_contracts_returns_empty_when_no_matches():
+    conn = make_mock_conn([])
+    contracts = fetch_contracts_for_date(date(2026, 12, 25), conn)
+    assert contracts == []
+
+
+def test_fetch_contracts_returns_all_four_keys():
+    rows = [("T", "between", 67, 68)]
+    conn = make_mock_conn(rows)
+    
+    contracts = fetch_contracts_for_date(date(2026, 5, 14), conn)
+    
+    assert set(contracts[0].keys()) == {"ticker", "bracket_type", "strike_low", "strike_high"}
+

@@ -65,3 +65,57 @@ def compute_ensemble_probabilities(highs, contracts):
         yes_count = sum(1 for h in highs.values() if is_yes(h, contract))
         result[contract["ticker"]] = yes_count / n_members
     return result
+
+def fetch_observed_high(
+    target_date: date,
+    conn,
+    station_id: str = "KNYC",
+) -> float | None:
+
+    sql = """
+        SELECT high_temp_f
+        FROM observations
+        WHERE date = %s AND station_id = %s
+    """
+    
+    with conn.cursor() as cur:
+        cur.execute(sql, (target_date, station_id))
+        row = cur.fetchone()
+    
+    if row is None:
+        return None
+    
+    return float(row[0])
+
+def fetch_contracts_for_date(
+    target_date: date,
+    conn,
+    station_id: str = "KNYC",
+) -> list[dict]:
+    """
+    Fetch all Kalshi contracts whose target_date matches the given date.
+    
+    Returns:
+        List of contract dicts with keys: ticker, bracket_type, strike_low, strike_high.
+        Empty list if no contracts exist for that date.
+    """
+
+    sql = """
+        SELECT ticker, bracket_type, strike_low, strike_high
+        FROM contracts
+        WHERE target_date = %s
+          AND station_id = %s
+        ORDER BY bracket_type, strike_low
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (target_date, station_id),
+        )
+        rows = cur.fetchall()
+
+    return [
+    {"ticker": t, "bracket_type": b, "strike_low": l, "strike_high": h}
+    for t, b, l, h in rows
+    ]
