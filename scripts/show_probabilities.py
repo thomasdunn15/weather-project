@@ -5,37 +5,25 @@ from rich.console import Console
 from rich.table import Table
 
 from weather_markets.db import get_connection
-from weather_markets.aggregation import compute_daily_highs, compute_ensemble_probabilities
+from weather_markets.aggregation import compute_daily_highs, compute_ensemble_probabilities, fetch_contracts_for_date, fetch_observed_high
 
 
 
 def main():
-
     target_date = date(2026, 5, 14)
     
     with get_connection() as conn:
-        # Compute ensemble probabilities
-        
+        # Auto-detect the latest GEFS run
         with conn.cursor() as cur:
             cur.execute("SELECT MAX(init_time) FROM forecasts WHERE station_id = %s", ("KNYC",))
             init_time = cur.fetchone()[0]
-
+        
+        # Use the helpers
         highs = compute_daily_highs(init_time, target_date, conn)
+        contracts = fetch_contracts_for_date(target_date, conn)
+        observed = fetch_observed_high(target_date, conn)  # might be None
         
-        # Fetch contracts (inline for now)
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT ticker, bracket_type, strike_low, strike_high
-                FROM contracts
-                WHERE target_date = %s
-                ORDER BY bracket_type, strike_low
-            """, (target_date,))
-            contracts = [
-                {"ticker": t, "bracket_type": b, "strike_low": l, "strike_high": h}
-                for t, b, l, h in cur.fetchall()
-            ]
-        
-        # Get latest prices
+        # Get latest prices (still inline — we haven't extracted this yet)
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
@@ -58,6 +46,11 @@ def main():
     table.add_column("Yes Ask", justify="right")
     table.add_column("Edge", justify="right", style="bold yellow")
     
+    if observed is not None:
+        console.print(f"\nObserved high for {target_date}: {observed}°F")
+    else:
+        console.print(f"\nObserved high for {target_date}: not yet recorded")
+
     for c in contracts:
         ticker = c["ticker"]
         bid, ask = prices.get(ticker, (None, None))
