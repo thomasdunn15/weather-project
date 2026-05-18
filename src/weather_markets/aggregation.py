@@ -13,6 +13,7 @@ def compute_daily_highs(
     conn,
     station_id: str = "KNYC",
     timezone_name: str = "America/New_York",
+    bias_correction: float = 0.0,
 ) -> dict[int, float]:
 
     sql = """

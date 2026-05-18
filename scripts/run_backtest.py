@@ -6,13 +6,18 @@ from weather_markets.backtesting import backtest_range
 
 
 def main() -> None:
-    # Date range to backtest
     start = date(2026, 5, 5)
-    end = date(2026, 5, 13)  # inclusive
-    
-    target_dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     
     with get_connection() as conn:
+        # Auto-detect end date from latest observation
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(date) FROM observations WHERE station_id = %s",
+                ("KNYC",),
+            )
+            end = cur.fetchone()[0]
+        
+        target_dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
         results = backtest_range(target_dates, conn)
     
     # Print a summary table
