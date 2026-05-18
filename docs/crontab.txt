@@ -36,3 +36,6 @@
 
 # Kalshi price snapshots: every 5 minutes
 */5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_kalshi_prices.py >> /var/log/weather/snapshot.log 2>&1
+
+# Clean up Herbie GRIB cache older than 3 days
+0 3 * * * find /home/tdunn/data/gefs -type f -mtime +3 -delete
