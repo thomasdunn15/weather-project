@@ -111,7 +111,7 @@ def fit_emos(
         raise RuntimeError(f"EMOS optimization failed: {result.message}")
     
     a, b, c, d = result.x
-    print(result)
+
     return {
         "a": float(a),
         "b": float(b),

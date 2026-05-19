@@ -1,8 +1,7 @@
-"""Compare EMOS (fit on spring months only) vs Kalshi market over 13 May 2026 days.
+"""Compare EMOS (fit on 199 days) vs Kalshi market over 13 days.
 
-Uses seasonal EMOS: parameters fit only on Mar/Apr/May/Jun data, not the full year.
-This addresses the seasonal bias structure where GEFS is warm-biased in summer
-and cold-biased in winter.
+Uses the year-long EMOS parameters for better-calibrated predictions
+than the previous 13-day LOO approach.
 """
 import math
 import statistics
@@ -23,20 +22,13 @@ from weather_markets.evaluation import (
 )
 
 
-# Months to include for seasonal EMOS training (spring-ish)
-SEASONAL_MONTHS = {3, 4, 5, 6}
-
-
 def collect_pairs(conn, model: str, start: date, end: date):
-    """Walk dates, return parallel lists of (mean, std, obs, date)."""
+    """Same helper as forecast_only backtest."""
     means, stds, obs, dates = [], [], [], []
     
     target_date = start
     while target_date <= end:
-        init_time = datetime(
-            target_date.year, target_date.month, target_date.day,
-            12, 0, tzinfo=timezone.utc,
-        )
+        init_time = datetime(target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=timezone.utc)
         
         try:
             highs = compute_daily_highs(init_time, target_date, conn, model=model)
@@ -67,47 +59,24 @@ def collect_pairs(conn, model: str, start: date, end: date):
 def main() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT MAX(date) FROM observations WHERE station_id = %s",
-                ("KNYC",),
-            )
+            cur.execute("SELECT MAX(date) FROM observations WHERE station_id = %s", ("KNYC",))
             max_obs_date = cur.fetchone()[0]
         
-        # Step 1: Collect ALL training data
+        # Step 1: Collect ALL training data and fit EMOS once
         print(f"Collecting all GEFS training data...")
         all_means, all_stds, all_obs, all_dates = collect_pairs(
             conn, "gefs", date(2025, 5, 1), max_obs_date
         )
-        print(f"Total paired days available: {len(all_means)}")
+        print(f"Training on {len(all_means)} paired days.\n")
         
-        # Step 2: Filter to seasonal months
-        seasonal_means = []
-        seasonal_stds = []
-        seasonal_obs = []
-        seasonal_dates = []
-        
-        for m, s, o, d in zip(all_means, all_stds, all_obs, all_dates):
-            if d.month in SEASONAL_MONTHS:
-                seasonal_means.append(m)
-                seasonal_stds.append(s)
-                seasonal_obs.append(o)
-                seasonal_dates.append(d)
-        
-        print(f"Seasonal subset (months {sorted(SEASONAL_MONTHS)}): {len(seasonal_means)} days\n")
-        
-        if len(seasonal_means) < 10:
-            print("Not enough seasonal data. Aborting.")
-            return
-        
-        # Step 3: Fit EMOS on seasonal data
-        emos_params = fit_emos(seasonal_means, seasonal_stds, seasonal_obs)
-        print(f"Seasonal EMOS parameters:")
+        emos_params = fit_emos(all_means, all_stds, all_obs)
+        print(f"EMOS parameters:")
         print(f"  a = {emos_params['a']:+.3f}")
         print(f"  b = {emos_params['b']:.3f}")
         print(f"  c = {emos_params['c']:+.3f}")
         print(f"  d = {emos_params['d']:.3f}\n")
         
-        # Step 4: Evaluate on the 13 May 2026 days
+        # Step 2: Walk the 13 days where we have contracts AND prices
         target_dates = [date(2026, 5, d) for d in range(5, 18)]
         
         print(f"{'Date':<12} {'Obs':>5} {'Raw Brier':>10} {'EMOS Brier':>12} {'Mkt Brier':>10}")
@@ -144,7 +113,7 @@ def main() -> None:
             raw_total += raw_brier
             raw_count += 1
             
-            # EMOS Brier (using seasonal params)
+            # EMOS Brier (using year-long params)
             values = list(highs.values())
             ensemble_mean = statistics.mean(values)
             ensemble_std = statistics.stdev(values)
@@ -193,16 +162,11 @@ def main() -> None:
         
         print()
         if raw_count > 0:
-            print(f"Raw ensemble mean Brier:           {raw_total/raw_count:.4f}  ({raw_count} days)")
+            print(f"Raw ensemble mean Brier:        {raw_total/raw_count:.4f}  ({raw_count} days)")
         if emos_count > 0:
-            print(f"EMOS (seasonal params) Brier:      {emos_total/emos_count:.4f}  ({emos_count} days)")
+            print(f"EMOS (year-long params) Brier:  {emos_total/emos_count:.4f}  ({emos_count} days)")
         if mkt_count > 0:
-            print(f"Market (mid) mean Brier:           {mkt_total/mkt_count:.4f}  ({mkt_count} days)")
-        
-        print()
-        print(f"Comparison to prior runs:")
-        print(f"  EMOS (13-day LOO):       0.1041")
-        print(f"  EMOS (year-long):        0.1193")
+            print(f"Market (mid) mean Brier:        {mkt_total/mkt_count:.4f}  ({mkt_count} days)")
 
 
 if __name__ == "__main__":
