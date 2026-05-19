@@ -190,3 +190,34 @@ def test_fetch_contracts_returns_all_four_keys():
     
     assert set(contracts[0].keys()) == {"ticker", "bracket_type", "strike_low", "strike_high"}
 
+def test_compute_daily_highs_filters_by_model():
+    """If model='ifs' is passed, only ECMWF rows should be returned."""
+    # Mock returns 3 rows: (member_id, tmax_f) tuples
+    rows = [(1, 75.0), (2, 76.0), (3, 77.0)]
+    conn = make_mock_conn(rows)
+    
+    result = compute_daily_highs(
+        datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc),
+        date(2026, 5, 17),
+        conn,
+        model="ifs",
+    )
+    
+    assert result == {1: 75.0, 2: 76.0, 3: 77.0}
+
+def test_compute_ensemble_probabilities_accepts_list():
+    """Function should accept a list of values, not just a dict."""
+    contracts = [{
+        "ticker": "T",
+        "bracket_type": "between",
+        "strike_low": 70,
+        "strike_high": 71,
+    }]
+    
+    # Three values: one in bracket, two not
+    highs_as_list = [70.5, 65.0, 80.0]
+    
+    result = compute_ensemble_probabilities(highs_as_list, contracts)
+    
+    # 1 of 3 values is in [70.5, 71.5) continuous range
+    assert result["T"] == pytest.approx(1/3)

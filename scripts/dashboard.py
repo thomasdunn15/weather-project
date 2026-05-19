@@ -24,6 +24,7 @@ from weather_markets.evaluation import (
     brier_score,
 )
 
+from weather_markets.evaluation import calibration_bins
 
 # === Page config ===
 st.set_page_config(
@@ -278,7 +279,7 @@ st.line_chart(melted, x='date', y='Cumulative Brier', color='Model')
 
 # === Panel 4: Per-day drill-down ===
 
-st.header("🔍 Per-Day Drill-Down")
+st.header("Per-Day Drill-Down")
 
 # Date picker
 available_dates = df['date'].tolist()
@@ -410,3 +411,338 @@ if contracts:
     
     table_df = pd.DataFrame(table_rows)
     st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+# === Panel 5: Calibration plot ===
+
+st.header("🎯 Calibration")
+
+st.markdown(
+    "Are predicted probabilities reliable? "
+    "If a model says 70% and the event happens 70% of the time, it's calibrated. "
+    "Points on the diagonal = perfect calibration. "
+    "Points below = overconfident. Points above = underconfident."
+)
+
+@st.cache_data
+def collect_calibration_pairs():
+    """
+    For each day in backtest range, collect (probability, outcome) pairs
+    for each contract under each model (raw, EMOS, market).
+    """
+    means, stds, obs, dates = collect_training_data()
+    
+    raw_pairs = []
+    emos_pairs = []
+    market_pairs = []
+    
+    with get_connection() as conn:
+        for i, target_date in enumerate(dates):
+            init_time = datetime(
+                target_date.year, target_date.month, target_date.day,
+                12, 0, tzinfo=timezone.utc,
+            )
+            
+            highs = compute_daily_highs(init_time, target_date, conn)
+            contracts = fetch_contracts_for_date(target_date, conn)
+            if not contracts:
+                continue
+            
+            observation = int(obs[i])
+            
+            # Raw
+            raw_probs = compute_ensemble_probabilities(highs, contracts)
+            for c in contracts:
+                outcome = contract_resolved_yes(observation, c)
+                raw_pairs.append((raw_probs[c["ticker"]], outcome))
+            
+            # EMOS LOO
+            train_means = means[:i] + means[i+1:]
+            train_stds = stds[:i] + stds[i+1:]
+            train_obs = obs[:i] + obs[i+1:]
+            
+            if len(train_means) >= 2:
+                params = fit_emos(train_means, train_stds, train_obs)
+                emos_mu = params['a'] + params['b'] * means[i]
+                emos_var = params['c'] + params['d'] * stds[i]**2
+                if emos_var > 0:
+                    emos_sigma = math.sqrt(emos_var)
+                    emos_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
+                    for c in contracts:
+                        outcome = contract_resolved_yes(observation, c)
+                        emos_pairs.append((emos_probs[c["ticker"]], outcome))
+            
+            # Market
+            tickers = [c["ticker"] for c in contracts]
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                    FROM prices
+                    WHERE ticker = ANY(%s) AND snapshot_at <= %s
+                    ORDER BY ticker, snapshot_at DESC
+                """, (tickers, init_time))
+                for ticker, bid, ask in cur.fetchall():
+                    if bid is not None and ask is not None:
+                        mid_prob = (bid + ask) / 200
+                        # Find matching contract
+                        c = next(c for c in contracts if c["ticker"] == ticker)
+                        outcome = contract_resolved_yes(observation, c)
+                        market_pairs.append((mid_prob, outcome))
+    
+    return raw_pairs, emos_pairs, market_pairs
+
+raw_pairs, emos_pairs, market_pairs = collect_calibration_pairs()
+
+n_bins = st.slider("Number of bins", min_value=3, max_value=10, value=5)
+
+raw_bins = calibration_bins(raw_pairs, n_bins=n_bins)
+emos_bins = calibration_bins(emos_pairs, n_bins=n_bins)
+market_bins = calibration_bins(market_pairs, n_bins=n_bins)
+
+
+# Build a DataFrame for plotting
+def bins_to_df(bins_data, model_name):
+    return pd.DataFrame([
+        {
+            "mean_predicted": b["mean_predicted"],
+            "fraction_true": b["fraction_true"],
+            "count": b["count"],
+            "Model": model_name,
+        }
+        for b in bins_data
+    ])
+
+calib_df = pd.concat([
+    bins_to_df(raw_bins, "Raw Ensemble"),
+    bins_to_df(emos_bins, "EMOS"),
+    bins_to_df(market_bins, "Market"),
+], ignore_index=True)
+
+
+# Diagonal reference line
+diagonal_df = pd.DataFrame({
+    "mean_predicted": [0, 1],
+    "fraction_true": [0, 1],
+})
+
+diagonal_chart = alt.Chart(diagonal_df).mark_line(
+    color='gray',
+    strokeDash=[5, 5],
+).encode(
+    x='mean_predicted:Q',
+    y='fraction_true:Q',
+)
+
+# Calibration points (size = count)
+points_chart = alt.Chart(calib_df).mark_circle().encode(
+    x=alt.X('mean_predicted:Q', 
+            scale=alt.Scale(domain=[0, 1]),
+            title='Mean Predicted Probability'),
+    y=alt.Y('fraction_true:Q',
+            scale=alt.Scale(domain=[0, 1]),
+            title='Observed Fraction True'),
+    size=alt.Size('count:Q', title='Sample size', scale=alt.Scale(range=[50, 500])),
+    color=alt.Color(
+        'Model:N',
+        scale=alt.Scale(
+            domain=['Raw Ensemble', 'EMOS', 'Market'],
+            range=['#ff6b6b', '#4ecdc4', '#ffe66d'],
+        ),
+    ),
+    tooltip=['Model:N', 'mean_predicted:Q', 'fraction_true:Q', 'count:Q'],
+)
+
+# Connect points within each model with lines
+lines_chart = alt.Chart(calib_df).mark_line(opacity=0.3).encode(
+    x='mean_predicted:Q',
+    y='fraction_true:Q',
+    color=alt.Color('Model:N',
+        scale=alt.Scale(
+            domain=['Raw Ensemble', 'EMOS', 'Market'],
+            range=['#ff6b6b', '#4ecdc4', '#ffe66d'],
+        ),
+    ),
+)
+
+calib_chart = (diagonal_chart + lines_chart + points_chart).properties(
+    height=500,
+    width=600,
+)
+
+st.altair_chart(calib_chart, use_container_width=True)
+
+# Show the per-bin data tables
+with st.expander("Per-bin data"):
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Raw Ensemble**")
+        st.dataframe(bins_to_df(raw_bins, "Raw").drop(columns=["Model"]))
+    with col2:
+        st.markdown("**EMOS**")
+        st.dataframe(bins_to_df(emos_bins, "EMOS").drop(columns=["Model"]))
+    with col3:
+        st.markdown("**Market**")
+        st.dataframe(bins_to_df(market_bins, "Market").drop(columns=["Model"]))
+
+# === Panel 6: Diagnostic plots ===
+
+st.header("🔬 Diagnostics")
+st.markdown(
+    "Three views into model behavior. These help reveal where EMOS works "
+    "and where it falls short."
+)
+
+# Build the diagnostic dataframe
+@st.cache_data
+def build_diagnostic_df():
+    means, stds, obs, dates = collect_training_data()
+    
+    rows = []
+    for i, target_date in enumerate(dates):
+        raw_pred = means[i]
+        raw_std = stds[i]
+        observed = obs[i]
+        raw_error = raw_pred - observed
+        raw_abs_error = abs(raw_error)
+        
+        rows.append({
+            "date": target_date,
+            "raw_predicted": raw_pred,
+            "raw_std": raw_std,
+            "observed": observed,
+            "raw_error": raw_error,         # positive = warm bias
+            "raw_abs_error": raw_abs_error,
+        })
+    
+    return pd.DataFrame(rows)
+
+diag_df = build_diagnostic_df()
+
+st.subheader("1. Is bias systematic in predicted temperature?")
+
+st.markdown(
+    "If the model has a constant bias (e.g., always 1.6°F too warm), "
+    "this scatter should show a horizontal trend. "
+    "If the bias depends on temperature, you'll see a slope."
+)
+
+# Scatter: x = predicted, y = error
+scatter_1 = alt.Chart(diag_df).mark_circle(size=100).encode(
+    x=alt.X('raw_predicted:Q', 
+            title='Raw Predicted Mean (°F)',
+            scale=alt.Scale(zero=False)),
+    y=alt.Y('raw_error:Q', 
+            title='Error (predicted - observed, °F)'),
+    tooltip=['date:T', 'raw_predicted:Q', 'observed:Q', 'raw_error:Q'],
+)
+
+# Zero reference line
+zero_line_1 = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(
+    color='gray', strokeDash=[5, 5]
+).encode(y='y:Q')
+
+# Linear regression line (Altair can do this automatically)
+regression_1 = alt.Chart(diag_df).transform_regression(
+    'raw_predicted', 'raw_error', method='linear'
+).mark_line(color='red').encode(
+    x='raw_predicted:Q',
+    y='raw_error:Q',
+)
+
+chart_1 = (scatter_1 + zero_line_1 + regression_1).properties(height=350)
+st.altair_chart(chart_1, use_container_width=True)
+
+st.caption(
+    "Gray dashed line = no bias. Red line = best linear fit through points. "
+    "If the red line slopes downward, bias decreases as predicted temperature rises "
+    "(i.e., the model is warmer-biased for cool predictions)."
+)
+
+st.subheader("2. Does ensemble spread predict actual uncertainty?")
+
+st.markdown(
+    "Theoretically, days where ensemble members disagree more should have "
+    "bigger forecast errors. If spread is informative, you'll see a positive slope."
+)
+
+scatter_2 = alt.Chart(diag_df).mark_circle(size=100).encode(
+    x=alt.X('raw_std:Q', 
+            title='Ensemble Standard Deviation (°F)',
+            scale=alt.Scale(zero=False)),
+    y=alt.Y('raw_abs_error:Q', 
+            title='Absolute Error (°F)',
+            scale=alt.Scale(zero=False)),
+    tooltip=['date:T', 'raw_std:Q', 'raw_abs_error:Q', 'observed:Q'],
+)
+
+regression_2 = alt.Chart(diag_df).transform_regression(
+    'raw_std', 'raw_abs_error', method='linear'
+).mark_line(color='red').encode(
+    x='raw_std:Q',
+    y='raw_abs_error:Q',
+)
+
+chart_2 = (scatter_2 + regression_2).properties(height=350)
+st.altair_chart(chart_2, use_container_width=True)
+
+st.caption(
+    "If ensemble spread is informative, points should slope upward "
+    "(more spread → bigger errors). Flat or negative slope = under-dispersion."
+)
+
+st.subheader("3. Is the model calibrated differently for confident vs uncertain predictions?")
+
+st.markdown(
+    "Split predictions into 'high confidence' (>70%) and 'low confidence' (<30%) bins. "
+    "Are both bands calibrated, or just one?"
+)
+
+raw_pairs, emos_pairs, market_pairs = collect_calibration_pairs()
+
+
+def calibration_summary(pairs, label):
+    """Return high-confidence and low-confidence calibration stats."""
+    high_conf = [(p, o) for p, o in pairs if p > 0.7]
+    low_conf = [(p, o) for p, o in pairs if p < 0.3]
+    mid_conf = [(p, o) for p, o in pairs if 0.3 <= p <= 0.7]
+    
+    def stats(pp):
+        if not pp:
+            return None, None, 0
+        probs = [p for p, _ in pp]
+        outcomes = [o for _, o in pp]
+        return sum(probs) / len(probs), sum(outcomes) / len(outcomes), len(pp)
+    
+    high_pred, high_actual, high_n = stats(high_conf)
+    mid_pred, mid_actual, mid_n = stats(mid_conf)
+    low_pred, low_actual, low_n = stats(low_conf)
+    
+    return [
+        {"Model": label, "Regime": "High (>70%)", 
+         "Mean Predicted": high_pred, "Actual Rate": high_actual, "Count": high_n},
+        {"Model": label, "Regime": "Mid (30-70%)", 
+         "Mean Predicted": mid_pred, "Actual Rate": mid_actual, "Count": mid_n},
+        {"Model": label, "Regime": "Low (<30%)", 
+         "Mean Predicted": low_pred, "Actual Rate": low_actual, "Count": low_n},
+    ]
+
+
+rows_3 = []
+rows_3.extend(calibration_summary(raw_pairs, "Raw Ensemble"))
+rows_3.extend(calibration_summary(emos_pairs, "EMOS"))
+rows_3.extend(calibration_summary(market_pairs, "Market"))
+
+regime_df = pd.DataFrame(rows_3)
+
+# Filter out empty rows for display
+regime_display_df = regime_df.dropna(subset=['Mean Predicted']).copy()
+regime_display_df['Mean Predicted'] = regime_display_df['Mean Predicted'].apply(lambda x: f"{x:.1%}" if x else "—")
+regime_display_df['Actual Rate'] = regime_display_df['Actual Rate'].apply(lambda x: f"{x:.1%}" if x is not None else "—")
+
+st.dataframe(regime_display_df, use_container_width=True, hide_index=True)
+
+st.caption(
+    "If predicted and actual rates match in a regime, the model is calibrated in that regime. "
+    "Big differences signal miscalibration. With 13 days, low counts mean any single regime "
+    "is noisy."
+)

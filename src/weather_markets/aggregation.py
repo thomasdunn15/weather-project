@@ -14,6 +14,7 @@ def compute_daily_highs(
     station_id: str = "KNYC",
     timezone_name: str = "America/New_York",
     bias_correction: float = 0.0,
+    model: str = "gefs",
 ) -> dict[int, float]:
 
     sql = """
@@ -21,6 +22,7 @@ def compute_daily_highs(
         FROM forecasts
         WHERE init_time = %s
           AND station_id = %s
+          AND model = %s
           AND valid_time AT TIME ZONE %s >= %s::timestamp
           AND valid_time AT TIME ZONE %s <  (%s::date + interval '1 day')::timestamp
         GROUP BY member_id
@@ -30,7 +32,7 @@ def compute_daily_highs(
     with conn.cursor() as cur:
         cur.execute(
             sql,
-            (init_time, station_id, timezone_name, target_date, timezone_name, target_date),
+            (init_time, station_id, model, timezone_name, target_date, timezone_name, target_date),
         )
         rows = cur.fetchall()
     
@@ -56,14 +58,24 @@ def is_yes(high, contract):
     else:
         raise ValueError(f"Unknown bracket_type: {bracket_type!r}")
 
-def compute_ensemble_probabilities(highs, contracts):
-    if not highs:
+def compute_ensemble_probabilities(
+    highs,  # dict[int, float] or list[float]
+    contracts: list[dict],
+) -> dict[str, float]:
+    """..."""
+    # Normalize input to a list of values
+    if isinstance(highs, dict):
+        values = list(highs.values())
+    else:
+        values = list(highs)
+    
+    if not values:
         raise ValueError("highs cannot be empty")
     
-    n_members = len(highs)
+    n_members = len(values)
     result = {}
     for contract in contracts:
-        yes_count = sum(1 for h in highs.values() if is_yes(h, contract))
+        yes_count = sum(1 for h in values if is_yes(h, contract))
         result[contract["ticker"]] = yes_count / n_members
     return result
 
@@ -120,3 +132,40 @@ def fetch_contracts_for_date(
     {"ticker": t, "bracket_type": b, "strike_low": l, "strike_high": h}
     for t, b, l, h in rows
     ]
+
+def compute_combined_daily_highs(
+    init_time: datetime,
+    target_date: date,
+    conn,
+    station_id: str = "KNYC",
+    timezone_name: str = "America/New_York",
+    models: list[str] | None = None,
+) -> list[float]:
+    """
+    Compute daily highs across multiple models, returning a single combined list of values.
+    
+    Member IDs are not preserved (since they could collide across models).
+    Returns a flat list of high values.
+    """
+    if models is None:
+        models = ["gefs", "ifs"]
+    
+    all_values = []
+    for model in models:
+        try:
+            highs = compute_daily_highs(
+                init_time, target_date, conn,
+                station_id=station_id,
+                timezone_name=timezone_name,
+                model=model,
+            )
+            all_values.extend(highs.values())
+        except NoForecastDataError:
+            continue  # OK if one model is missing
+    
+    if not all_values:
+        raise NoForecastDataError(
+            f"No forecast data for any model on {target_date} from {init_time}"
+        )
+    
+    return all_values

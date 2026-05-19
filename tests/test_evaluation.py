@@ -1,5 +1,5 @@
 import pytest
-from weather_markets.evaluation import contract_resolved_yes, brier_score, evaluate_predictions
+from weather_markets.evaluation import contract_resolved_yes, brier_score, evaluate_predictions, calibration_bins
 
 # Helper: build a contract dict
 def make_contract(bracket_type, strike_low=None, strike_high=None):
@@ -116,3 +116,52 @@ def test_evaluate_predictions_multiple_contracts():
     
     assert scores["A"] == 0.25  # (0.5 - 1)^2
     assert scores["B"] == 0.25  # (0.5 - 0)^2
+
+def test_calibration_empty():
+    """No pairs → empty result."""
+    result = calibration_bins([])
+    assert result == []
+
+
+def test_calibration_perfect():
+    """Perfectly calibrated predictions: 0.2, 0.4, 0.6, 0.8 each happens at that rate."""
+    pairs = []
+    # 10 predictions at 0.2 prob, 2 of which are True (20%)
+    pairs.extend([(0.2, i < 2) for i in range(10)])
+    # 10 at 0.6, 6 True (60%)
+    pairs.extend([(0.6, i < 6) for i in range(10)])
+    
+    result = calibration_bins(pairs, n_bins=5)
+    
+    # Find the bins containing 0.2 and 0.6
+    bin_with_02 = next(b for b in result if b["bin_low"] <= 0.2 < b["bin_high"])
+    bin_with_06 = next(b for b in result if b["bin_low"] <= 0.6 < b["bin_high"])
+    
+    assert bin_with_02["fraction_true"] == pytest.approx(0.2)
+    assert bin_with_06["fraction_true"] == pytest.approx(0.6)
+
+
+def test_calibration_all_predictions_at_one():
+    """Predictions of 1.0 should land in the top bin."""
+    pairs = [(1.0, True)] * 5 + [(1.0, False)] * 5
+    result = calibration_bins(pairs, n_bins=5)
+    
+    # Only the top bin should be populated
+    assert len(result) == 1
+    assert result[0]["fraction_true"] == pytest.approx(0.5)
+    assert result[0]["count"] == 10
+
+
+def test_calibration_rejects_bad_probability():
+    with pytest.raises(ValueError):
+        calibration_bins([(1.5, True)])
+    with pytest.raises(ValueError):
+        calibration_bins([(-0.1, True)])
+
+
+def test_calibration_count_correct():
+    """Verify counts sum to total."""
+    pairs = [(0.1, True), (0.3, False), (0.5, True), (0.7, False), (0.9, True)]
+    result = calibration_bins(pairs, n_bins=5)
+    total_count = sum(b["count"] for b in result)
+    assert total_count == 5
