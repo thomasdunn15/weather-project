@@ -88,25 +88,33 @@ def fit_emos(
     
     def total_crps(params):
         a, b, c, d = params
-        # Ensure positive variance
         variances = c + d * stds ** 2
-        if np.any(variances <= 0):
-            return 1e10  # huge penalty
-        
+        # With the bounds below, variances stays positive; clamp as a numerical guard only.
+        variances = np.maximum(variances, 1e-6)
+
         mu = a + b * means
         sigma = np.sqrt(variances)
-        
-        # Vectorized CRPS over all days
+
         z = (obs - mu) / sigma
-        # ... CRPS formula ...
         score = sigma * (z * (2 * stats.norm.cdf(z) - 1) + 2 * stats.norm.pdf(z) - 1 / math.sqrt(math.pi))
         return score.sum()
     
     # Initial guess: identity (no correction)
-    x0 = np.array([0.0, 1.0, 0.0, 1.0])
+    x0 = np.array([0.0, 1.0, 1.0, 1.0])
     
-    result = minimize(total_crps, x0, method='L-BFGS-B')
+    # Bounds keep c + d*var > 0 structurally: c floored above 0, d non-negative.
+    bounds = [
+        (None, None),   # a: any shift
+        (None, None),   # b: any scale
+        (1e-3, None),   # c: variance floor strictly positive
+        (0.0, None),    # d: spread contributes non-negatively
+    ]
     
+    result = minimize(total_crps, x0, method='L-BFGS-B', bounds=bounds)
+    
+    if not np.all(np.isfinite(result.x)):
+        raise RuntimeError(f"EMOS optimization produced non-finite params: {result.message}")
+
     if not result.success:
         raise RuntimeError(f"EMOS optimization failed: {result.message}")
     

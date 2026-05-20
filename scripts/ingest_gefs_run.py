@@ -24,7 +24,11 @@ def main() -> None:
     run_time = most_recent_completed_run(now)
     
     print(f"Ingesting GEFS run {run_time.isoformat()}")
-    result = ingest_gefs_run(run_time=run_time, station_id="KNYC")
+    result = ingest_gefs_run(
+        run_time=run_time,
+        station_id="KNYC",
+        forecast_hours=[3, 6, 9, 12, 15, 18, 21, 24],
+    )
     print(result)
 
 
