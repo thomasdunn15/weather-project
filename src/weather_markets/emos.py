@@ -1,5 +1,8 @@
 import math
+from datetime import date, timedelta
 from scipy import stats
+
+from .aggregation import collect_training_pairs
 
 
 def crps_gaussian(mu: float, sigma: float, observation: float) -> float:
@@ -128,3 +131,52 @@ def fit_emos(
         "final_crps": float(result.fun),
         "n_iter": int(result.nit),
     }
+
+
+def fit_emos_rolling(
+    target_date: date,
+    conn,
+    *,
+    window_days: int = 45,
+    station_id: str = "KNYC",
+    model: str = "combined",
+    min_train_days: int = 30,
+) -> dict | None:
+    """
+    Fit EMOS parameters on a trailing window of (forecast, observation) pairs
+    ending one day before target_date.
+
+    The window adapts to data availability: if observations through target_date - 1
+    are not yet in the DB, the window slides back to the latest observed day.
+    Days where forecast or observation data is missing are skipped, so
+    n_train_days_used may be less than window_days.
+
+    Returns None when fewer than min_train_days effective days are available;
+    the caller decides the fallback. On success returns the dict from fit_emos
+    augmented with: train_start, train_end, n_train_days_used.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(date) FROM observations WHERE date <= %s AND station_id = %s",
+            (target_date - timedelta(days=1), station_id),
+        )
+        row = cur.fetchone()
+    train_end = row[0] if row else None
+    if train_end is None:
+        return None
+    train_start = train_end - timedelta(days=window_days - 1)
+
+    models_arg = ["gefs", "ifs"] if model == "combined" else [model]
+    means, stds, obs, dates = collect_training_pairs(
+        conn, train_start, train_end,
+        station_id=station_id, models=models_arg,
+    )
+
+    if len(means) < min_train_days:
+        return None
+
+    result = fit_emos(means, stds, obs)
+    result["train_start"] = dates[0]
+    result["train_end"] = dates[-1]
+    result["n_train_days_used"] = len(means)
+    return result

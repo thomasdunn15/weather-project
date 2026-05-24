@@ -9,6 +9,11 @@ import pandas as pd
 # 3-hour windowed max temperature, peak heating hours for NYC
 DEFAULT_FORECAST_HOURS = [3, 6, 9, 12]
 
+# ECMWF enfo publishes 50 perturbed members per run. Fewer than this on an
+# extracted dataset means a partial GRIB download (often a stale cache from
+# an interrupted prior run) — warn loudly so it doesn't go unnoticed.
+EXPECTED_ENFO_MEMBERS = 50
+
 KNYC_LAT = 40.78
 KNYC_LON = -73.97
 
@@ -68,8 +73,10 @@ def ingest_ecmwf_run(
                     "temperature_f": None,  # only have tmax for ENS
                     "tmax_f": temp_f,
                 })
-            
-            print(f"  fxx={fxx:3d}h: 50 members extracted")
+
+            n_members = len(ds.number.values)
+            tag = "WARNING incomplete: " if n_members < EXPECTED_ENFO_MEMBERS else ""
+            print(f"  fxx={fxx:3d}h: {tag}{n_members}/{EXPECTED_ENFO_MEMBERS} members extracted")
         
         except Exception as e:
             print(f"  fxx={fxx:3d}h: SKIPPED ({type(e).__name__}: {e})")

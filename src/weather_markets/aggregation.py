@@ -1,7 +1,8 @@
 """
 Aggregation functions for ensemble forecasts.
 """
-from datetime import date, datetime
+import statistics
+from datetime import date, datetime, timedelta, timezone
 
 class NoForecastDataError(Exception):
     """Raised when no forecast data exists for the requested query."""
@@ -132,6 +133,43 @@ def fetch_contracts_for_date(
     {"ticker": t, "bracket_type": b, "strike_low": l, "strike_high": h}
     for t, b, l, h in rows
     ]
+
+
+def collect_training_pairs(
+    conn,
+    start_date: date,
+    end_date: date,
+    station_id: str = "KNYC",
+    models: list[str] | None = None,
+) -> tuple[list[float], list[float], list[float], list[date]]:
+    """
+    Walk [start_date, end_date] inclusive. For each day with both an ensemble
+    forecast (12 UTC init) and an observation, append (mean, std, obs, date)
+    to four parallel lists. Days with missing data on either side are skipped
+    (INNER JOIN semantics).
+
+    Shared by full-sample and rolling-window EMOS fits.
+    """
+    means, stds, obs, dates = [], [], [], []
+    d = start_date
+    while d <= end_date:
+        init = datetime(d.year, d.month, d.day, 12, 0, tzinfo=timezone.utc)
+        try:
+            values = compute_combined_daily_highs(
+                init, d, conn, station_id=station_id, models=models,
+            )
+        except NoForecastDataError:
+            d += timedelta(days=1)
+            continue
+        observation = fetch_observed_high(d, conn, station_id=station_id)
+        if observation is not None and len(values) >= 2:
+            means.append(statistics.mean(values))
+            stds.append(statistics.stdev(values))
+            obs.append(observation)
+            dates.append(d)
+        d += timedelta(days=1)
+    return means, stds, obs, dates
+
 
 def compute_combined_daily_highs(
     init_time: datetime,

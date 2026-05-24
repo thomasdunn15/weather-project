@@ -21,8 +21,9 @@ from weather_markets.aggregation import (
     compute_ensemble_probabilities,
     fetch_observed_high,
     fetch_contracts_for_date,
+    collect_training_pairs,
 )
-from weather_markets.emos import fit_emos, gaussian_to_bracket_probs
+from weather_markets.emos import fit_emos, gaussian_to_bracket_probs, fit_emos_rolling
 from weather_markets.evaluation import (
     evaluate_predictions,
     contract_resolved_yes,
@@ -77,32 +78,14 @@ def collect_training_data():
 @st.cache_data
 def collect_combined_training_data():
     """Collect COMBINED (GEFS+ECMWF) ensemble stats over the full year for EMOS fitting."""
-    means, stds, obs, dates = [], [], [], []
-
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT MAX(date) FROM observations WHERE station_id = %s", ("KNYC",))
             end = cur.fetchone()[0]
-
-        target_date = date(2025, 5, 1)
-        while target_date <= end:
-            init_time = datetime(
-                target_date.year, target_date.month, target_date.day,
-                12, 0, tzinfo=timezone.utc,
-            )
-            try:
-                values = compute_combined_daily_highs(init_time, target_date, conn)
-                observation = fetch_observed_high(target_date, conn)
-                if observation is not None and len(values) >= 2:
-                    means.append(statistics.mean(values))
-                    stds.append(statistics.stdev(values))
-                    obs.append(observation)
-                    dates.append(target_date)
-            except Exception:
-                pass
-            target_date += timedelta(days=1)
-
-    return means, stds, obs, dates
+        return collect_training_pairs(
+            conn, date(2025, 5, 1), end,
+            station_id="KNYC", models=["gefs", "ifs"],
+        )
 
 
 @st.cache_data
@@ -112,6 +95,17 @@ def fit_combined_emos():
     if len(means) < 10:
         return None
     return fit_emos(means, stds, obs)
+
+
+@st.cache_data(ttl=3600)
+def fit_combined_emos_rolling(trade_date, window_days=45):
+    """Fit rolling-window EMOS for a specific target date. Returns None when
+    fewer than min_train_days (default 30) effective training days are available."""
+    with get_connection() as conn:
+        return fit_emos_rolling(
+            trade_date, conn,
+            window_days=window_days, station_id="KNYC", model="combined",
+        )
 
 
 @st.cache_data
@@ -830,7 +824,7 @@ with tab_trade:
     with ctrl2:
         model_choice = st.radio(
             "Probability source",
-            options=["Raw combined", "EMOS combined"],
+            options=["Raw combined", "EMOS combined", "EMOS combined (rolling 45d)"],
             index=0,
             help="Which model drives the edge and signal columns.",
         )
@@ -841,7 +835,17 @@ with tab_trade:
             help="Flag BUY YES / BUY NO when |edge| exceeds this.",
         )
 
-    emos_params = fit_combined_emos()
+    if model_choice == "EMOS combined (rolling 45d)":
+        emos_params = fit_combined_emos_rolling(trade_date)
+        if emos_params is None:
+            st.warning(
+                "Rolling EMOS unavailable — fewer than 30 days of training data "
+                "for this target date. Falling back to full-sample EMOS."
+            )
+            emos_params = fit_combined_emos()
+    else:
+        emos_params = fit_combined_emos()
+
     if emos_params is None:
         st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
 
@@ -868,6 +872,20 @@ with tab_trade:
         except Exception as e:
             st.error(f"Could not load combined forecast: {e}")
             st.stop()
+
+        # compute_combined_daily_highs silently skips models with no data,
+        # so query directly to know which models actually contributed.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT model
+                FROM forecasts
+                WHERE init_time = %s AND station_id = %s AND model IN ('gefs', 'ifs')
+                GROUP BY model
+                """,
+                (chosen_init, "KNYC"),
+            )
+            models_present = {row[0] for row in cur.fetchall()}
 
         contracts = fetch_contracts_for_date(trade_date, conn)
 
@@ -903,6 +921,17 @@ with tab_trade:
             f"Using most recent available run: {chosen_init.isoformat()}."
         )
 
+    if "ifs" not in models_present:
+        st.warning(
+            "ECMWF data missing for this run — combined forecast is GEFS-only. "
+            "Edges may be less reliable than usual."
+        )
+    elif "gefs" not in models_present:
+        st.warning(
+            "GEFS data missing for this run — combined forecast is ECMWF-only. "
+            "Edges may be less reliable than usual."
+        )
+
     # Forecast card
     st.subheader("Forecast")
     f1, f2, f3, f4 = st.columns(4)
@@ -929,9 +958,10 @@ with tab_trade:
         emos_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
 
     # Decide which model drives the signal
-    use_emos = (model_choice == "EMOS combined") and bool(emos_probs)
+    is_emos_choice = model_choice.startswith("EMOS")
+    use_emos = is_emos_choice and bool(emos_probs)
     model_probs = emos_probs if use_emos else raw_probs
-    if model_choice == "EMOS combined" and not emos_probs:
+    if is_emos_choice and not emos_probs:
         st.warning("EMOS unavailable for this day; falling back to raw combined for signals.")
 
     # Edge table
