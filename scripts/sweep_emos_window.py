@@ -5,16 +5,13 @@ For each candidate window w in WINDOW_SIZES, computes rolling out-of-sample
 CRPS over the evaluation range and reports which window minimizes mean CRPS.
 All windows are evaluated on the same set of dates for a fair comparison.
 
-Algorithm:
-  1. Precompute (mean, std, obs, date) once for the full data range.
-  2. For each (window_size w, evaluation date D): slice the precomputed lists
-     to dates in [D - w, D), fit EMOS in memory, predict D, score CRPS.
-  3. Aggregate per window; recommend the largest window within 1 SE of the
-     best mean CRPS.
+Supports both 12Z combined (default) and 00Z ECMWF workflows via CLI flags:
+    uv run python scripts/sweep_emos_window.py                              # 12Z combined
+    uv run python scripts/sweep_emos_window.py --model ifs --init-hour 0    # 00Z ECMWF
 
-This is a one-off evaluation script. Run with:
-    uv run python scripts/sweep_emos_window.py
+Output files are suffixed with the workflow so re-runs don't clobber.
 """
+import argparse
 import csv
 import math
 import statistics
@@ -35,11 +32,32 @@ MIN_TRAIN_DAYS = 30
 EVAL_START = date(2025, 8, 29)        # first eval day = PRECOMPUTE_START + max(WINDOW_SIZES)
 PRECOMPUTE_START = date(2025, 5, 1)   # earliest forecast/observation data in the DB
 STATION_ID = "KNYC"
-MODELS = ["gefs", "ifs"]
-OUTPUT_PNG = Path("outputs/window_sweep.png")
+
+# Model name → list of model codes passed to compute_combined_daily_highs.
+MODEL_TO_CODES = {
+    "combined": ["gefs", "ifs"],
+    "gefs": ["gefs"],
+    "ifs": ["ifs"],
+}
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--model", choices=list(MODEL_TO_CODES), default="combined",
+                        help="Ensemble source: combined (gefs+ifs), gefs, or ifs.")
+    parser.add_argument("--init-hour", type=int, choices=[0, 12], default=12,
+                        help="Forecast init hour (UTC).")
+    args = parser.parse_args()
+
+    models = MODEL_TO_CODES[args.model]
+    init_hour = args.init_hour
+    workflow_tag = f"{args.model}_{init_hour:02d}z"
+    output_png = Path(f"outputs/window_sweep_{workflow_tag}.png")
+    output_csv = Path(f"outputs/window_sweep_daily_{workflow_tag}.csv")
+
+    print(f"Workflow: model={args.model} (codes={models}), init_hour={init_hour:02d}Z")
+    print(f"Output:   {output_png}, {output_csv}")
+    print()
     # 1. Precompute training pairs once.
     print("=== Precomputing training pairs ===", flush=True)
     print("(expect ~30–60s — one DB roundtrip per model per day)", flush=True)
@@ -57,7 +75,7 @@ def main() -> None:
         print(f"  range: {PRECOMPUTE_START} → {latest_obs}", flush=True)
         means, stds, obs, dates = collect_training_pairs(
             conn, PRECOMPUTE_START, latest_obs,
-            station_id=STATION_ID, models=MODELS,
+            station_id=STATION_ID, models=models, init_hour=init_hour,
         )
     print(f"  collected {len(dates)} training pairs in {time.time() - t0:.1f}s", flush=True)
 
@@ -158,7 +176,7 @@ def main() -> None:
     print(f"Recommended default: w={largest[0]} (largest within 1 SE)")
 
     # 6. Plot.
-    OUTPUT_PNG.parent.mkdir(parents=True, exist_ok=True)
+    output_png.parent.mkdir(parents=True, exist_ok=True)
     ws = [r[0] for r in summary]
     ys = [r[2] for r in summary]
     yerrs = [r[3] for r in summary]
@@ -172,22 +190,21 @@ def main() -> None:
     )
     plt.xlabel("Window size (days)")
     plt.ylabel("Mean OOS CRPS")
-    plt.title(f"Rolling EMOS window-size sweep ({len(eval_dates)} eval days)")
+    plt.title(f"Rolling EMOS sweep — {args.model} {init_hour:02d}Z ({len(eval_dates)} eval days)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(OUTPUT_PNG, dpi=110)
+    plt.savefig(output_png, dpi=110)
     plt.close()
-    print(f"\nPlot saved: {OUTPUT_PNG}")
+    print(f"\nPlot saved: {output_png}")
 
     # 7. CSV export of per-day results.
-    csv_path = OUTPUT_PNG.parent / "window_sweep_daily.csv"
-    with csv_path.open("w", newline="") as f:
+    with output_csv.open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["date", "window_days", "crps", "mae"])
         for w in WINDOW_SIZES:
             for d, crps, mae in results[w]:
                 writer.writerow([d.isoformat(), w, f"{crps:.6f}", f"{mae:.6f}"])
-    print(f"CSV saved: {csv_path}")
+    print(f"CSV saved: {output_csv}")
 
 
 if __name__ == "__main__":

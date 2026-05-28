@@ -98,14 +98,144 @@ def fit_combined_emos():
 
 
 @st.cache_data(ttl=3600)
-def fit_combined_emos_rolling(trade_date, window_days=45):
-    """Fit rolling-window EMOS for a specific target date. Returns None when
-    fewer than min_train_days (default 30) effective training days are available."""
+def fit_emos_rolling_cached(trade_date, window_days=45, model="combined", init_hour=12):
+    """Cached rolling-window EMOS fit. Returns None when fewer than min_train_days
+    (default 30) effective training days are available.
+
+    Defaults match the 12Z combined workflow. Pass model="ifs", init_hour=0 for
+    the 00Z ECMWF workflow used by market-open paper trading."""
     with get_connection() as conn:
         return fit_emos_rolling(
             trade_date, conn,
-            window_days=window_days, station_id="KNYC", model="combined",
+            window_days=window_days, station_id="KNYC",
+            model=model, init_hour=init_hour,
         )
+
+
+@st.cache_data(ttl=60)
+def paper_trades_with_outcomes(limit: int = 500):
+    """Pull paper trades joined with contracts and observations.
+
+    Returns DataFrame with outcome resolution columns: contract_yes_resolved,
+    won, pnl_cents_per_unit. Unresolved trades (observation hasn't landed yet)
+    have None for those columns. Sorted by target_date DESC, logged_at DESC.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pt.target_date, pt.logged_at, pt.ticker, pt.model_source,
+                       pt.model_prob_yes, pt.market_mid_prob, pt.edge,
+                       pt.position, pt.entry_price_cents,
+                       c.bracket_type, c.strike_low, c.strike_high,
+                       o.high_temp_f
+                FROM paper_trades pt
+                JOIN contracts c ON c.ticker = pt.ticker
+                LEFT JOIN observations o
+                    ON o.date = pt.target_date AND o.station_id = 'KNYC'
+                ORDER BY pt.target_date DESC, pt.logged_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+
+    df = pd.DataFrame(rows, columns=cols)
+    if df.empty:
+        return df
+
+    def resolve(row):
+        if pd.isna(row["high_temp_f"]):
+            return pd.Series({"won": None, "pnl_cents_per_unit": None})
+        contract = {
+            "bracket_type": row["bracket_type"],
+            "strike_low": row["strike_low"],
+            "strike_high": row["strike_high"],
+        }
+        resolved_yes = contract_resolved_yes(int(row["high_temp_f"]), contract)
+        won = resolved_yes if row["position"] == "BUY_YES" else (not resolved_yes)
+        pnl = (100 - row["entry_price_cents"]) if won else (-row["entry_price_cents"])
+        return pd.Series({"won": won, "pnl_cents_per_unit": pnl})
+
+    enriched = df.apply(resolve, axis=1)
+    return pd.concat([df, enriched], axis=1)
+
+
+def _kelly_fraction(p_win: float, entry_price_cents: int) -> float:
+    """Full Kelly fraction for a binary contract. Returns 0 if no positive edge."""
+    if entry_price_cents <= 0 or entry_price_cents >= 100:
+        return 0.0
+    b = (100 - entry_price_cents) / entry_price_cents
+    f = p_win - (1 - p_win) / b
+    return max(0.0, f)
+
+
+def kalshi_fee_cents(entry_price_cents: int) -> int:
+    """Kalshi trading fee per contract in cents.
+
+    Formula (per Kalshi docs): $0.07 × contracts × P × (1−P), rounded UP to the
+    nearest $0.01 per fill. Charged on the entry trade only; no fee at settlement.
+    Returns 0 for degenerate prices (≤0 or ≥100)."""
+    if entry_price_cents <= 0 or entry_price_cents >= 100:
+        return 0
+    p = entry_price_cents / 100.0
+    fee_dollars = 0.07 * p * (1.0 - p)
+    return max(1, math.ceil(fee_dollars * 100))
+
+
+def simulate_pnl(
+    df: pd.DataFrame,
+    starting_balance: float,
+    sizing_type: str,
+    *,
+    contracts: int = 1,
+    kelly_fraction: float = 0.5,
+) -> pd.DataFrame:
+    """Walk resolved trades chronologically and compute cumulative balance.
+
+    sizing_type:
+      - "unit"  — buy `contracts` contracts per trade (constant).
+      - "kelly" — stake = bankroll × kelly_fraction × Kelly-optimal fraction;
+                  bankroll compounds.
+
+    All P&L is net of Kalshi trading fees (per-contract entry fee).
+    """
+    resolved = (
+        df[df["won"].notna()]
+        .sort_values(["target_date", "logged_at"])
+        .reset_index(drop=True)
+    )
+
+    history = [{"date": None, "balance": starting_balance, "trade_pnl": 0.0}]
+    balance = starting_balance
+
+    for _, row in resolved.iterrows():
+        entry = int(row["entry_price_cents"])
+        won = bool(row["won"])
+        fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
+
+        if sizing_type == "unit":
+            gross_pnl = contracts * (100 - entry if won else -entry) / 100.0
+            trade_pnl = gross_pnl - contracts * fee_per_contract
+        else:  # kelly
+            p_win = row["model_prob_yes"] if row["position"] == "BUY_YES" else (1 - row["model_prob_yes"])
+            b = (100 - entry) / entry
+            f = _kelly_fraction(p_win, entry) * kelly_fraction
+            stake = balance * f  # dollars
+            num_contracts = stake / (entry / 100.0) if entry > 0 else 0
+            total_fee = num_contracts * fee_per_contract
+            gross_pnl = stake * b if won else -stake
+            trade_pnl = gross_pnl - total_fee
+
+        balance += trade_pnl
+        history.append({
+            "date": pd.Timestamp(row["target_date"]),
+            "balance": balance,
+            "trade_pnl": trade_pnl,
+        })
+
+    return pd.DataFrame(history)
 
 
 @st.cache_data
@@ -339,15 +469,18 @@ def run_multimodel_comparison():
     return pd.DataFrame(rows)
 
 
-def latest_available_init(conn, target_date, model_aware=True):
+def latest_available_init(conn, target_date, init_hour=12, model_aware=True):
     """
-    Return the target date's 12 UTC init_time IF forecast data exists for it,
-    else None. Matches the backtest methodology (always the 12 UTC same-day run);
-    never uses a later run, which would be lookahead bias.
+    Return the target date's init_hour UTC init_time IF forecast data exists
+    for it, else None. Matches backtest methodology (canonical same-day run at
+    the chosen hour); never uses a later run, which would be lookahead bias.
+
+    init_hour defaults to 12 for the legacy combined workflow; pass init_hour=0
+    for the 00Z ECMWF market-open workflow.
     """
     preferred = datetime(
         target_date.year, target_date.month, target_date.day,
-        12, 0, tzinfo=timezone.utc,
+        init_hour, 0, tzinfo=timezone.utc,
     )
     with conn.cursor() as cur:
         cur.execute("""
@@ -824,7 +957,12 @@ with tab_trade:
     with ctrl2:
         model_choice = st.radio(
             "Probability source",
-            options=["Raw combined", "EMOS combined", "EMOS combined (rolling 45d)"],
+            options=[
+                "Raw combined",
+                "EMOS combined",
+                "EMOS combined (rolling 45d)",
+                "EMOS combined 00Z (rolling 45d)",
+            ],
             index=0,
             help="Which model drives the edge and signal columns.",
         )
@@ -835,61 +973,101 @@ with tab_trade:
             help="Flag BUY YES / BUY NO when |edge| exceeds this.",
         )
 
-    if model_choice == "EMOS combined (rolling 45d)":
-        emos_params = fit_combined_emos_rolling(trade_date)
+    # Forecast configuration varies by probability source. The combined 00Z option
+    # uses a different init (00Z) and an earlier decision time (14:45 UTC, matching
+    # the market-open paper-trade cron) than the legacy 12Z combined views.
+    if model_choice == "EMOS combined 00Z (rolling 45d)":
+        cfg = {
+            "init_hour": 0,
+            "models": ["gefs", "ifs"],
+            "ensemble_label": "Combined 00Z",
+            "decision_hour": 14,
+            "decision_minute": 45,
+        }
+    else:
+        cfg = {
+            "init_hour": 12,
+            "models": ["gefs", "ifs"],
+            "ensemble_label": "Combined",
+            "decision_hour": 18,
+            "decision_minute": 45,
+        }
+
+    # Pick EMOS params based on radio choice.
+    if model_choice == "EMOS combined 00Z (rolling 45d)":
+        emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=0)
+        if emos_params is None:
+            st.warning(
+                "Rolling combined 00Z EMOS unavailable — fewer than 30 days of training data. "
+                "Showing raw combined probabilities only."
+            )
+    elif model_choice == "EMOS combined (rolling 45d)":
+        emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=12)
         if emos_params is None:
             st.warning(
                 "Rolling EMOS unavailable — fewer than 30 days of training data "
                 "for this target date. Falling back to full-sample EMOS."
             )
             emos_params = fit_combined_emos()
+            if emos_params is None:
+                st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
     else:
         emos_params = fit_combined_emos()
-
-    if emos_params is None:
-        st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
+        if emos_params is None:
+            st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
 
     with get_connection() as conn:
-        # Resolve which forecast run to use, with fallback for early-morning gaps.
-        chosen_init = latest_available_init(conn, trade_date)
+        # Resolve which forecast run to use (canonical init for the chosen workflow).
+        chosen_init = latest_available_init(conn, trade_date, init_hour=cfg["init_hour"])
 
         if chosen_init is None:
             st.info(
-                f"No forecast is available yet for {trade_date}. "
-                "The GEFS run lands ~12 UTC and ECMWF ~14:45 UTC. Check back later."
+                f"No {cfg['init_hour']:02d} UTC forecast is available yet for {trade_date}. "
+                "Check back after the next ingest cron runs."
             )
             st.stop()
 
         preferred_init = datetime(
             trade_date.year, trade_date.month, trade_date.day,
-            12, 0, tzinfo=timezone.utc,
+            cfg["init_hour"], 0, tzinfo=timezone.utc,
         )
         is_stale = chosen_init != preferred_init
 
-        # Combined ensemble for the chosen run
+        # Ensemble for the chosen run (single model or combined per cfg).
         try:
-            combined_values = compute_combined_daily_highs(chosen_init, trade_date, conn)
+            combined_values = compute_combined_daily_highs(
+                chosen_init, trade_date, conn, models=cfg["models"],
+            )
         except Exception as e:
-            st.error(f"Could not load combined forecast: {e}")
+            st.error(f"Could not load forecast: {e}")
             st.stop()
 
-        # compute_combined_daily_highs silently skips models with no data,
-        # so query directly to know which models actually contributed.
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT model
-                FROM forecasts
-                WHERE init_time = %s AND station_id = %s AND model IN ('gefs', 'ifs')
-                GROUP BY model
-                """,
-                (chosen_init, "KNYC"),
-            )
-            models_present = {row[0] for row in cur.fetchall()}
+        # Which models actually contributed (only relevant when we expected multiple).
+        models_present = set(cfg["models"])
+        if len(cfg["models"]) > 1:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT model
+                    FROM forecasts
+                    WHERE init_time = %s AND station_id = %s AND model = ANY(%s)
+                    GROUP BY model
+                    """,
+                    (chosen_init, "KNYC", cfg["models"]),
+                )
+                models_present = {row[0] for row in cur.fetchall()}
 
         contracts = fetch_contracts_for_date(trade_date, conn)
+        observed_high = fetch_observed_high(trade_date, conn)
 
-        # Latest market prices for these contracts (most recent snapshot overall)
+        # Market prices as of the paper-trade decision time for this workflow
+        # (14:45 UTC for 00Z ECMWF, 18:45 UTC for 12Z combined). Locks the
+        # displayed market state to when a trade would realistically be placed,
+        # so historical views don't show post-resolution prices.
+        decision_time = datetime(
+            trade_date.year, trade_date.month, trade_date.day,
+            cfg["decision_hour"], cfg["decision_minute"], tzinfo=timezone.utc,
+        )
         market_probs = {}
         if contracts:
             tickers = [c["ticker"] for c in contracts]
@@ -898,8 +1076,9 @@ with tab_trade:
                     SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
                     FROM prices
                     WHERE ticker = ANY(%s)
+                      AND snapshot_at <= %s
                     ORDER BY ticker, snapshot_at DESC
-                """, (tickers,))
+                """, (tickers, decision_time))
                 for ticker, bid, ask, snap in cur.fetchall():
                     if bid is not None and ask is not None:
                         market_probs[ticker] = (bid + ask) / 200
@@ -917,20 +1096,22 @@ with tab_trade:
 
     if is_stale:
         st.warning(
-            f"No 12 UTC run for {trade_date} yet. "
+            f"No {cfg['init_hour']:02d} UTC run for {trade_date} yet. "
             f"Using most recent available run: {chosen_init.isoformat()}."
         )
 
-    if "ifs" not in models_present:
-        st.warning(
-            "ECMWF data missing for this run — combined forecast is GEFS-only. "
-            "Edges may be less reliable than usual."
-        )
-    elif "gefs" not in models_present:
-        st.warning(
-            "GEFS data missing for this run — combined forecast is ECMWF-only. "
-            "Edges may be less reliable than usual."
-        )
+    # Model-missing warnings only apply when we expected multiple models.
+    if len(cfg["models"]) > 1:
+        if "ifs" not in models_present:
+            st.warning(
+                "ECMWF data missing for this run — combined forecast is GEFS-only. "
+                "Edges may be less reliable than usual."
+            )
+        elif "gefs" not in models_present:
+            st.warning(
+                "GEFS data missing for this run — combined forecast is ECMWF-only. "
+                "Edges may be less reliable than usual."
+            )
 
     # Forecast card
     st.subheader("Forecast")
@@ -938,9 +1119,9 @@ with tab_trade:
     with f1:
         st.metric("Ensemble members", len(combined_values))
     with f2:
-        st.metric("Combined mean", f"{cmean:.1f}°F")
+        st.metric(f"{cfg['ensemble_label']} mean", f"{cmean:.1f}°F")
     with f3:
-        st.metric("Combined spread", f"{cstd:.2f}°F")
+        st.metric(f"{cfg['ensemble_label']} spread", f"{cstd:.2f}°F")
     with f4:
         if emos_mu is not None:
             st.metric("EMOS μ / σ", f"{emos_mu:.1f}° / {emos_sigma:.2f}°")
@@ -996,6 +1177,11 @@ with tab_trade:
         else:
             signal = ""
 
+        if observed_high is None:
+            resolved = "—"
+        else:
+            resolved = "YES" if contract_resolved_yes(int(observed_high), c) else "NO"
+
         rows.append({
             "Contract": ticker.replace("KXHIGHNY-", ""),
             "Range": range_label(c),
@@ -1004,9 +1190,17 @@ with tab_trade:
             "Market P": f"{mkt:.1%}" if mkt is not None else "—",
             "Edge": f"{edge:+.1%}" if edge is not None else "—",
             "Signal": signal,
+            "Resolved": resolved,
         })
 
     edge_df = pd.DataFrame(rows)
+
+    def highlight_resolved(val):
+        if val == "YES":
+            return "background-color: #1b4d2e; color: #b6f5c8"
+        if val == "NO":
+            return "background-color: #5c1a1a; color: #f5b6b6"
+        return ""
 
     def highlight_signal(val):
         if val == "BUY YES":
@@ -1015,7 +1209,11 @@ with tab_trade:
             return "background-color: #5c1a1a; color: #f5b6b6"
         return ""
 
-    styled = edge_df.style.map(highlight_signal, subset=["Signal"])
+    styled = (
+        edge_df.style
+        .map(highlight_signal, subset=["Signal"])
+        .map(highlight_resolved, subset=["Resolved"])
+    )
     st.dataframe(styled, width='stretch', hide_index=True)
 
     st.caption(
@@ -1024,3 +1222,215 @@ with tab_trade:
         "Market prices are the most recent snapshot, which may be newer than the forecast run. "
         "This is a decision aid, not advice — small sample, paper-trade first."
     )
+
+    # P&L simulation (resolved paper trades, configurable sizing + filters) + log table
+    pt_df_all = paper_trades_with_outcomes(limit=10000)
+    n_total_all = len(pt_df_all)
+
+    st.subheader("P&L simulation")
+
+    if pt_df_all.empty:
+        st.info("No paper trades logged yet. The 14:45 UTC cron will populate this once it runs.")
+    elif int(pt_df_all["won"].notna().sum()) == 0:
+        st.info(f"{n_total_all} paper trade(s) logged, none resolved yet. Simulation appears once observations land.")
+    else:
+        # Filter controls — restrict the trade set before simulating
+        f1, f2, f3 = st.columns([1, 1, 2])
+        with f1:
+            edge_filter = st.slider(
+                "Min |edge| filter", min_value=0.10, max_value=0.50,
+                value=0.10, step=0.01,
+                help="Only include trades where |edge| ≥ this. Lower thresholds aren't available because the cron only logs trades at |edge| ≥ 0.10.",
+            )
+        with f2:
+            min_entry_price = st.slider(
+                "Min entry price (¢)", min_value=0, max_value=99,
+                value=60, step=1,
+                help="Only include trades where entry price ≥ this. Default 60¢ comes from the 2026-05-28 backtest discovery that filtering to entry ≥ 60 produces positive net P&L across all configs (combined 00Z: +3.07¢/trade, t=+1.01, n=189). Pre-registered as production filter; subset patterns require forward validation.",
+            )
+        with f3:
+            sources = sorted(pt_df_all["model_source"].unique().tolist())
+            # Default to combined 00Z (current production) if present, else first
+            default_idx = 0
+            for i, s in enumerate(sources):
+                if "combined 00Z" in s:
+                    default_idx = i
+                    break
+            source_filter = st.radio(
+                "Model source",
+                options=sources,
+                index=default_idx,
+                help="Which paper-trade configuration to simulate. Pre-registered protocol: don't pool across configurations when evaluating edge.",
+            )
+
+        # Strategy comparison table — all model_sources at the chosen edge + entry filters.
+        # Shows the headline edge-test stats for each configuration side-by-side so you
+        # can compare without toggling the radio.
+        st.markdown(f"**Strategy comparison** (|edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢)")
+        comparison_rows = []
+        for source in sorted(pt_df_all["model_source"].unique()):
+            subset = pt_df_all[
+                (pt_df_all["model_source"] == source)
+                & (pt_df_all["edge"].abs() >= edge_filter)
+                & (pt_df_all["entry_price_cents"] >= min_entry_price)
+                & (pt_df_all["won"].notna())
+            ]
+            if subset.empty:
+                continue
+            n = len(subset)
+            win_rate = subset["won"].sum() / n
+            fees = subset["entry_price_cents"].astype(int).map(kalshi_fee_cents)
+            net = subset["pnl_cents_per_unit"] - fees
+            mean_net = float(net.mean())
+            sd_net = float(net.std()) if n > 1 else 0.0
+            t_stat = mean_net / (sd_net / math.sqrt(n)) if sd_net > 0 else float("nan")
+            total_dollars = float(net.sum()) / 100.0
+            comparison_rows.append({
+                "Model source": source,
+                "n": n,
+                "Win rate": f"{win_rate:.1%}",
+                "Mean net P&L": f"{mean_net:+.2f}¢",
+                "t-stat": f"{t_stat:+.2f}" if not math.isnan(t_stat) else "—",
+                "Total ($, unit sizing)": f"${total_dollars:+.2f}",
+            })
+        if comparison_rows:
+            st.dataframe(pd.DataFrame(comparison_rows), width="stretch", hide_index=True)
+            st.caption(
+                "Each row is the full edge-test result for that strategy at |edge| ≥ "
+                f"{edge_filter:.0%}. Slide the threshold up to explore subgroup behavior — "
+                "but per the pre-registered protocol, decision criteria need to be set BEFORE seeing the table."
+            )
+        else:
+            st.info("No resolved trades for any model source at this threshold.")
+
+        pt_df = pt_df_all[
+            (pt_df_all["edge"].abs() >= edge_filter)
+            & (pt_df_all["entry_price_cents"] >= min_entry_price)
+            & (pt_df_all["model_source"] == source_filter)
+        ]
+        n_total = len(pt_df)
+        n_resolved = int(pt_df["won"].notna().sum()) if not pt_df.empty else 0
+
+        if n_resolved == 0:
+            st.info(
+                f"No resolved trades match the current filters "
+                f"(|edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢, "
+                f"source = {source_filter}, n_filtered = {n_total})."
+            )
+        else:
+            c1, c2, c3 = st.columns([1, 1, 2])
+            with c1:
+                starting_balance = st.number_input(
+                    "Starting balance ($)", min_value=1.0, value=100.0, step=10.0,
+                )
+            with c2:
+                sizing_type = st.radio(
+                    "Sizing strategy",
+                    ["Unit", "Kelly"],
+                    index=1,
+                    horizontal=True,
+                    help=(
+                        "Unit: a fixed number of contracts per trade. "
+                        "Kelly: stake = bankroll × (chosen fraction) × Kelly-optimal fraction."
+                    ),
+                )
+            with c3:
+                if sizing_type == "Unit":
+                    contracts_per_trade = st.number_input(
+                        "Contracts per trade", min_value=1, value=1, step=1,
+                        help="Same fixed count on every trade.",
+                    )
+                    kelly_fraction = 0.5  # unused
+                    strategy_label = f"Unit ({contracts_per_trade} contract{'s' if contracts_per_trade != 1 else ''})"
+                else:
+                    kelly_pct = st.select_slider(
+                        "Kelly fraction (%)",
+                        options=[10, 20, 25, 33, 50, 75, 100],
+                        value=50,
+                        help="Multiplier on the Kelly-optimal stake. 50% = half Kelly (conservative).",
+                    )
+                    kelly_fraction = kelly_pct / 100.0
+                    contracts_per_trade = 1  # unused
+                    strategy_label = f"Kelly ({kelly_pct}%)"
+
+            if sizing_type == "Unit":
+                sim_df = simulate_pnl(pt_df, starting_balance, "unit", contracts=int(contracts_per_trade))
+            else:
+                sim_df = simulate_pnl(pt_df, starting_balance, "kelly", kelly_fraction=kelly_fraction)
+            final_balance = sim_df["balance"].iloc[-1]
+            return_pct = (final_balance / starting_balance - 1) * 100
+            n_won = int(pt_df["won"].sum())
+
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Final balance", f"${final_balance:.2f}", f"{return_pct:+.1f}%")
+            with m2:
+                st.metric("Resolved trades", f"{n_won}/{n_resolved}", f"{n_won/n_resolved*100:.0f}% win rate")
+            with m3:
+                st.metric("Pending", n_total - n_resolved)
+            with m4:
+                st.metric("Filtered / total", f"{n_total} / {n_total_all}")
+
+            plot_df = sim_df.dropna(subset=["date"]).copy()
+            line = alt.Chart(plot_df).mark_line(point=True).encode(
+                x=alt.X("date:T", title="Date"),
+                y=alt.Y("balance:Q", title="Balance ($)"),
+                tooltip=[
+                    alt.Tooltip("date:T", title="Date"),
+                    alt.Tooltip("balance:Q", title="Balance", format="$.2f"),
+                    alt.Tooltip("trade_pnl:Q", title="Trade P&L", format="$.2f"),
+                ],
+            )
+            baseline = (
+                alt.Chart(pd.DataFrame({"y": [starting_balance]}))
+                .mark_rule(strokeDash=[4, 4], color="gray")
+                .encode(y="y:Q")
+            )
+            st.altair_chart((line + baseline).properties(height=300), width="stretch")
+            st.caption(
+                f"Strategy: {strategy_label}. Filter: |edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢, source = {source_filter}. "
+                f"P&L is net of Kalshi trading fees "
+                f"(per-contract: $0.07 × P × (1-P), rounded up to nearest cent). "
+                "Slippage and partial fills not modeled."
+            )
+
+    # Recent paper trades log (with outcomes)
+    st.subheader("Recent paper trades")
+    st.caption(
+        "Daily prospective log of what the model would have traded (cron at 18:45 UTC). "
+        "Outcome and P&L per unit appear once the day's observation lands."
+    )
+    if not pt_df.empty:
+        recent = pt_df.head(14)
+
+        def fmt_outcome(x):
+            if x is True:
+                return "Won"
+            if x is False:
+                return "Lost"
+            return "Pending"
+
+        table = pd.DataFrame({
+            "Date": recent["target_date"].astype(str),
+            "Contract": recent["ticker"].str.replace("KXHIGHNY-", "", regex=False),
+            "Position": recent["position"],
+            "Model P": recent["model_prob_yes"].map(lambda x: f"{x:.1%}"),
+            "Market P": recent["market_mid_prob"].map(lambda x: f"{x:.1%}"),
+            "Edge": recent["edge"].map(lambda x: f"{x:+.1%}"),
+            "Entry": recent["entry_price_cents"].map(lambda x: f"{x}¢"),
+            "High": recent["high_temp_f"].map(lambda x: f"{x:.0f}°" if pd.notna(x) else "—"),
+            "Outcome": recent["won"].map(fmt_outcome),
+            "P&L/unit": recent["pnl_cents_per_unit"].map(lambda x: f"{x:+.0f}¢" if pd.notna(x) else "—"),
+        })
+
+        def highlight_outcome(val):
+            if val == "Won":
+                return "background-color: #1b4d2e; color: #b6f5c8"
+            if val == "Lost":
+                return "background-color: #5c1a1a; color: #f5b6b6"
+            return ""
+
+        styled = table.style.map(highlight_outcome, subset=["Outcome"])
+        st.dataframe(styled, width="stretch", hide_index=True)
+        n_dates = recent["target_date"].nunique()
+        st.caption(f"Showing {len(recent)} most recent entries across {n_dates} distinct target date(s).")

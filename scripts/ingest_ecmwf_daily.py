@@ -1,6 +1,13 @@
-"""Cron entry point: ingest the most recent ECMWF run for a given init hour."""
+"""Cron entry point: ingest the most recent ECMWF run for a given init hour.
+
+Tries today's run first; falls back to yesterday's if today hasn't published
+yet. ECMWF Open Data typically lands ~17 UTC for the 12Z run, so an 18:30 UTC
+cron usually catches today. On the ~10–20% of days today is late, the fallback
+ingests yesterday's run (already in DB → ON CONFLICT no-op) so we never have
+less data than always-yesterday.
+"""
 import argparse
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from weather_markets.ecmwf import ingest_ecmwf_run
 
 
@@ -10,6 +17,24 @@ FORECAST_HOURS_BY_RUN_HOUR = {
     0: [15, 18, 21, 24],
     12: [3, 6, 9, 12, 15, 18, 21, 24],
 }
+
+
+def attempt_ingest(target_day: date, run_hour: int, forecast_hours: list[int]) -> bool:
+    """Try to ingest one ECMWF run. Returns True if any rows were inserted."""
+    run_time = datetime(
+        target_day.year, target_day.month, target_day.day,
+        run_hour, 0, tzinfo=timezone.utc,
+    )
+    print(f"Attempting ECMWF ingest for {run_time.isoformat()}")
+    try:
+        result = ingest_ecmwf_run(
+            run_time=run_time, station_id="KNYC", forecast_hours=forecast_hours,
+        )
+        print(result)
+        return result.get("rows_inserted", 0) > 0
+    except Exception as e:
+        print(f"  ingest raised: {type(e).__name__}: {e}")
+        return False
 
 
 def main() -> None:
@@ -23,22 +48,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    now = datetime.now(tz=timezone.utc)
-    # ECMWF open data lags; ingest YESTERDAY's run, which is reliably published.
-    target_day = now.date() - timedelta(days=1)
-    run_time = datetime(
-        target_day.year, target_day.month, target_day.day,
-        args.run_hour, 0, tzinfo=timezone.utc,
-    )
     forecast_hours = FORECAST_HOURS_BY_RUN_HOUR[args.run_hour]
+    today = datetime.now(tz=timezone.utc).date()
+    yesterday = today - timedelta(days=1)
 
-    print(f"Ingesting ECMWF run for {run_time.isoformat()}")
-    result = ingest_ecmwf_run(
-        run_time=run_time,
-        station_id="KNYC",
-        forecast_hours=forecast_hours,
-    )
-    print(result)
+    if attempt_ingest(today, args.run_hour, forecast_hours):
+        return
+    print(f"Today's {args.run_hour:02d}Z run not yet published; falling back to yesterday.")
+    attempt_ingest(yesterday, args.run_hour, forecast_hours)
 
 
 if __name__ == "__main__":

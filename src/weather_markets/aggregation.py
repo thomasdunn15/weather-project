@@ -141,19 +141,23 @@ def collect_training_pairs(
     end_date: date,
     station_id: str = "KNYC",
     models: list[str] | None = None,
+    init_hour: int = 12,
 ) -> tuple[list[float], list[float], list[float], list[date]]:
     """
     Walk [start_date, end_date] inclusive. For each day with both an ensemble
-    forecast (12 UTC init) and an observation, append (mean, std, obs, date)
-    to four parallel lists. Days with missing data on either side are skipped
-    (INNER JOIN semantics).
+    forecast (at the given init_hour UTC) and an observation, append
+    (mean, std, obs, date) to four parallel lists. Days with missing data on
+    either side are skipped (INNER JOIN semantics).
+
+    init_hour defaults to 12 to preserve legacy callers. Pass init_hour=0 for
+    00Z-based training (e.g., for market-open trading with ECMWF 00Z runs).
 
     Shared by full-sample and rolling-window EMOS fits.
     """
     means, stds, obs, dates = [], [], [], []
     d = start_date
     while d <= end_date:
-        init = datetime(d.year, d.month, d.day, 12, 0, tzinfo=timezone.utc)
+        init = datetime(d.year, d.month, d.day, init_hour, 0, tzinfo=timezone.utc)
         try:
             values = compute_combined_daily_highs(
                 init, d, conn, station_id=station_id, models=models,

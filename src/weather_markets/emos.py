@@ -141,6 +141,7 @@ def fit_emos_rolling(
     station_id: str = "KNYC",
     model: str = "combined",
     min_train_days: int = 30,
+    init_hour: int = 12,
 ) -> dict | None:
     """
     Fit EMOS parameters on a trailing window of (forecast, observation) pairs
@@ -150,6 +151,11 @@ def fit_emos_rolling(
     are not yet in the DB, the window slides back to the latest observed day.
     Days where forecast or observation data is missing are skipped, so
     n_train_days_used may be less than window_days.
+
+    init_hour defaults to 12 for the 12Z combined workflow; pass init_hour=0
+    when training on 00Z runs (e.g., the ECMWF-only market-open workflow).
+    The init_hour must match the init you intend to use for prediction —
+    parameters fit on 00Z statistics aren't valid for 12Z forecasts.
 
     Returns None when fewer than min_train_days effective days are available;
     the caller decides the fallback. On success returns the dict from fit_emos
@@ -170,6 +176,7 @@ def fit_emos_rolling(
     means, stds, obs, dates = collect_training_pairs(
         conn, train_start, train_end,
         station_id=station_id, models=models_arg,
+        init_hour=init_hour,
     )
 
     if len(means) < min_train_days:
