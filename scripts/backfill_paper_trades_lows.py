@@ -1,26 +1,27 @@
-"""Backfill historical paper trades by simulating what the cron would have
-logged on each day in the given range. Configuration is fully CLI-driven so
-the same script can backfill any (model, init_hour, decision_time, threshold,
-model_source) combination.
+"""Backfill paper trades for KXLOWTNYC (NYC daily-low contracts) with day-ahead
+decision architecture.
 
-Examples:
+Different from backfill_paper_trades.py (highs) in three ways:
+  1. Decision time is the PRIOR DAY at decision_hour UTC. We "decide" tomorrow's
+     low using today's 00Z forecast.
+  2. Init time for the forecast is (target_date - 1) at 00Z. Forecast hours
+     [30, 33, 36] correspond to early-morning hours on target_date.
+  3. Aggregator is compute_combined_daily_lows (MIN of instantaneous temps at
+     morning forecast hours) instead of compute_combined_daily_highs.
 
-  # ECMWF 00Z @ 14:45 (current production)
-  uv run python scripts/backfill_paper_trades.py \\
-      --start-date 2025-05-27 --end-date 2026-05-26 \\
-      --model ifs --init-hour 0 \\
+The market for KXLOWTNYC-{target_date} opens at 14:00 UTC on (target_date - 1).
+A decision at 14:45 UTC same day-prior is comparable to the highs strategy's
+14:45 UTC day-of decision in that both fire 45 minutes after market open.
+
+Example (default config — combined GEFS+IFS):
+  uv run python scripts/backfill_paper_trades_lows.py \\
+      --start-date 2025-12-15 --end-date 2026-05-28 \\
+      --model combined \\
       --decision-hour 14 --decision-minute 45 \\
-      --model-source "EMOS ECMWF 00Z (rolling 45d)"
+      --model-source "EMOS combined day-ahead lows (rolling 45d)"
 
-  # Combined 12Z @ 18:45 (the abandoned late-trading regime)
-  uv run python scripts/backfill_paper_trades.py \\
-      --start-date 2025-05-27 --end-date 2026-05-26 \\
-      --model combined --init-hour 12 \\
-      --decision-hour 18 --decision-minute 45 \\
-      --model-source "EMOS combined (rolling 45d)"
-
-Days with missing forecast, no contracts, or insufficient training data are
-skipped silently. Idempotent via the paper_trades PK
+Days with missing forecast, no contracts, no priced contracts, or insufficient
+training data are skipped silently. Idempotent on
 (target_date, ticker, model_source).
 """
 import argparse
@@ -31,10 +32,10 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from weather_markets.db import get_connection
 from weather_markets.aggregation import (
-    compute_combined_daily_highs,
+    compute_combined_daily_lows,
     fetch_contracts_for_date,
 )
-from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
+from weather_markets.emos import fit_emos_rolling_for_lows, gaussian_to_bracket_probs
 
 
 STATION_ID = "KNYC"
@@ -55,15 +56,20 @@ INSERT_SQL = """
 
 
 def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int, str]:
-    """Run paper-trade logic for one date. Returns (n_trades_logged, status)."""
-    snapshot_cutoff = datetime.combine(
-        target_date, dtime(cfg.decision_hour, cfg.decision_minute), tzinfo=timezone.utc,
-    )
-    init_time = datetime(target_date.year, target_date.month, target_date.day,
-                         cfg.init_hour, 0, tzinfo=timezone.utc)
-    notes = f"as-of-recovery={snapshot_cutoff.isoformat()}"
+    """Run paper-trade logic for one target_date (the day whose low we're trading).
 
-    # Translate --model into (models_list_for_ensemble, model_for_emos)
+    Decision happens the PRIOR day at cfg.decision_hour:cfg.decision_minute UTC.
+    """
+    decision_date = target_date - timedelta(days=1)
+    snapshot_cutoff = datetime.combine(
+        decision_date, dtime(cfg.decision_hour, cfg.decision_minute), tzinfo=timezone.utc,
+    )
+    # Forecast init = decision_date's 00Z (i.e., prior day 00Z).
+    init_time = datetime(decision_date.year, decision_date.month, decision_date.day,
+                         0, 0, tzinfo=timezone.utc)
+    notes = f"day-ahead-low; decision={snapshot_cutoff.isoformat()}"
+
+    # Translate --model into actual model names
     if cfg.model == "combined":
         models_list = ["gefs", "ifs"]
     elif cfg.model == "combined_hrrr":
@@ -71,19 +77,26 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     else:
         models_list = [cfg.model]
 
-    # 1. At least one of the underlying model forecasts must be present.
+    # 1. At least one underlying model must have data at the morning forecast hours
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
-            (STATION_ID, models_list, init_time),
+            """
+            SELECT 1 FROM forecasts
+            WHERE station_id = %s AND model = ANY(%s) AND init_time = %s
+              AND temperature_f IS NOT NULL
+              AND EXTRACT(EPOCH FROM (valid_time - init_time))/3600 = ANY(%s)
+            LIMIT 1
+            """,
+            (STATION_ID, models_list, init_time, [30, 33, 36]),
         )
         if cur.fetchone() is None:
             return 0, "no_forecast"
 
-    # 2. Ensemble
+    # 2. Ensemble of morning-low predictions
     try:
-        ensemble_values = compute_combined_daily_highs(
-            init_time, target_date, conn, station_id=STATION_ID, models=models_list,
+        ensemble_values = compute_combined_daily_lows(
+            init_time, target_date, conn,
+            station_id=STATION_ID, models=models_list,
         )
     except Exception:
         return 0, "no_forecast"
@@ -94,11 +107,11 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     ensemble_std = statistics.stdev(ensemble_values)
     notes += f"; ensemble_members={n_members}"
 
-    # 3. Rolling EMOS
-    emos = fit_emos_rolling(
+    # 3. Rolling EMOS calibrated on (predicted_low, observed_low) pairs
+    emos = fit_emos_rolling_for_lows(
         target_date, conn,
         window_days=cfg.window_days, station_id=STATION_ID,
-        model=cfg.model, init_hour=cfg.init_hour,
+        model=cfg.model,
     )
     if emos is None:
         return 0, "emos_none"
@@ -108,8 +121,9 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         return 0, "emos_none"
     emos_sigma = math.sqrt(emos_var)
 
-    # 4. Contracts
-    contracts = fetch_contracts_for_date(target_date, conn, station_id=STATION_ID)
+    # 4. KXLOWTNYC contracts for the target_date (explicit series override —
+    # fetch_contracts_for_date defaults to KXHIGHNY for the production highs flow).
+    contracts = fetch_contracts_for_date(target_date, conn, station_id=STATION_ID, series="KXLOWTNYC")
     if not contracts:
         return 0, "no_contracts"
 
@@ -126,10 +140,10 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         )
         prices = {t: (b, a, s) for t, b, a, s in cur.fetchall()}
 
-    # 6. Model probs
+    # 6. Model probabilities (Gaussian → bracket)
     model_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
 
-    # 7. Evaluate + insert
+    # 7. Evaluate and insert
     n_logged = 0
     n_priced = 0
     with conn.cursor() as cur:
@@ -172,13 +186,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
     parser.add_argument("--end-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
-    parser.add_argument("--model", choices=["combined", "gefs", "ifs", "combined_hrrr"], default="ifs",
-                        help="Ensemble source for EMOS fit and ensemble computation. "
-                             "'combined_hrrr' = gefs+ifs+hrrr.")
-    parser.add_argument("--init-hour", type=int, choices=[0, 12], default=0,
-                        help="Forecast init hour UTC (must match available forecast data).")
+    parser.add_argument("--model", choices=["combined", "gefs", "ifs", "combined_hrrr"], default="combined",
+                        help="Ensemble source for daily-low forecasts.")
     parser.add_argument("--decision-hour", type=int, default=14,
-                        help="UTC hour the simulated trade decision is made (price snapshot cutoff).")
+                        help="UTC hour the simulated day-ahead trade decision is made.")
     parser.add_argument("--decision-minute", type=int, default=45,
                         help="UTC minute of the simulated trade decision.")
     parser.add_argument("--window-days", type=int, default=45,
@@ -187,13 +198,12 @@ def main() -> None:
                         help="Minimum |edge| to log a paper trade.")
     parser.add_argument("--model-source", required=True,
                         help="Label written to paper_trades.model_source (PK component). "
-                             "Different configs MUST use different labels — never pool configs.")
+                             "Use a distinct label from any KXHIGHNY backfill.")
     args = parser.parse_args()
 
-    print(f"Backfilling paper trades for {args.start_date} → {args.end_date}")
+    print(f"Backfilling KXLOWTNYC day-ahead paper trades for {args.start_date} → {args.end_date}")
     print(f"  model:        {args.model}")
-    print(f"  init_hour:    {args.init_hour:02d}Z")
-    print(f"  decision:     {args.decision_hour:02d}:{args.decision_minute:02d} UTC")
+    print(f"  decision:     prior-day {args.decision_hour:02d}:{args.decision_minute:02d} UTC")
     print(f"  window:       {args.window_days} days, edge ≥ {args.edge_threshold}")
     print(f"  model_source: {args.model_source}")
 

@@ -1,0 +1,1565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NYC Weather Markets &mdash; Project Overview &mdash; May 2026</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+
+  :root {
+    --navy: #0a1628;
+    --dark-blue: #132035;
+    --accent-gold: #c9a84c;
+    --accent-gold-light: #e0c97a;
+    --text-primary: #1a1a2e;
+    --text-secondary: #4a4a6a;
+    --text-light: #7a7a9a;
+    --bg-white: #ffffff;
+    --bg-light: #f8f9fb;
+    --border-light: #e5e7eb;
+    --green: #22c55e;
+    --red: #ef4444;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { size: letter; margin: 0; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: var(--text-primary);
+    background: #e8e8e8;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    width: 8.5in;
+    min-height: 11in;
+    margin: 20px auto;
+    background: var(--bg-white);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ===== COVER ===== */
+  .cover {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-height: 11in;
+    background: linear-gradient(160deg, var(--navy) 0%, var(--dark-blue) 60%, #1a2d50 100%);
+    color: white;
+    text-align: center;
+    padding: 2in 1.2in;
+    position: relative;
+  }
+
+  .cover::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 30% 20%, rgba(201,168,76,0.08) 0%, transparent 60%),
+                radial-gradient(ellipse at 70% 80%, rgba(201,168,76,0.05) 0%, transparent 50%);
+  }
+
+  .cover-content { position: relative; z-index: 1; }
+
+  .cover .project-label {
+    font-size: 13px;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+    color: var(--accent-gold);
+    margin-bottom: 12px;
+    font-weight: 500;
+  }
+
+  .cover h1 {
+    font-family: 'Inter', sans-serif;
+    font-size: 44px;
+    font-weight: 300;
+    margin-bottom: 8px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .cover .subtitle {
+    font-family: 'Playfair Display', serif;
+    font-size: 20px;
+    font-weight: 400;
+    color: rgba(255,255,255,0.75);
+    margin-bottom: 48px;
+    font-style: italic;
+  }
+
+  .cover .divider {
+    width: 60px;
+    height: 2px;
+    background: var(--accent-gold);
+    margin: 0 auto 48px;
+  }
+
+  .cover .date {
+    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .cover .author {
+    font-size: 13px;
+    color: rgba(255,255,255,0.5);
+    margin-top: 8px;
+  }
+
+  .cover-quote {
+    margin-top: 64px;
+    max-width: 520px;
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 14px;
+    line-height: 1.7;
+    color: rgba(255,255,255,0.45);
+  }
+
+  .cover-quote .attribution {
+    font-family: 'Inter', sans-serif;
+    font-style: normal;
+    font-size: 11px;
+    margin-top: 8px;
+    color: var(--accent-gold-light);
+    opacity: 0.6;
+  }
+
+  /* ===== CONTENT PAGES ===== */
+  .content-page {
+    padding: 0.8in 1in 1in;
+    min-height: 11in;
+    position: relative;
+  }
+
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: 28px;
+  }
+
+  .page-header .project-name {
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--text-light);
+    font-weight: 500;
+  }
+
+  .page-header .report-type {
+    font-size: 10px;
+    color: var(--text-light);
+  }
+
+  /* ===== TYPOGRAPHY ===== */
+  h2 {
+    font-family: 'Playfair Display', serif;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--navy);
+    margin-bottom: 4px;
+    letter-spacing: -0.3px;
+  }
+
+  .section-subtitle {
+    font-size: 12px;
+    color: var(--text-light);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    font-weight: 500;
+  }
+
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--navy);
+    margin: 22px 0 8px;
+  }
+
+  p {
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+
+  strong { color: var(--text-primary); }
+  code {
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    background: var(--bg-light);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--navy);
+  }
+
+  /* ===== THESIS BOX ===== */
+  .thesis-box {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--dark-blue) 100%);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0 22px;
+    position: relative;
+  }
+
+  .thesis-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    width: 4px;
+    background: var(--accent-gold);
+    border-radius: 8px 0 0 8px;
+  }
+
+  .thesis-box .thesis-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent-gold);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .thesis-box p {
+    color: rgba(255,255,255,0.9);
+    font-size: 12.5px;
+    line-height: 1.8;
+    margin-bottom: 0;
+  }
+
+  .thesis-box p + p { margin-top: 8px; }
+
+  .thesis-box p strong {
+    color: var(--accent-gold-light);
+    font-weight: 600;
+  }
+
+  /* ===== STAT CARDS ===== */
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 16px 0;
+  }
+
+  .stat-row.three-col { grid-template-columns: repeat(3, 1fr); }
+  .stat-row.two-col { grid-template-columns: repeat(2, 1fr); }
+
+  .stat-card {
+    background: var(--bg-light);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 14px 10px;
+    text-align: center;
+  }
+
+  .stat-card .stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--navy);
+    margin-bottom: 4px;
+  }
+
+  .stat-card .stat-value.negative { color: var(--red); }
+  .stat-card .stat-value.gold { color: var(--accent-gold); }
+  .stat-card .stat-value.green { color: var(--green); }
+
+  .stat-card .stat-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-light);
+    line-height: 1.4;
+  }
+
+  /* ===== BLOCKQUOTE ===== */
+  blockquote {
+    margin: 14px 0;
+    padding: 14px 22px;
+    background: var(--bg-light);
+    border-left: 3px solid var(--accent-gold);
+    border-radius: 0 6px 6px 0;
+  }
+
+  blockquote p {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+
+  blockquote .attribution {
+    font-family: 'Inter', sans-serif;
+    font-style: normal;
+    font-size: 10px;
+    color: var(--text-light);
+  }
+
+  /* ===== TABLES ===== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 18px;
+    font-size: 11px;
+  }
+
+  thead th {
+    background: var(--navy);
+    color: white;
+    font-weight: 500;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  thead th:first-child { border-radius: 6px 0 0 0; }
+  thead th:last-child { border-radius: 0 6px 0 0; }
+
+  tbody td {
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border-light);
+    color: var(--text-secondary);
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr.total-row td {
+    background: #fdf6e3;
+    font-weight: 600;
+    color: var(--navy);
+    border-top: 2px solid var(--accent-gold);
+  }
+
+  tbody tr.highlight-row td {
+    background: #f0f7f0;
+  }
+
+  .table-wrap {
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 12px 0 18px;
+  }
+
+  .table-wrap table { margin: 0; }
+
+  .positive { color: var(--green); font-weight: 500; }
+  .negative { color: var(--red); font-weight: 500; }
+  .highlight { color: var(--accent-gold); font-weight: 600; }
+  .bold { font-weight: 600; color: var(--text-primary); }
+
+  /* ===== SIGNAL LIST ===== */
+  .signal-list {
+    margin: 12px 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .signal-list li {
+    padding: 7px 0 7px 18px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    position: relative;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.65;
+  }
+
+  .signal-list li:last-child { border-bottom: none; }
+
+  .signal-list li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 13px;
+    width: 7px;
+    height: 7px;
+    background: var(--accent-gold);
+    border-radius: 50%;
+  }
+
+  .signal-list li strong { color: var(--text-primary); }
+
+  /* ===== CALLOUT NOTE ===== */
+  .callout-note {
+    background: #fef9ee;
+    border: 1px solid #f0e4c4;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+  }
+
+  .callout-note strong { color: var(--text-primary); }
+
+  .callout-note.warning {
+    background: #fdf2f2;
+    border-color: #f5c8c8;
+  }
+
+  /* ===== ASCII PIPELINE ===== */
+  .pipeline {
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    background: var(--bg-light);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 14px 18px;
+    font-size: 10.5px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    margin: 14px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* ===== INTERACTIVE SIMULATOR ===== */
+  .simulator {
+    background: linear-gradient(135deg, #ffffff 0%, var(--bg-light) 100%);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 16px 0 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .simulator-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent-gold);
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  .simulator-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .sim-control label {
+    display: block;
+    font-size: 10.5px;
+    color: var(--text-light);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .sim-buttons {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .sim-btn {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border-light);
+    background: white;
+    padding: 6px 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+    text-align: center;
+  }
+
+  .sim-btn:hover { border-color: var(--accent-gold); color: var(--navy); }
+  .sim-btn.active {
+    background: var(--navy);
+    border-color: var(--navy);
+    color: white;
+    font-weight: 500;
+  }
+
+  .sim-output {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light);
+  }
+
+  .sim-stat {
+    text-align: center;
+  }
+
+  .sim-stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--navy);
+    margin-bottom: 2px;
+    transition: color 0.2s ease;
+  }
+
+  .sim-stat-value.positive { color: var(--green); }
+  .sim-stat-value.negative { color: var(--red); }
+
+  .sim-stat-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-light);
+    line-height: 1.4;
+  }
+
+  /* ===== DISCLAIMER ===== */
+  .disclaimer {
+    margin-top: 28px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-light);
+    font-size: 9px;
+    color: var(--text-light);
+    line-height: 1.7;
+  }
+
+  /* ===== PAGE FOOTER ===== */
+  .page-footer {
+    position: absolute;
+    bottom: 32px;
+    left: 1in;
+    right: 1in;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--text-light);
+  }
+
+  /* ===== FLOATING TOC NAV ===== */
+  .toc-nav {
+    position: fixed;
+    top: 50%;
+    right: 1.5rem;
+    transform: translateY(-50%);
+    z-index: 100;
+    background: rgba(10, 22, 40, 0.85);
+    padding: 14px 0;
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  .toc-nav a {
+    display: block;
+    padding: 6px 18px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: rgba(255,255,255,0.55);
+    text-decoration: none;
+    transition: all 0.15s ease;
+    border-left: 2px solid transparent;
+    letter-spacing: 0.3px;
+  }
+
+  .toc-nav a:hover {
+    color: var(--accent-gold-light);
+    background: rgba(255,255,255,0.05);
+  }
+
+  .toc-nav a.active {
+    color: var(--accent-gold);
+    border-left-color: var(--accent-gold);
+    background: rgba(201,168,76,0.08);
+  }
+
+  /* ===== MOBILE ===== */
+  @media (max-width: 1100px) {
+    .toc-nav { display: none; }
+  }
+
+  @media (max-width: 900px) {
+    .page {
+      width: 100%;
+      min-height: auto;
+      margin: 0;
+      box-shadow: none;
+      border-radius: 0;
+    }
+    .cover {
+      min-height: 100vh;
+      padding: 3rem 1.5rem;
+    }
+    .cover h1 { font-size: 24px; letter-spacing: 0.08em; }
+    .cover .subtitle { font-size: 16px; }
+    .cover .project-label { font-size: 11px; letter-spacing: 3px; }
+    .cover-quote { max-width: 100%; font-size: 13px; }
+    .content-page {
+      padding: 2rem 1.2rem 2.5rem;
+      min-height: auto;
+    }
+    h2 { font-size: 22px; }
+    .stat-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .stat-row.three-col { grid-template-columns: repeat(2, 1fr); }
+    .stat-card .stat-value { font-size: 16px; }
+    .page-footer { display: none; }
+    body { background: var(--bg-white); }
+    table { font-size: 9px; }
+    td, th { padding: 4px 6px; }
+    thead th { padding: 6px; font-size: 8px; }
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .simulator-controls { grid-template-columns: 1fr; }
+    .sim-output { grid-template-columns: 1fr; }
+    .pipeline { font-size: 9px; }
+  }
+
+  @media print {
+    .toc-nav { display: none; }
+    body { background: white; }
+    .page { margin: 0; box-shadow: none; page-break-after: always; }
+    .simulator { background: white; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== FLOATING TABLE OF CONTENTS ===== -->
+<nav class="toc-nav" id="tocNav">
+  <a href="#cover" data-page="cover">Cover</a>
+  <a href="#setup" data-page="setup">The Setup</a>
+  <a href="#system" data-page="system">System Snapshot</a>
+  <a href="#pipeline" data-page="pipeline">Forecast Pipeline</a>
+  <a href="#trading" data-page="trading">Trading Logic</a>
+  <a href="#backtest" data-page="backtest">Backtest Results</a>
+  <a href="#bankroll" data-page="bankroll">Bankroll Simulator</a>
+  <a href="#caveats" data-page="caveats">Statistical Caveats</a>
+  <a href="#capital" data-page="capital">Capital &amp; Costs</a>
+  <a href="#forward" data-page="forward">Forward Validation</a>
+  <a href="#open" data-page="open">Open Questions</a>
+</nav>
+
+<!-- =============================== -->
+<!-- PAGE 1: COVER -->
+<!-- =============================== -->
+<div class="page cover" id="cover">
+  <div class="cover-content">
+    <div style="margin-bottom: 18px;">
+      <svg viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" style="width: 96px; height: 72px;">
+        <!-- Sun and cloud silhouette in gold -->
+        <circle cx="42" cy="38" r="16" fill="#c9a84c" opacity="0.85"/>
+        <path d="M 30 60 Q 22 60 22 52 Q 22 44 30 44 Q 32 36 42 36 Q 54 36 56 46 Q 66 46 66 54 Q 66 62 58 62 Z" fill="#c9a84c"/>
+        <line x1="76" y1="40" x2="100" y2="40" stroke="#c9a84c" stroke-width="1.5"/>
+        <line x1="76" y1="48" x2="96" y2="48" stroke="#c9a84c" stroke-width="1.5"/>
+        <line x1="76" y1="56" x2="104" y2="56" stroke="#c9a84c" stroke-width="1.5"/>
+      </svg>
+    </div>
+    <div class="project-label">Weather Markets Research</div>
+    <h1>NYC Daily Highs</h1>
+    <div class="subtitle">Per-Contract Edge in Binary Temperature Derivatives &mdash; A Twelve-Month Backtest of an Ensemble-EMOS Strategy</div>
+    <div class="divider"></div>
+    <div class="date">May 28, 2026</div>
+    <div class="author">Internal Working Draft &middot; Pre-Launch</div>
+    <div class="cover-quote">
+      &ldquo;Probabilistic forecasts should be as sharp as possible, subject to calibration.&rdquo;
+      <div class="attribution">&mdash; Gneiting &amp; Raftery, &ldquo;Strictly Proper Scoring Rules, Prediction, and Estimation,&rdquo; <em>JASA</em> 2007</div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 2: THE SETUP -->
+<!-- =============================== -->
+<div class="page" id="setup">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>The Setup</h2>
+    <div class="section-subtitle">One year of paper trades, 189 filtered signals, an inconclusive edge</div>
+
+    <div class="thesis-box">
+      <div class="thesis-label">Thesis</div>
+      <p>An ensemble of <strong>GEFS (31 members) + ECMWF IFS (50 members)</strong> 00Z forecasts, post-processed by a rolling 45-day <strong>Ensemble Model Output Statistics (EMOS)</strong> regression, produces a calibrated Gaussian over the next day's NYC high temperature. Translated into bracket probabilities and compared to Kalshi's <strong>KXHIGHNY</strong> mid-prices at 14:45 UTC, the model produces a measurable edge signal on a subset of contracts.</p>
+      <p>One year of paper trades (May 2025 &rarr; May 2026) on the filtered subset (<strong>|edge| &ge; 10%, entry &ge; 60&cent;</strong>) yielded <strong>189 trades, mean P&amp;L +3.07&cent;/trade, t-statistic 1.01, one-tailed p = 0.156</strong>. At conventional 95% significance, <strong>no positive edge has been demonstrated</strong>. Under an idealized limit-target execution mode the mean rises to +5.05&cent;/trade (p = 0.046), but realistic fill assumptions move it back below the bar.</p>
+      <p>The question this document tests: <strong>is the observed +3 to +5&cent; per trade a real but small edge, or a specification-search artifact that will mean-revert to zero in forward data?</strong> The honest answer requires forward validation that does not yet exist.</p>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-value">189</div>
+        <div class="stat-label">Filtered Trades (12 mo)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value gold">+3.07&cent;</div>
+        <div class="stat-label">Mean P&amp;L / Trade (Cross)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">1.01</div>
+        <div class="stat-label">t-Statistic vs Zero</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value negative">p = 0.156</div>
+        <div class="stat-label">One-Tailed p-Value</div>
+      </div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-value gold">+5.05&cent;</div>
+        <div class="stat-label">Mean / Trade (Limit, 100% fill)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">p = 0.046</div>
+        <div class="stat-label">Limit, 100% Fill p-Value</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">81</div>
+        <div class="stat-label">Ensemble Members / Day</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">$1,000</div>
+        <div class="stat-label">Planned Initial Capital</div>
+      </div>
+    </div>
+
+    <h3>Why this strategy could have edge</h3>
+    <p>Kalshi's order book is liquid but thin in absolute terms. Market makers on KXHIGHNY appear to use a mix of NWS public forecasts and proprietary models. The publicly available <strong>raw</strong> NWP ensembles are biased and under-dispersed at this lead time; if our EMOS post-processing meaningfully improves on the market-maker's calibration on a subset of the strip, an edge is plausible. The cell where this is most likely to bite is the <strong>shoulder of the distribution</strong> &mdash; contracts 4&ndash;8 brackets out from the median, where market mids tend to be sticky and the ensemble has its sharpest discriminating power.</p>
+
+    <div class="callout-note">
+      <strong>What this report is not:</strong> a solicitation, an offer, a recommendation, or a backtested guarantee. It is a descriptive account of one year of paper-trade results, the methodology behind them, and an honest enumeration of why those results may or may not survive forward validation. Position sizing, conviction, and live-execution timing are deferred to the forward-validation milestones on Page&nbsp;10.
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>2</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 3: SYSTEM SNAPSHOT -->
+<!-- =============================== -->
+<div class="page" id="system">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>System Snapshot</h2>
+    <div class="section-subtitle">Venue, contract family, infrastructure, and the asset map</div>
+
+    <h3>The market we trade</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Value</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Venue</strong></td><td>Kalshi</td><td>CFTC-regulated event-contract exchange (US)</td></tr>
+          <tr><td><strong>Contract family</strong></td><td><code>KXHIGHNY</code></td><td>Daily binaries on the high temperature at the NWS NYC observation station</td></tr>
+          <tr><td>Resolution source</td><td>KNYC (Central Park)</td><td>Official NWS daily observation</td></tr>
+          <tr><td>Resolution time</td><td>~midnight ET</td><td>Once the day's max temperature is recorded</td></tr>
+          <tr><td>Contract shapes</td><td><code>greater_than</code>, <code>less_than</code>, <code>between</code></td><td>Typically a strip of ~10&ndash;14 brackets/day, mostly 1&deg;F-wide <code>between</code></td></tr>
+          <tr><td>Pricing</td><td>Cents 1&ndash;99</td><td>Settles 100&cent; if YES, 0&cent; if NO</td></tr>
+          <tr><td>Spread (typical)</td><td>2&ndash;5&cent;</td><td>Tighter on liquid in-the-money brackets, wider on tails</td></tr>
+          <tr><td><strong>Production filter</strong></td><td>|edge| &ge; 10%, entry &ge; 60&cent;</td><td>Chosen on backtest data &mdash; see caveats Page&nbsp;8</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The data assets</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Asset</th><th>Source</th><th>Frequency</th><th>Coverage</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>GEFS</strong> ensemble forecasts</td><td>NCEP (NOAA), via Herbie/S3</td><td>4&times;/day, 00/06/12/18Z</td><td>31 members, 0.25&deg; global, ingested through Dec 2026</td></tr>
+          <tr><td><strong>ECMWF IFS</strong> ensemble</td><td>ECMWF Open Data, S3</td><td>2&times;/day, 00/12Z</td><td>50 members, 0.4&deg; global</td></tr>
+          <tr><td>HRRR (deterministic regional)</td><td>NCEP, via S3</td><td>00Z</td><td>Tested but not in production (see Page&nbsp;8)</td></tr>
+          <tr><td><strong>Kalshi prices</strong></td><td>Kalshi public REST API</td><td>Every 5&ndash;15 min via cron</td><td>Full year of order-book snapshots in Postgres</td></tr>
+          <tr><td>Observations</td><td>NWS daily summary</td><td>Daily, retroactive</td><td>KNYC historical record</td></tr>
+          <tr><td>Contracts metadata</td><td>Kalshi REST API</td><td>Daily refresh</td><td>Strike ranges, bracket types, expiries</td></tr>
+          <tr class="total-row"><td><strong>Paper trades</strong></td><td>Internal cron</td><td>Daily, 14:45 UTC</td><td><strong>3,792 total logged; 189 after production filter</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Infrastructure</h3>
+    <ul class="signal-list">
+      <li><strong>Database:</strong> PostgreSQL 16 with TimescaleDB extension. Tables: <code>forecasts</code>, <code>observations</code>, <code>prices</code>, <code>contracts</code>, <code>paper_trades</code>. Idempotent inserts on PK <code>(target_date, ticker, model_source)</code>.</li>
+      <li><strong>Ingestion:</strong> Python cron jobs pull GEFS/IFS via the Herbie library, Kalshi prices via authenticated REST, observations from the daily NWS feed. All ingestion is logged and replayable.</li>
+      <li><strong>Forecast loop:</strong> Daily cron at 14:45 UTC computes the combined ensemble, fits rolling EMOS, snapshots the order book, evaluates edges, writes paper trades.</li>
+      <li><strong>Dashboard:</strong> Streamlit app with backtest charts, calibration curves, paper-trade P&amp;L simulator, recent-trade log. Used for diagnostics, not for live trading.</li>
+      <li><strong>Hosting:</strong> Single Hetzner cloud VM (~$10/month). Long-running backfills run under <code>tmux</code>. There is no failover; this is a one-machine project. NOAA and ECMWF Open Data are free.</li>
+    </ul>
+
+    <h3>Current state</h3>
+    <ul class="signal-list">
+      <li><strong>Project start:</strong> week of April 27, 2026 &mdash; approximately one month before this report.</li>
+      <li><strong>Production config:</strong> combined GEFS+IFS ensemble, 00Z init, 14:45 UTC decision time, rolling 45-day EMOS, filters |edge| &ge; 10% and entry &ge; 60&cent;.</li>
+      <li><strong>Backtest complete:</strong> 12 months of paper trades (target dates 2025-05-27 &rarr; 2026-05-26) on the current production config. 189 trades after filters.</li>
+      <li><strong>Configurations tried during development</strong> (not in production): GEFS-only ensemble before adding IFS; 12Z init / 18:45 UTC decision-time regime, abandoned for the 00Z / 14:45 UTC regime above.</li>
+      <li><strong>Why the 60&cent; entry filter exists:</strong> a sweep of entry-price floors (0&cent;, 55&cent;, 60&cent;, 65&cent;, 69&cent;) on the backtest data showed the 55&ndash;69&cent; band produced substantially larger apparent edge than no filter; 60&cent; was chosen as a middle threshold within that band. The underlying mechanism is not fully understood. <strong>This is post-hoc filter selection on the same data being evaluated</strong> and feeds directly into the multiple-comparisons concern on Page&nbsp;8.</li>
+      <li><strong>HRRR ingested and tested</strong> as a third deterministic member (1 of 82). Backtest mean moved +3.07&cent; &rarr; +3.19&cent; &mdash; indistinguishable from noise. Not in production.</li>
+      <li><strong>Status:</strong> pre-launch. No live capital deployed.</li>
+    </ul>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>3</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 4: FORECAST PIPELINE -->
+<!-- =============================== -->
+<div class="page" id="pipeline">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>The Forecast Pipeline</h2>
+    <div class="section-subtitle">From raw NWP ensembles to a calibrated Gaussian over tomorrow's high</div>
+
+    <p>Every forecast number this report cites comes from the same four-stage pipeline. The interesting work happens at stage 3 (EMOS); stages 1, 2, and 4 are mechanical.</p>
+
+    <div class="pipeline">  Raw NWP ensembles      Combined daily-high       Rolling-45-day EMOS       Bracket probabilities
+      (GEFS + IFS)    ->    members (max over     ->   (a,b,c,d) refit daily  ->  (Gaussian CDF on
+                            afternoon window)         on (forecast, obs)         each Kalshi strike)</div>
+
+    <h3>Stage 1 &mdash; Ensemble ingestion</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Model</th><th>Provider</th><th>Members</th><th>Init Used</th><th>Forecast Hours</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>GEFS</strong></td><td>NCEP (NOAA)</td><td>31</td><td>00Z</td><td>15&ndash;24Z</td><td>0.25&deg; global, 2m temperature</td></tr>
+          <tr><td><strong>ECMWF IFS</strong></td><td>ECMWF Open</td><td>50</td><td>00Z</td><td>15&ndash;24Z</td><td>0.4&deg; global, 2m temperature</td></tr>
+          <tr><td>HRRR</td><td>NCEP regional</td><td>1 (deterministic)</td><td>00Z</td><td>15&ndash;24Z</td><td>3&nbsp;km, 2D Lambert grid; tested, not in prod</td></tr>
+          <tr class="total-row"><td><strong>Production ensemble</strong></td><td>&mdash;</td><td><strong>81 members</strong></td><td>00Z</td><td>15&ndash;24Z</td><td>~9&ndash;13 hours forecast horizon for the day's peak</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Stage 2 &mdash; Daily-high aggregation</h3>
+    <p>For each ensemble member, we compute the <strong>maximum 2m temperature over the NYC afternoon window (15Z&nbsp;&ndash;&nbsp;24Z, i.e., 11 AM&nbsp;&ndash;&nbsp;8 PM EDT)</strong>. The collection of 81 maxima is the &ldquo;ensemble of daily highs.&rdquo; This step uses bilinear interpolation to KNYC for the global models; HRRR uses 2D nearest-neighbor on the rotated Lambert grid (y=698, x=1553).</p>
+
+    <h3>Stage 3 &mdash; Rolling EMOS calibration</h3>
+    <p>Raw NWP ensembles are <strong>biased and under-dispersed</strong> at this lead time &mdash; the ensemble mean is systematically off, and the ensemble spread under-states true forecast uncertainty. EMOS (Gneiting et al., 2005) corrects this with a non-homogeneous Gaussian regression:</p>
+
+    <div class="pipeline">  Y ~ N( a + b * ensemble_mean ,  c + d * ensemble_variance )</div>
+
+    <p>Parameters <code>(a, b, c, d)</code> are re-fit <strong>daily</strong> on a trailing 45-day window of (forecast, observation) pairs by minimizing total CRPS (Continuous Ranked Probability Score). Optimization is L-BFGS-B with bounds keeping <code>c &gt; 0</code> and <code>d &ge; 0</code>, guaranteeing positive variance.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>EMOS parameter</th><th>Role</th><th>Typical value (current fit)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>a</code></td><td>Bias shift (intercept)</td><td>Small, near zero in &deg;F</td></tr>
+          <tr><td><code>b</code></td><td>Scale on ensemble mean</td><td>~1.0 (raw ensemble is roughly unbiased on average)</td></tr>
+          <tr><td><code>c</code></td><td>Constant variance floor</td><td>Strictly positive; inflates under-dispersed ensemble</td></tr>
+          <tr><td><code>d</code></td><td>Slope on ensemble variance</td><td>Captures spread-skill relationship</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The 45-day window length was chosen empirically: sweeps from 30 to 90 days showed essentially no difference in annual CRPS. The window adapts to data availability &mdash; days with missing observations or forecasts are skipped, and the window slides back if the most recent observations haven't landed yet.</p>
+
+    <h3>Stage 4 &mdash; Bracket probabilities</h3>
+    <p>For each listed Kalshi contract we compute its YES probability under <em>N</em>(&mu;, &sigma;) using the Gaussian CDF with a <strong>half-degree continuity correction</strong> (since temperatures are recorded as integers, &ldquo;high &gt; 78&rdquo; maps to P(continuous &ge; 78.5)).</p>
+
+    <div class="pipeline">  greater_than(K)  ->  P(continuous >= K + 0.5)
+  less_than(K)     ->  P(continuous <  K - 0.5)
+  between(lo, hi)  ->  P(lo - 0.5 <= continuous < hi + 0.5)</div>
+
+    <h3>Why CRPS rather than likelihood</h3>
+    <p>CRPS is the proper scoring rule for full-distribution forecasts. Minimizing CRPS rewards both <strong>sharpness</strong> (narrow predictive distribution) and <strong>calibration</strong> (predicted probabilities match empirical frequencies). MLE on a Gaussian would only enforce calibration in mean and variance; CRPS additionally penalizes shape mis-specification at the relevant decision threshold.</p>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>4</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 5: TRADING LOGIC -->
+<!-- =============================== -->
+<div class="page" id="trading">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Trading Logic</h2>
+    <div class="section-subtitle">From a calibrated Gaussian to a paper-trade row in Postgres</div>
+
+    <p>Every weekday at <strong>14:45 UTC (10:45 AM ET in winter, 09:45 AM ET in summer)</strong>, the cron job executes the following sequence for each listed contract on the day's KXHIGHNY strip:</p>
+
+    <h3>The decision loop</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Step</th><th>Input</th><th>Output</th></tr></thead>
+        <tbody>
+          <tr><td>1. Compute model probability</td><td>Calibrated Gaussian (&mu;, &sigma;)</td><td><code>p_model</code> &isin; [0, 1]</td></tr>
+          <tr><td>2. Snapshot order book</td><td>Kalshi REST API at 14:45 UTC</td><td><code>yes_bid</code>, <code>yes_ask</code>, snapshot timestamp</td></tr>
+          <tr><td>3. Compute market mid</td><td>(bid + ask) / 200</td><td><code>p_market</code></td></tr>
+          <tr><td>4. Compute edge</td><td><code>p_model &minus; p_market</code></td><td><code>edge</code> &isin; [-1, 1]</td></tr>
+          <tr><td>5. Apply filter</td><td>|edge| &ge; 0.10 and entry &ge; 60&cent;</td><td>Pass / skip</td></tr>
+          <tr><td>6. Pick direction</td><td>Sign of edge</td><td>BUY_YES if edge &gt; 0, BUY_NO if edge &lt; 0</td></tr>
+          <tr><td>7. Compute limit target</td><td>max(1, ask &minus; (spread &minus; 1))</td><td>1&cent; inside the spread</td></tr>
+          <tr><td>8. Write paper trade</td><td>All of the above</td><td>Row in <code>paper_trades</code> table</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Why 14:45 UTC</h3>
+    <p>Decision time has to be early enough that material new information has not yet leaked into the market (the afternoon's actual temperature evolution remains uncertain), but late enough that the 00Z forecast has stabilized and Kalshi's order book has thickened from overnight thinness. 14:45 UTC is roughly NYSE open + 15 minutes &mdash; the practical sweet spot for an early-day forecast model. A later 18:45 UTC decision time was tested earlier in development (paired with a 12Z init) and showed worse edge characteristics.</p>
+
+    <h3>Why two filters</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Filter</th><th>Value</th><th>Why it matters</th></tr></thead>
+        <tbody>
+          <tr><td>|edge| &ge; 10%</td><td>Probability units</td><td>Edges below 10% are dominated by market-maker noise and Kalshi fees; expected value is negative after costs.</td></tr>
+          <tr><td>entry &ge; 60&cent;</td><td>Contract price</td><td>Chosen empirically after a backtest sweep of entry-price floors (0&cent;, 55&cent;, 60&cent;, 65&cent;, 69&cent;) showed the 55&ndash;69&cent; band produced substantially larger apparent edge than no filter. 60&cent; is a middle threshold within that band. The underlying mechanism is not understood. <strong>Post-hoc filter selection on the evaluation data &mdash; see Page&nbsp;8.</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Both filters were chosen on backtest data, which is the central statistical risk explored on Page&nbsp;8.</p>
+
+    <h3>Position sizing &mdash; what the math says, vs what we'll actually do</h3>
+    <p>The theoretical optimum for a Kelly-style bettor with a binary contract is:</p>
+
+    <div class="pipeline">  f* = p_win - (1 - p_win) / b      where b = (100 - entry) / entry</div>
+
+    <p>At our typical edges and entry prices, <code>f*</code> ranges from 3&ndash;15%. Full Kelly is suicidal in practice because the edge estimate <code>p_win</code> is itself noisy &mdash; over-betting an mis-estimated edge produces geometric losses. Standard prudent practice is <strong>half-Kelly</strong> (50% of <code>f*</code>), and the bankroll simulator on the next page makes clear that even one-third Kelly is the practical upper bound for this strategy.</p>
+
+    <h3>Execution modes (the second-order choice)</h3>
+    <ul class="signal-list">
+      <li><strong>Cross the spread (marketable):</strong> pay <code>ask</code> on a BUY_YES, lift <code>bid</code> on a BUY_NO. Guarantees a fill at the worse price. This is what the paper-trade table records as <code>entry_price_cents</code>.</li>
+      <li><strong>Limit inside the spread (passive):</strong> post a limit 1&cent; better than the cross price. Saves <code>(spread &minus; 1)&cent;</code> per contract if it fills. Average savings on filtered backtest trades: <strong>~2.03&cent;/trade</strong> at typical 3&cent; spreads. Fill rate is unknown until live trading.</li>
+      <li><strong>Hybrid:</strong> post the limit at decision time, escalate to cross at +5 minutes if unfilled. Not yet implemented.</li>
+    </ul>
+
+    <div class="callout-note">
+      <strong>Where execution mode actually matters:</strong> the gap between cross-spread (+3.07&cent;/trade) and limit-100% (+5.05&cent;/trade) is roughly the same as the gap between &ldquo;not statistically significant&rdquo; and &ldquo;barely significant.&rdquo; If real fill rates land at 70%+ inside the spread, the strategy materially improves; if they land at 30%, it doesn't.
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>5</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 6: BACKTEST RESULTS -->
+<!-- =============================== -->
+<div class="page" id="backtest">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Backtest Results</h2>
+    <div class="section-subtitle">Twelve months, 189 filtered trades, two execution modes, one borderline p-value</div>
+
+    <div class="thesis-box">
+      <div class="thesis-label">Headline</div>
+      <p>Backtest window <strong>2025-05-27 &rarr; 2026-05-26</strong>, model source <code>EMOS combined 00Z (rolling 45d)</code>. After production filters (|edge| &ge; 10%, entry &ge; 60&cent;), <strong>n = 189</strong> resolved trades.</p>
+      <p>Under cross-spread execution: <strong>mean +3.07&cent;/trade, t = 1.01, p = 0.156</strong>. The 95% bootstrap confidence interval on the mean spans <strong>&minus;1.93&cent; to ~+8&cent;</strong> &mdash; zero is comfortably inside. Under idealized limit execution: <strong>mean +5.05&cent;, t = 1.68, p = 0.046</strong>, scraping just past the conventional bar. Realistic limit fill rates (50&ndash;70%) move the result back into the non-significant zone.</p>
+    </div>
+
+    <h3>Trade counts</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Filter applied</th><th>Trades</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>All paper trades logged</td><td>3,792</td><td>Every contract on every day where forecast + price snapshot existed</td></tr>
+          <tr><td>After |edge| &ge; 10%</td><td>~480</td><td>Drops contracts where model and market roughly agree</td></tr>
+          <tr class="total-row"><td><strong>After entry &ge; 60&cent;</strong> (production)</td><td><strong>189</strong></td><td>Production filter set</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Per-trade economics by execution mode</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Execution mode</th><th>Mean P&amp;L</th><th>SD</th><th>SE</th><th>t-stat</th><th>One-tail p</th><th>Bootstrap 5%-ile mean</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Cross spread</strong> (pays ask)</td><td>+3.07&cent;</td><td>41.81&cent;</td><td>3.04&cent;</td><td>1.01</td><td>0.156</td><td class="negative">&minus;1.93&cent;</td></tr>
+          <tr class="highlight-row"><td><strong>Limit, 100% fill</strong> (idealized)</td><td class="positive">+5.05&cent;</td><td>41.31&cent;</td><td>3.01&cent;</td><td>1.68</td><td><span class="highlight">0.046</span></td><td>+0.10&cent;</td></tr>
+          <tr><td>Limit, 70% fill</td><td>+3.54&cent;</td><td>~36&cent;</td><td>~2.6&cent;</td><td>1.42</td><td>0.078</td><td>~0&cent;</td></tr>
+          <tr><td>Limit, 50% fill</td><td>+2.54&cent;</td><td>~31&cent;</td><td>~2.3&cent;</td><td>1.22</td><td>0.111</td><td>negative</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-size: 11px;"><em>Reading the bootstrap column:</em> resample the 189 trades 10,000 times with replacement; the 5th-percentile resampled mean is what's shown. Under cross spread, the data is consistent with a true mean as low as <strong>&minus;1.93&cent;/trade</strong> (i.e., negative edge). Under limit-100, the lower bound just barely clears zero (+0.10&cent;).</p>
+
+    <h3>Win rate and P&amp;L decomposition</h3>
+    <div class="stat-row two-col">
+      <div class="stat-card">
+        <div class="stat-value">76.2%</div>
+        <div class="stat-label">Win Rate on Filtered Trades (144/189)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">3.03&cent;</div>
+        <div class="stat-label">Mean Spread on Filtered Trades</div>
+      </div>
+    </div>
+
+    <p>The high win rate reflects the entry &ge; 60&cent; filter, which biases toward contracts the market already thinks are likely to resolve YES. Per-trade dollar P&amp;L is asymmetric: a 76% win rate at 70&cent; entry means each win pays ~30&cent; and each loss costs ~70&cent;, which is why the per-trade mean is only +3.07&cent; despite a strong win rate.</p>
+
+    <p>P&amp;L variance is dominated by the <strong>1&deg;F <code>between</code> brackets</strong> at the mode of the forecast distribution &mdash; these are the contracts where a small forecast error flips a win to a loss. Tail brackets (<code>greater_than</code>/<code>less_than</code>) at high strike prices contribute fewer trades but more stable outcomes.</p>
+
+    <h3>What the curve looks like</h3>
+    <p>Cumulative P&amp;L under cross-spread execution traces an upward-drifting random walk: the slope is positive but the confidence cone around it includes a flat or slightly down-sloping line. There are no obvious regime shifts &mdash; winter, spring, and summer subsets all produce qualitatively similar mean-zero-ish noise plus a small positive drift.</p>
+
+    <div class="callout-note">
+      <strong>What the backtest does prove:</strong> the strategy does not lose money obviously, and the filtered subset has the right sign of edge. <strong>What it does not prove:</strong> that the edge is non-zero with statistical confidence, or that it will persist out-of-sample. Both questions move to Page&nbsp;8.
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>6</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 7: BANKROLL SIMULATOR -->
+<!-- =============================== -->
+<div class="page" id="bankroll">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Bankroll Simulator</h2>
+    <div class="section-subtitle">Interactive: pick a Kelly fraction and execution mode, see backtest-implied outcomes</div>
+
+    <p>The figures below come from walking the 189 filtered trades chronologically with a $100 starting balance, applying the selected Kelly fraction and execution mode. The <strong>median final balance</strong> is computed across 200 random fill-pattern seeds (so missed limits are averaged out); the <strong>survival rate</strong> is the fraction of seeds that ended with balance &gt; $100.</p>
+
+    <div class="simulator">
+      <div class="simulator-label">Backtest-Implied Outcome &mdash; $100 starting balance, 189 trades, 12-mo window</div>
+
+      <div class="simulator-controls">
+        <div class="sim-control">
+          <label>Kelly fraction</label>
+          <div class="sim-buttons" id="kellyButtons">
+            <button class="sim-btn" data-kelly="10">10%</button>
+            <button class="sim-btn active" data-kelly="20">20%</button>
+            <button class="sim-btn" data-kelly="25">25%</button>
+            <button class="sim-btn" data-kelly="33">33%</button>
+            <button class="sim-btn" data-kelly="50">50%</button>
+            <button class="sim-btn" data-kelly="75">75%</button>
+            <button class="sim-btn" data-kelly="100">100%</button>
+          </div>
+        </div>
+        <div class="sim-control">
+          <label>Execution mode</label>
+          <div class="sim-buttons" id="execButtons">
+            <button class="sim-btn" data-exec="cross">Cross spread</button>
+            <button class="sim-btn active" data-exec="limit_100">Limit 100%</button>
+            <button class="sim-btn" data-exec="limit_70">Limit 70%</button>
+            <button class="sim-btn" data-exec="limit_50">Limit 50%</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sim-output">
+        <div class="sim-stat">
+          <div class="sim-stat-value positive" id="simBalance">$195</div>
+          <div class="sim-stat-label">Median Final Balance</div>
+        </div>
+        <div class="sim-stat">
+          <div class="sim-stat-value" id="simReturn">+95%</div>
+          <div class="sim-stat-label">Return (12 mo)</div>
+        </div>
+        <div class="sim-stat">
+          <div class="sim-stat-value" id="simSurvival">100%</div>
+          <div class="sim-stat-label">Survival Rate (200 seeds)</div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Full backtest grid (median final balance, $100 start)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Kelly Fraction</th><th>Cross spread</th><th>Limit 100%</th><th>Limit 70%</th><th>Limit 50%</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>10%</td><td>$131</td><td>$165</td><td>$143</td><td>$126</td></tr>
+          <tr class="highlight-row"><td><strong>20%</strong></td><td>$127</td><td class="positive bold">$195</td><td>$165</td><td>$134</td></tr>
+          <tr><td>25%</td><td>$111</td><td>$185</td><td>$160</td><td>$131</td></tr>
+          <tr><td>33%</td><td class="negative">$74</td><td>$137</td><td>$132</td><td>$111</td></tr>
+          <tr><td>50%</td><td class="negative">$12</td><td class="negative">$26</td><td class="negative">$44</td><td class="negative">$45</td></tr>
+          <tr><td>75%</td><td class="negative">&lt;$1</td><td class="negative">&lt;$1</td><td class="negative">&lt;$1</td><td class="negative">$2</td></tr>
+          <tr><td>100%</td><td class="negative">$0</td><td class="negative">$0</td><td class="negative">$0</td><td class="negative">$0</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Survival rate (fraction of 200 seeds ending profitable)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Kelly Fraction</th><th>Cross spread</th><th>Limit 100%</th><th>Limit 70%</th><th>Limit 50%</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>10%</td><td>100%</td><td>100%</td><td>93%</td><td>85%</td></tr>
+          <tr class="highlight-row"><td><strong>20%</strong></td><td>100%</td><td class="positive bold">100%</td><td>86%</td><td>76%</td></tr>
+          <tr><td>25%</td><td>100%</td><td>100%</td><td>80%</td><td>66%</td></tr>
+          <tr><td>33%</td><td class="negative">0%</td><td>100%</td><td>62%</td><td>53%</td></tr>
+          <tr><td>50%</td><td class="negative">0%</td><td class="negative">0%</td><td>26%</td><td>31%</td></tr>
+          <tr><td>75%</td><td class="negative">0%</td><td class="negative">0%</td><td class="negative">0%</td><td class="negative">6%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What this implies for sizing</h3>
+    <ul class="signal-list">
+      <li><strong>The expected-value optimum is Kelly 20% on limit execution.</strong> Highest median, 100% survival across seeds.</li>
+      <li><strong>Above Kelly 33%, all modes lose money in expectation.</strong> Path-dependence is the killer: one early cluster of losses cripples compound growth.</li>
+      <li><strong>Missing limit fills act as a brake on bad sizing.</strong> The fact that Kelly 50% on Limit 70% (26% survival) beats Kelly 50% on Limit 100% (0% survival) reflects effective sizing of 0.5 &times; 0.7 = 35% &mdash; lower volatility from random fill misses. It is not a free lunch.</li>
+      <li><strong>Rule of thumb:</strong> Kelly fraction &times; expected fill rate &le; 25%.</li>
+    </ul>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>7</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 8: STATISTICAL CAVEATS -->
+<!-- =============================== -->
+<div class="page" id="caveats">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Statistical Caveats</h2>
+    <div class="section-subtitle">What the backtest does <em>not</em> prove &mdash; the most important page in this report</div>
+
+    <div class="thesis-box">
+      <div class="thesis-label">The Honest Read</div>
+      <p>The headline result &mdash; <strong>limit-100% execution yields p = 0.046</strong> &mdash; clears the conventional &ldquo;significant&rdquo; bar by 0.4 percentage points. That is real, but extraordinarily fragile under any of the standard corrections a careful reviewer would apply. The cross-spread result (p = 0.156) does not clear the bar at all. The realistic limit cases (50&ndash;70% fill) sit between p = 0.08 and p = 0.11.</p>
+      <p>Translation: this backtest is consistent with both &ldquo;there is a small real edge of +3 to +5&cent;/trade&rdquo; and &ldquo;there is no edge and these are 12 months of lucky noise.&rdquo; The data alone cannot distinguish those hypotheses. Forward validation can.</p>
+    </div>
+
+    <h3>1. Multiple comparisons / specification search</h3>
+    <p>The production configuration (combined GEFS+IFS, 00Z init, 14:45 UTC decision, 45-day window, |edge| &ge; 10%, entry &ge; 60&cent;) was chosen after searching over:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Dimension</th><th>Values tested</th></tr></thead>
+        <tbody>
+          <tr><td>Model combination</td><td>GEFS-only, IFS-only, combined, combined+HRRR</td></tr>
+          <tr><td>Init hour</td><td>00Z, 12Z</td></tr>
+          <tr><td>Decision hour (UTC)</td><td>08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 (full intraday sweep)</td></tr>
+          <tr><td>Edge threshold</td><td>5%, 7.5%, 10%, 12.5%</td></tr>
+          <tr><td>Entry-price floor</td><td>0&cent;, 30&cent;, 50&cent;, 55&cent;, 60&cent;, 65&cent;, 69&cent;, 70&cent;</td></tr>
+          <tr><td>EMOS window</td><td>30, 45, 60, 90 days</td></tr>
+          <tr><td>Execution mode</td><td>cross spread, limit (100% / 70% / 50% fill)</td></tr>
+          <tr class="total-row"><td><strong>Effective comparisons</strong></td><td><strong>~80+</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>A Bonferroni-corrected significance bar for 80 comparisons requires <strong>p &lt; 0.00063</strong>, equivalent to a t-stat above 3.16 in our setup. <strong>No configuration tested clears that.</strong> The best cell in the full hour&times;entry-threshold sweep is the current production cell (entry &ge; 60&cent;, hour 14 UTC) at limit-target t = 1.69 &mdash; well short of the corrected bar.</p>
+
+    <p>The 2D hour&times;entry-threshold sweep revealed two further uncomfortable facts:</p>
+    <ul class="signal-list">
+      <li>Of 60 (hour, entry-threshold) cells tested, <strong>only 3 produce positive cross-spread mean P&amp;L</strong>. Limit-target execution is mathematically required for the strategy to be profitable on most of the grid.</li>
+      <li>The production cell's +3.08&cent;/trade cross-spread mean is a <strong>sharp peak surrounded by negative neighbors</strong> (hour 13 at &minus;0.04&cent;, hour 15 at &minus;2.05&cent;). A real timing effect should produce a smooth or monotonic curve; a single-hour spike at exactly the chosen hour is one of the signatures of selection bias.</li>
+    </ul>
+
+    <p>The unbiased estimate of forward-looking edge is therefore <strong>between zero and the observed +5&cent;/trade, closer to zero than to +5</strong> once specification search is honestly priced in.</p>
+
+    <h3>2. The 12Z combined regime was abandoned</h3>
+    <p>An earlier configuration (12Z init, 18:45 UTC decision, same combined ensemble) was tested earlier in development and showed no edge after fees. The 00Z configuration above is therefore the <strong>second regime tried</strong>, not the first &mdash; another comparison that should be priced into the apparent significance.</p>
+
+    <h3>3. The HRRR experiment did not help</h3>
+    <p>HRRR is NOAA's high-resolution regional model. We ingested a year of HRRR 00Z runs in May 2026 and added them as a third model (1 deterministic member alongside 31 GEFS + 50 IFS = 1 of 82 members). Backtest mean P&amp;L moved from <strong>+3.07&cent; to +3.19&cent;</strong> &mdash; indistinguishable from noise. HRRR is not in production. The negative result is itself a data point: <strong>at 1.2% weight in the ensemble, no single additional model is going to materially improve calibration on this strategy.</strong> Improvements have to come from data scale (price coverage, sample size) or fundamentally different signals (intraday revisions, soundings), not from layering in another global NWP.</p>
+
+    <h3>4. No live execution data exists</h3>
+    <p>All numbers in this report assume:</p>
+    <ul class="signal-list">
+      <li>Snapshot prices reflect prices we could have transacted at &mdash; reasonable for marketable orders but unverified for limit orders.</li>
+      <li>Limit orders fill at the assumed rate &mdash; we have <em>no</em> empirical fill rate for inside-the-spread orders on KXHIGHNY.</li>
+      <li>No slippage between order placement and fill, no order-book impact from our own orders (likely true at $1k capital, possibly false at higher sizes).</li>
+      <li>The Kalshi fee schedule has not changed mid-window (it has not, per public filings).</li>
+    </ul>
+
+    <h3>5. Survivor bias in the model</h3>
+    <p>The EMOS calibration is fit on data from the very same period it's being evaluated on (via rolling window). The structural choice &mdash; using a rolling 45-day fit rather than a fixed long-window fit &mdash; is robust to this for the EMOS parameters themselves. But the <strong>decision to use EMOS at all</strong>, and the <strong>choice of half-degree continuity correction</strong>, and the <strong>choice of NYC-specific 15&ndash;24Z forecast window</strong>, were all made by looking at this data. None individually is large, but they are non-zero degrees of freedom.</p>
+
+    <div class="callout-note warning">
+      <strong>The single most important sentence in this report:</strong> nothing in this backtest distinguishes a 5&cent;/trade real edge from 0&cent;/trade plus a year of search bias. The only clean way to tell them apart is forward data the strategy has not yet seen. Until that exists, any sizing decision is a bet on the priors, not on the evidence.
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>8</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 9: CAPITAL & COSTS -->
+<!-- =============================== -->
+<div class="page" id="capital">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Capital &amp; Cost Structure</h2>
+    <div class="section-subtitle">$1,000 risk capital, half-Kelly sizing, Kalshi fee mechanics</div>
+
+    <h3>Kalshi fee schedule (the dominant cost)</h3>
+    <div class="pipeline">  fee_per_contract = ceil( $0.07 * P * (1 - P) * 100 ) / 100         (in dollars)</div>
+
+    <p>Charged on the entry trade only; no settlement fee, no margin interest, no data fees. Worked example for a 70&cent; contract:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Component</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>P (entry price)</td><td>0.70</td></tr>
+          <tr><td>0.07 &times; P &times; (1 &minus; P)</td><td>0.07 &times; 0.7 &times; 0.3 = $0.0147</td></tr>
+          <tr><td>Rounded up to nearest cent</td><td>$0.02 / contract</td></tr>
+          <tr><td><strong>Fee treatment in this report</strong></td><td>Included in all backtest P&amp;L numbers on Page&nbsp;6</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Infrastructure costs</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Line item</th><th>Cost</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Hetzner Cloud VM</td><td>~$10/mo</td><td>Single instance hosts Postgres + TimescaleDB, all cron jobs, Streamlit dashboard, and ingestion. NOAA/ECMWF Open Data fetches are free.</td></tr>
+          <tr class="total-row"><td><strong>Monthly run cost</strong></td><td><strong>~$10</strong></td><td>Annualized ~$120 &mdash; small but non-zero fixed cost the strategy has to cover at any positive expectancy</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Capital plan</h3>
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-value gold">$1,000</div>
+        <div class="stat-label">Initial Capital</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">$5&ndash;25</div>
+        <div class="stat-label">Per-Trade Stake (Half-Kelly)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">~180</div>
+        <div class="stat-label">Expected Trades / Year</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value negative">&minus;$300</div>
+        <div class="stat-label">Kill-Trigger Drawdown (Pre-Committed)</div>
+      </div>
+    </div>
+
+    <h3>Sizing at $1,000 bankroll</h3>
+    <ul class="signal-list">
+      <li><strong>Position scale:</strong> stakes per trade scale linearly with bankroll under half-Kelly. Actual contracts-per-trade depends on the realized edge distribution and entry-price distribution at live time; will be measured directly from the first 30 trades rather than predicted.</li>
+      <li><strong>Trade frequency:</strong> backtest produced 189 filtered signals over 12 months (~0.5 trades/day average). Live frequency may differ on days where snapshot prices are not transactable.</li>
+      <li><strong>Annual infrastructure cost:</strong> ~$120 (Hetzner). The strategy's gross P&amp;L at $1k bankroll is in the same order of magnitude as this fixed cost &mdash; small relative to true positive-expectancy operation.</li>
+      <li><strong>Status framing:</strong> at $1k this is a <strong>learning deployment</strong>, not a profit deployment. The capital is committed to generate forward data the backtest cannot (real fill rates, real slippage, real operational reliability).</li>
+    </ul>
+
+    <h3>Why $1,000 anyway</h3>
+    <p>At $1k the question is not P&amp;L. It is to <strong>generate the forward data that the backtest cannot generate</strong>: real fill rates, real slippage, real cron reliability, real operational learnings. The capital is a small deliberate spend on empirical evidence for the Page&nbsp;10 questions.</p>
+
+    <div class="callout-note">
+      <strong>Scale plan (contingent):</strong> if the first 60&ndash;90 forward trades land in the [+2&cent;, +8&cent;] mean-P&amp;L range with limit fill rate &ge; 60%, increase bankroll. Specific scaling thresholds will be set against forward data, not pre-committed against backtest extrapolation.
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>9</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 10: FORWARD VALIDATION -->
+<!-- =============================== -->
+<div class="page" id="forward">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Forward Validation Plan</h2>
+    <div class="section-subtitle">Pre-committed milestones, kill criteria, and what would change the call</div>
+
+    <p>The only clean route to genuine statistical confidence in this strategy is forward data not used in any specification search. Three checkpoints, each with explicit pass/fail criteria.</p>
+
+    <h3>Milestone schedule</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Milestone</th><th>Trades</th><th>Test</th><th>Pass criterion</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Month 4</strong> (~Sep 2026)</td><td>~60</td><td>Replication check</td><td>Forward mean P&amp;L within [+2&cent;, +8&cent;]; win rate within [50%, 62%]</td></tr>
+          <tr><td><strong>Month 9</strong> (~Feb 2027)</td><td>~135</td><td>Pooled forward t-test</td><td>Forward-only t-stat &gt; 1.3 (one-tailed p &lt; 0.10)</td></tr>
+          <tr class="highlight-row"><td><strong>Month 12</strong> (~May 2027)</td><td>~180</td><td>Forward-only standalone</td><td><strong>Forward-only t-stat &gt; 1.65 (p &lt; 0.05)</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Required forward sample for standalone 95% significance</h3>
+    <p>If the true edge per trade is exactly the backtest point estimate of +5&cent; and the standard deviation matches the backtest's 41&cent;, the forward sample size needed to clear p &lt; 0.05 (one-tailed) is:</p>
+
+    <div class="pipeline">  n_required = (1.65 * 41 / 5)^2 ~ 183 trades  ~  12 months at backtest cadence</div>
+
+    <p>This is the same statistical bar the backtest must clear on its own &mdash; the bar doesn't care that you've already done one cycle. A 4-month / 60-trade window is a <strong>qualitative replication check, not a significance test</strong>.</p>
+
+    <h3>Pre-committed kill criteria</h3>
+    <p>These are written here, before live trading begins, specifically to prevent post-hoc rationalization. Any of the three triggering ends the deployment:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Criterion</th><th>Threshold</th><th>Reason</th></tr></thead>
+        <tbody>
+          <tr><td>Cumulative drawdown</td><td class="negative">&lt; &minus;$300 at any point months 1&ndash;6</td><td>Material capital impairment exceeding the &ldquo;noise around zero edge&rdquo; envelope</td></tr>
+          <tr><td>Forward mean P&amp;L</td><td class="negative">&lt; &minus;1&cent;/trade over first 60 trades</td><td>Negative replication; backtest was almost certainly noise</td></tr>
+          <tr><td>Limit fill rate</td><td class="negative">&lt; 40% over first 30 attempts</td><td>The limit-execution thesis is broken; cross-only economics don't support deployment</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What would change the call (positive)</h3>
+    <ul class="signal-list">
+      <li><strong>Forward mean lands in [+3&cent;, +8&cent;] over months 1&ndash;4</strong> &rarr; strong qualitative confirmation; scale to $5k bankroll, half-Kelly, limit execution.</li>
+      <li><strong>Limit fill rate &ge; 60%</strong> consistently observed &rarr; execution thesis validated; the limit-vs-cross gap of +2&cent;/trade is realized.</li>
+      <li><strong>Win rate &ge; 56% on 60+ trades</strong> &rarr; calibration holds out-of-sample; the EMOS rolling fit is stable.</li>
+      <li><strong>Brier score on resolved contracts beats market-mid Brier by &gt; 0.005</strong> over 90 days &rarr; forecasting edge is unambiguous, independent of trade selection.</li>
+    </ul>
+
+    <h3>What would change the call (negative)</h3>
+    <ul class="signal-list">
+      <li><strong>Forward mean lands in [&minus;2&cent;, +1&cent;]</strong> &rarr; backtest was specification-search noise. Stop trading. Mark as a learning project, retain infrastructure for KXLOWNY or other-city experiments.</li>
+      <li><strong>Fill rate &lt; 40%</strong> &rarr; limit-target advantage doesn't materialize. Re-test cross-only economics; if insufficient (it is), stop.</li>
+      <li><strong>Volatility regime breakdown</strong> (e.g., unusual heat wave or cold snap distorts EMOS fit) &rarr; calibration becomes unreliable; pause until rolling window stabilizes.</li>
+      <li><strong>Kalshi rule change</strong> (fee schedule, position limits, contract structure) &rarr; re-baseline entire economic model.</li>
+    </ul>
+
+    <h3>Watchlist (next 18 months)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Event / Catalyst</th><th>Window</th><th>Impact</th></tr></thead>
+        <tbody>
+          <tr><td>First 30 live trades complete</td><td>Jun&ndash;Aug 2026</td><td>Initial fill-rate signal &mdash; binary on execution thesis</td></tr>
+          <tr><td>4-month replication checkpoint</td><td>Sep 2026</td><td>Go / no-go on scale</td></tr>
+          <tr><td>12-month standalone significance test</td><td>May 2027</td><td>Primary statistical milestone</td></tr>
+          <tr><td>KXLOWNY (daily lows) market expansion</td><td>If Kalshi adds it</td><td>Independent contract family, separate calibration; doubles addressable signal</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>10</span>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- PAGE 11: OPEN QUESTIONS -->
+<!-- =============================== -->
+<div class="page" id="open">
+  <div class="content-page">
+    <div class="page-header">
+      <span class="project-name">Weather Markets &middot; KNYC</span>
+      <span class="report-type">Project Overview &mdash; May 2026</span>
+    </div>
+
+    <h2>Open Questions &amp; Known Limitations</h2>
+    <div class="section-subtitle">What we haven't tested, what we can't model, and what could break the call</div>
+
+    <h3>What this report deliberately defers</h3>
+    <ul class="signal-list">
+      <li><strong>Other contract families.</strong> <code>KXLOWNY</code> (daily lows) has not been tested. Daily lows have different forecast skill characteristics &mdash; overnight minima are dominated by clear-sky radiative cooling rather than peak-of-day insolation &mdash; and may or may not show similar edge. The calibration would need to be re-fit independently.</li>
+      <li><strong>Other cities.</strong> KXHIGHCHI (Chicago), KXHIGHLAX (LA), KXHIGHMIA (Miami) all have analogous Kalshi markets. Each would require its own EMOS calibration and a fresh paper-trade backfill. None has been started.</li>
+      <li><strong>Intraday revisions.</strong> The 14:45 UTC snapshot is one point in time. A model that updates as forecasts evolve (06Z, 12Z runs) and re-prices the strip mid-day could capture additional edge. Not implemented; complexity-vs-benefit unclear.</li>
+      <li><strong>Direct hyperscale forecast inputs.</strong> Anthropic-class language models, ECMWF AIFS, GraphCast and similar AI-NWP models are publicly accessible. None are in the current ensemble. Adding them is a single-paragraph backfill but requires careful calibration &mdash; raw AI-NWP often appears sharp but is mis-calibrated at tails.</li>
+    </ul>
+
+    <h3>Adversarial selection</h3>
+    <p>Kalshi market makers see the same public NWP forecasts we do. If our edge is real, the most likely mechanism is that market makers are <strong>under-weighting the ECMWF IFS ensemble</strong> (it's harder to access than GEFS) or <strong>under-using post-processing</strong> (raw NWP is the path of least resistance). Both of those gaps would close as more participants run similar pipelines, but the rate at which that happens is unknown. The window for any such edge is not indefinite.</p>
+
+    <h3>Weather regime risk</h3>
+    <p>The backtest year (May 2025 &rarr; May 2026) spans <em>one particular climate state</em>. A summer with unusual variance behavior &mdash; a series of heat waves outside the training window, or an unusually quiet weather pattern that compresses the predictive distribution &mdash; could degrade calibration meaningfully. The rolling 45-day EMOS adapts, but with a lag.</p>
+
+    <h3>Operational risk</h3>
+    <ul class="signal-list">
+      <li><strong>Single point of failure:</strong> one cloud VM. If it goes down before 14:45 UTC, the day's trades are lost. No automated failover.</li>
+      <li><strong>Forecast provider risk:</strong> NCEP or ECMWF Open Data outages would silently break ingestion. Cron has retry logic but no alerting on stale data.</li>
+      <li><strong>Kalshi API risk:</strong> rate limits, auth-token rotation, contract-structure changes could all break the price-snapshot pipeline. No fallback feed.</li>
+      <li><strong>Personal risk:</strong> this is a one-person project. Sustained illness or vacation breaks the operational chain; there is no covering operator.</li>
+    </ul>
+
+    <h3>What I do not know</h3>
+    <ul class="signal-list">
+      <li><strong>The market-makers' edge.</strong> If MMs are running better-calibrated models than ours, our &ldquo;edge&rdquo; is a measurement artifact. The fact that the backtest shows a small positive number on a directional subset is consistent with MM under-pricing of the model on shoulder contracts; it is also consistent with random noise around zero.</li>
+      <li><strong>The true fill rate on inside-the-spread limits.</strong> Could be 30%, could be 80%. This is the single largest live-data unknown.</li>
+      <li><strong>Liquidity at scale.</strong> The actual order-book depth on KXHIGHNY brackets at decision time has not been measured systematically. At larger deployment sizes the backtest's &ldquo;snapshot price = transactable price&rdquo; assumption becomes less reliable.</li>
+      <li><strong>Future Kalshi product evolution.</strong> Kalshi could add new contract structures (e.g., spread products, multi-day weather), launch other weather variables, or restructure fees &mdash; each of which would change the economic model.</li>
+    </ul>
+
+    <blockquote>
+      <p>The backtest tells a small, ambiguous story: there might be an edge of three to five cents per trade, or there might be no edge at all. One year of paper trading is not enough data, search bias is not enough corrected for, and the gap between cross-spread economics and limit-fill economics is the same size as the gap between &ldquo;significant&rdquo; and &ldquo;not significant.&rdquo; The next twelve months of live data, traded small, are what will tell the difference.</p>
+      <div class="attribution">&mdash; Internal working draft, May 28, 2026</div>
+    </blockquote>
+
+    <div class="disclaimer">
+      <strong>Sources.</strong> Internal PostgreSQL database (<code>weather</code> schema in <code>src/weather_markets/db.py</code>); reproducible via <code>scripts/backfill_paper_trades.py</code> and <code>scripts/dashboard.py</code>. Methodology references: Gneiting &amp; Raftery, &ldquo;Strictly Proper Scoring Rules, Prediction, and Estimation,&rdquo; <em>JASA</em> 102:359&ndash;378 (2007); Gneiting, Raftery, Westveld, Goldman, &ldquo;Calibrated Probabilistic Forecasting Using Ensemble Model Output Statistics and Minimum CRPS Estimation,&rdquo; <em>Monthly Weather Review</em> 133:1098&ndash;1118 (2005). Forecast data: NCEP GEFS (NOAA), ECMWF Open Data IFS, NCEP HRRR (regional). Market data: Kalshi public REST API. Observations: NWS daily summary, KNYC. <strong>This document describes one year of paper-trade results and the methodology behind them. It is not a solicitation, an offer, a recommendation, or a guarantee of future performance. All forward statements are conditional on data not yet observed.</strong>
+    </div>
+
+  </div>
+  <div class="page-footer">
+    <span>Weather Markets &middot; NYC Daily Highs &middot; Project Overview</span>
+    <span>11</span>
+  </div>
+</div>
+
+<script>
+  /* ===== FLOATING TOC: active-on-scroll ===== */
+  (function() {
+    const links = document.querySelectorAll('#tocNav a');
+    const pages = Array.from(links).map(a => document.getElementById(a.dataset.page)).filter(Boolean);
+
+    // Smooth scroll on click
+    links.forEach(link => {
+      link.addEventListener('click', e => {
+        const target = document.getElementById(link.dataset.page);
+        if (target) {
+          e.preventDefault();
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+
+    // Highlight current page on scroll
+    function updateActive() {
+      const viewportMid = window.scrollY + window.innerHeight / 3;
+      let current = pages[0];
+      for (const p of pages) {
+        if (p.offsetTop <= viewportMid) current = p;
+      }
+      links.forEach(a => a.classList.toggle('active', a.dataset.page === current.id));
+    }
+    window.addEventListener('scroll', updateActive, { passive: true });
+    updateActive();
+  })();
+
+  /* ===== BANKROLL SIMULATOR ===== */
+  (function() {
+    // Backtest-derived lookup tables (median final balance and survival rate over 200 seeds)
+    // Indexed by [executionMode][kellyPct]; sourced from scripts/dashboard.py simulate_pnl.
+    const balanceTable = {
+      cross:     { 10: 131, 20: 127, 25: 111, 33:  74, 50:  12, 75:   0.03, 100: 0 },
+      limit_100: { 10: 165, 20: 195, 25: 185, 33: 137, 50:  26, 75:   0.05, 100: 0 },
+      limit_70:  { 10: 143, 20: 165, 25: 160, 33: 132, 50:  44, 75:   0.6,  100: 0 },
+      limit_50:  { 10: 126, 20: 134, 25: 131, 33: 111, 50:  45, 75:   1.7,  100: 0 }
+    };
+    const survivalTable = {
+      cross:     { 10: 100, 20: 100, 25: 100, 33:   0, 50:   0, 75:   0, 100: 0 },
+      limit_100: { 10: 100, 20: 100, 25: 100, 33: 100, 50:   0, 75:   0, 100: 0 },
+      limit_70:  { 10:  93, 20:  86, 25:  80, 33:  62, 50:  26, 75:   0, 100: 0 },
+      limit_50:  { 10:  85, 20:  76, 25:  66, 33:  53, 50:  31, 75:   6, 100: 0 }
+    };
+
+    let currentKelly = 20;
+    let currentExec = 'limit_100';
+
+    const balanceEl = document.getElementById('simBalance');
+    const returnEl = document.getElementById('simReturn');
+    const survivalEl = document.getElementById('simSurvival');
+
+    function render() {
+      const bal = balanceTable[currentExec][currentKelly];
+      const surv = survivalTable[currentExec][currentKelly];
+      const pct = ((bal / 100) - 1) * 100;
+
+      if (bal < 1) {
+        balanceEl.textContent = '$' + bal.toFixed(2);
+      } else {
+        balanceEl.textContent = '$' + Math.round(bal);
+      }
+      returnEl.textContent = (pct >= 0 ? '+' : '') + Math.round(pct) + '%';
+      survivalEl.textContent = surv + '%';
+
+      balanceEl.className = 'sim-stat-value ' + (bal > 100 ? 'positive' : (bal < 100 ? 'negative' : ''));
+      returnEl.className = 'sim-stat-value ' + (pct > 0 ? 'positive' : (pct < 0 ? 'negative' : ''));
+      survivalEl.className = 'sim-stat-value ' + (surv >= 80 ? 'positive' : (surv < 50 ? 'negative' : ''));
+    }
+
+    document.querySelectorAll('#kellyButtons .sim-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#kellyButtons .sim-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentKelly = parseInt(btn.dataset.kelly, 10);
+        render();
+      });
+    });
+
+    document.querySelectorAll('#execButtons .sim-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#execButtons .sim-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentExec = btn.dataset.exec;
+        render();
+      });
+    });
+
+    render();
+  })();
+</script>
+
+</body>
+</html>

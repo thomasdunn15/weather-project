@@ -37,21 +37,52 @@
 # Kalshi price snapshots: every 5 minutes
 */5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_kalshi_prices.py >> /var/log/weather/snapshot.log 2>&1
 
-# Clean up Herbie GRIB cache older than 3 days
-0 3 * * * find /home/tdunn/data/gefs -type f -mtime +3 -delete
+# Clean up Herbie GRIB caches every hour — purge anything older than 60 min.
+# Hourly cadence (vs old daily) and short retention (vs old +3 days) are
+# required because backfills can churn through >50 GB/day per worker, faster
+# than daily cleanup can keep up. Disk-full once crashed Postgres and locked
+# us out of SSH on 2026-05-30, so this is safety-critical. Herbie re-downloads
+# on cache miss, so aggressive cleanup is harmless to correctness.
+0 * * * * find /home/tdunn/data/gefs -type f -mmin +60 -delete
+0 * * * * find /home/tdunn/data/hrrr -type f -mmin +60 -delete
 
-# ECMWF 00 UTC run: try today (open data publishes ~05-06 UTC), fall back to yesterday on failure
+# ECMWF 00 UTC run: try at 07:00 (normal publication ~04:00 UTC + buffer), retry
+# at 13:00. The 07:00 run catches the 90% case; the 13:00 retry catches days when
+# Open Data is delayed (which has happened). Both runs are idempotent — the second
+# is a no-op if the first succeeded, and rescues today's IFS when the first fell
+# back to yesterday. 13:00 still leaves 1h 45min before the 14:45 paper-trade cron.
 0 7 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_00z.log 2>&1
+0 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_00z.log 2>&1
 
 # ECMWF 12 UTC run: try today (open data publishes ~17 UTC), fall back to yesterday on failure
 30 18 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py >> /var/log/weather/ecmwf.log 2>&1
 
-# Clean up ECMWF GRIB cache older than 3 days
-0 3 * * * find /home/tdunn/data/ifs -type f -mtime +3 -delete
+# Clean up ECMWF GRIB cache hourly (see GEFS/HRRR cleanup note above for why).
+0 * * * * find /home/tdunn/data/ifs -type f -mmin +60 -delete
 
 # Paper-trading log: 14:45 UTC daily — 15 min after Kalshi discovery (14:30) and well before NYC peak heating (~18 UTC).
 # Uses 00Z ECMWF forecast (ingested at 07 UTC), trades against pre-convergence market.
+# KEPT RUNNING alongside live trading for diagnostic comparison (paper vs live divergence).
 45 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/paper_trade_log.py >> /var/log/weather/paper_trade.log 2>&1
+
+# ----- LIVE TRADING (real money) -----
+# Each fires after paper trade so the cron-evaluated signals are already in paper_trades for the day.
+# live_trade.py has all risk controls baked in (halt file, cumulative drawdown, daily loss, contract cap, spread regime).
+
+# Live trade decision: 14:46 UTC (1 min after paper-trade cron to ensure today's snapshot is in DB).
+# --live actually places orders. Remove --live to dry-run.
+46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --live >> /var/log/weather/live_trade.log 2>&1
+
+# Fill monitor: every 30 min during the trading window, checks pending orders.
+# Does NOT cancel at this cadence — just updates fill_status as fills come in.
+0,30 15-19 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py >> /var/log/weather/monitor_fills.log 2>&1
+
+# EOD fill cleanup: 20:00 UTC daily. Cancels any still-pending orders so we don't carry them overnight.
+0 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --cancel-unfilled >> /var/log/weather/monitor_fills.log 2>&1
+
+# Reconciliation: 04:00 UTC daily. Pulls settlement results for yesterday's filled trades,
+# computes realized P&L, prints daily summary to log.
+0 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_live_trades.py >> /var/log/weather/reconcile.log 2>&1
 
 # Pipeline health check: 16:00 UTC daily (75 min after paper-trade cron).
 # Alerts on silent failures that would cost data-accumulation days.

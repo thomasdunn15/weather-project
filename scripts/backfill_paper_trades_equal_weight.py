@@ -1,43 +1,38 @@
-"""Backfill historical paper trades by simulating what the cron would have
-logged on each day in the given range. Configuration is fully CLI-driven so
-the same script can backfill any (model, init_hour, decision_time, threshold,
-model_source) combination.
+"""Backfill paper trades using EQUAL-MODEL weighting (vs current member-flat).
 
-Examples:
+The production backfill_paper_trades.py flattens 31 GEFS + 50 IFS members into
+a single list, giving each model weight proportional to its member count. Adding
+HRRR as a third deterministic model gives it 1/82 = 1.2% weight, which is why
+the prior HRRR experiment (+3.07¢ → +3.19¢) showed no improvement.
 
-  # ECMWF 00Z @ 14:45 (current production)
-  uv run python scripts/backfill_paper_trades.py \\
+This script tests an alternative: give each MODEL equal weight (1/3 each for
+GEFS, IFS, HRRR). HRRR's signal then contributes 33%, not 1%. EMOS structure
+and all filter logic are unchanged.
+
+Example:
+  uv run python scripts/backfill_paper_trades_equal_weight.py \\
       --start-date 2025-05-27 --end-date 2026-05-26 \\
-      --model ifs --init-hour 0 \\
-      --decision-hour 14 --decision-minute 45 \\
-      --model-source "EMOS ECMWF 00Z (rolling 45d)"
+      --init-hour 0 --decision-hour 14 --decision-minute 45 \\
+      --model-source "EMOS combined-equal-weight 00Z (rolling 45d)"
 
-  # Combined 12Z @ 18:45 (the abandoned late-trading regime)
-  uv run python scripts/backfill_paper_trades.py \\
-      --start-date 2025-05-27 --end-date 2026-05-26 \\
-      --model combined --init-hour 12 \\
-      --decision-hour 18 --decision-minute 45 \\
-      --model-source "EMOS combined (rolling 45d)"
-
-Days with missing forecast, no contracts, or insufficient training data are
-skipped silently. Idempotent via the paper_trades PK
-(target_date, ticker, model_source).
+Idempotent on (target_date, ticker, model_source). Distinct model_source label
+keeps this experiment's rows separate from the production backfill's.
 """
 import argparse
 import math
-import statistics
 import time
 from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from weather_markets.db import get_connection
 from weather_markets.aggregation import (
-    compute_combined_daily_highs,
+    compute_combined_daily_highs_stats,
     fetch_contracts_for_date,
 )
-from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
+from weather_markets.emos import fit_emos_rolling_equal_weight, gaussian_to_bracket_probs
 
 
 STATION_ID = "KNYC"
+MODELS = ["gefs", "ifs", "hrrr"]  # all three for the equal-weight experiment
 
 INSERT_SQL = """
     INSERT INTO paper_trades (
@@ -55,50 +50,39 @@ INSERT_SQL = """
 
 
 def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int, str]:
-    """Run paper-trade logic for one date. Returns (n_trades_logged, status)."""
     snapshot_cutoff = datetime.combine(
         target_date, dtime(cfg.decision_hour, cfg.decision_minute), tzinfo=timezone.utc,
     )
     init_time = datetime(target_date.year, target_date.month, target_date.day,
                          cfg.init_hour, 0, tzinfo=timezone.utc)
-    notes = f"as-of-recovery={snapshot_cutoff.isoformat()}"
+    notes = f"equal-weight; as-of={snapshot_cutoff.isoformat()}"
 
-    # Translate --model into (models_list_for_ensemble, model_for_emos)
-    if cfg.model == "combined":
-        models_list = ["gefs", "ifs"]
-    elif cfg.model == "combined_hrrr":
-        models_list = ["gefs", "ifs", "hrrr"]
-    else:
-        models_list = [cfg.model]
-
-    # 1. At least one of the underlying model forecasts must be present.
+    # 1. At least one model must have forecast data for this init.
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
-            (STATION_ID, models_list, init_time),
+            (STATION_ID, MODELS, init_time),
         )
         if cur.fetchone() is None:
             return 0, "no_forecast"
 
-    # 2. Ensemble
+    # 2. Combined ensemble stats under equal-model weighting.
     try:
-        ensemble_values = compute_combined_daily_highs(
-            init_time, target_date, conn, station_id=STATION_ID, models=models_list,
+        ensemble_mean, ensemble_std, n_members = compute_combined_daily_highs_stats(
+            init_time, target_date, conn,
+            station_id=STATION_ID, models=MODELS, weighting="equal_model",
         )
     except Exception:
         return 0, "no_forecast"
-    n_members = len(ensemble_values)
-    if n_members < 2:
+    if n_members < 2 or ensemble_std <= 0:
         return 0, "no_forecast"
-    ensemble_mean = statistics.mean(ensemble_values)
-    ensemble_std = statistics.stdev(ensemble_values)
-    notes += f"; ensemble_members={n_members}"
+    notes += f"; n_members={n_members}"
 
-    # 3. Rolling EMOS
-    emos = fit_emos_rolling(
+    # 3. Rolling EMOS fit on equal-weight training pairs.
+    emos = fit_emos_rolling_equal_weight(
         target_date, conn,
         window_days=cfg.window_days, station_id=STATION_ID,
-        model=cfg.model, init_hour=cfg.init_hour,
+        models=MODELS, init_hour=cfg.init_hour,
     )
     if emos is None:
         return 0, "emos_none"
@@ -108,12 +92,13 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         return 0, "emos_none"
     emos_sigma = math.sqrt(emos_var)
 
-    # 4. Contracts
+    # 4. Contracts for the target date (KXHIGHNY only)
     contracts = fetch_contracts_for_date(target_date, conn, station_id=STATION_ID)
+    contracts = [c for c in contracts if c["ticker"].startswith("KXHIGHNY")]
     if not contracts:
         return 0, "no_contracts"
 
-    # 5. Prices at snapshot cutoff
+    # 5. Prices at snapshot cutoff.
     tickers = [c["ticker"] for c in contracts]
     with conn.cursor() as cur:
         cur.execute(
@@ -126,10 +111,10 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         )
         prices = {t: (b, a, s) for t, b, a, s in cur.fetchall()}
 
-    # 6. Model probs
+    # 6. Model probabilities.
     model_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
 
-    # 7. Evaluate + insert
+    # 7. Evaluate + insert.
     n_logged = 0
     n_priced = 0
     with conn.cursor() as cur:
@@ -172,26 +157,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
     parser.add_argument("--end-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
-    parser.add_argument("--model", choices=["combined", "gefs", "ifs", "combined_hrrr"], default="ifs",
-                        help="Ensemble source for EMOS fit and ensemble computation. "
-                             "'combined_hrrr' = gefs+ifs+hrrr.")
-    parser.add_argument("--init-hour", type=int, choices=[0, 12], default=0,
-                        help="Forecast init hour UTC (must match available forecast data).")
-    parser.add_argument("--decision-hour", type=int, default=14,
-                        help="UTC hour the simulated trade decision is made (price snapshot cutoff).")
-    parser.add_argument("--decision-minute", type=int, default=45,
-                        help="UTC minute of the simulated trade decision.")
-    parser.add_argument("--window-days", type=int, default=45,
-                        help="Rolling EMOS training window length.")
-    parser.add_argument("--edge-threshold", type=float, default=0.10,
-                        help="Minimum |edge| to log a paper trade.")
+    parser.add_argument("--init-hour", type=int, choices=[0, 12], default=0)
+    parser.add_argument("--decision-hour", type=int, default=14)
+    parser.add_argument("--decision-minute", type=int, default=45)
+    parser.add_argument("--window-days", type=int, default=45)
+    parser.add_argument("--edge-threshold", type=float, default=0.10)
     parser.add_argument("--model-source", required=True,
-                        help="Label written to paper_trades.model_source (PK component). "
-                             "Different configs MUST use different labels — never pool configs.")
+                        help="Distinct label, e.g. 'EMOS combined-equal-weight 00Z (rolling 45d)'.")
     args = parser.parse_args()
 
-    print(f"Backfilling paper trades for {args.start_date} → {args.end_date}")
-    print(f"  model:        {args.model}")
+    print(f"Backfilling EQUAL-WEIGHT paper trades for {args.start_date} → {args.end_date}")
+    print(f"  models:       {MODELS} (each gets equal weight in mean)")
     print(f"  init_hour:    {args.init_hour:02d}Z")
     print(f"  decision:     {args.decision_hour:02d}:{args.decision_minute:02d} UTC")
     print(f"  window:       {args.window_days} days, edge ≥ {args.edge_threshold}")

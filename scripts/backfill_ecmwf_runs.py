@@ -27,12 +27,17 @@ def main() -> None:
     parser.add_argument("--run-hour", type=int, required=True, choices=sorted(FORECAST_HOURS_BY_RUN_HOUR))
     parser.add_argument("--start", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
     parser.add_argument("--end", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
+    parser.add_argument("--forecast-hours", type=lambda s: [int(x) for x in s.split(",")],
+                        default=None, help="Override forecast-hour list, comma-separated (e.g. '30,33,36').")
+    parser.add_argument("--use-instantaneous", action="store_true",
+                        help="Extract instantaneous 2t into temperature_f instead of mx2t3 into tmax_f. "
+                             "Use for daily-low forecasts at morning hours.")
     args = parser.parse_args()
 
     if args.end < args.start:
         parser.error("--end must be on or after --start")
 
-    forecast_hours = FORECAST_HOURS_BY_RUN_HOUR[args.run_hour]
+    forecast_hours = args.forecast_hours if args.forecast_hours is not None else FORECAST_HOURS_BY_RUN_HOUR[args.run_hour]
     total_days = (args.end - args.start).days + 1
 
     print(
@@ -57,6 +62,7 @@ def main() -> None:
                 run_time=run_time,
                 station_id="KNYC",
                 forecast_hours=forecast_hours,
+                use_instantaneous=args.use_instantaneous,
             )
             elapsed = time.time() - t0
             print(f"OK in {elapsed:.0f}s: {result.get('rows_inserted')} rows", flush=True)

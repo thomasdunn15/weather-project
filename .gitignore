@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 data/
+logs/
 *.grib2
 *.idx
 .ipynb_checkpoints/

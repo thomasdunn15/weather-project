@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     data_dir: Path = Path.home() / "data" / "gefs"
     log_level: str = "INFO"
 
+    # Kalshi API. kalshi_key_path points to an RSA private key (.pem). Demo
+    # base url by default so smoke tests can't move real money. Switch to
+    # https://api.elections.kalshi.com/trade-api/v2 once Phase 3 passes.
+    kalshi_key_id: str | None = None
+    kalshi_key_path: Path | None = None
+    kalshi_api_base: str = "https://demo-api.kalshi.co/trade-api/v2"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

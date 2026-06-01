@@ -7,6 +7,7 @@ Two tabs:
   - Trading:  today's combined+EMOS forecast vs Kalshi prices, with edge highlighting
 """
 import math
+import random
 import statistics
 from datetime import datetime, date, timezone, timedelta
 
@@ -119,6 +120,13 @@ def paper_trades_with_outcomes(limit: int = 500):
     Returns DataFrame with outcome resolution columns: contract_yes_resolved,
     won, pnl_cents_per_unit. Unresolved trades (observation hasn't landed yet)
     have None for those columns. Sorted by target_date DESC, logged_at DESC.
+
+    Filters target_date >= 2025-05-27 to exclude the pre-Nov-2024 wide-spread
+    regime (mean spread 20¢ vs current ~3¢). Year-2 backfill data IS in the DB
+    under the same model_source, but the spread environment was so different
+    (median spread 8¢, 30% of trades had spread ≥20¢) that pooling it with the
+    current tight-spread regime would conflate two different markets. Cutoff
+    aligned with the year-1 production backfill start.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -127,12 +135,14 @@ def paper_trades_with_outcomes(limit: int = 500):
                 SELECT pt.target_date, pt.logged_at, pt.ticker, pt.model_source,
                        pt.model_prob_yes, pt.market_mid_prob, pt.edge,
                        pt.position, pt.entry_price_cents,
+                       pt.market_yes_bid, pt.market_yes_ask,
                        c.bracket_type, c.strike_low, c.strike_high,
                        o.high_temp_f
                 FROM paper_trades pt
                 JOIN contracts c ON c.ticker = pt.ticker
                 LEFT JOIN observations o
                     ON o.date = pt.target_date AND o.station_id = 'KNYC'
+                WHERE pt.target_date >= '2025-05-27'
                 ORDER BY pt.target_date DESC, pt.logged_at DESC
                 LIMIT %s
                 """,
@@ -191,6 +201,7 @@ def simulate_pnl(
     *,
     contracts: int = 1,
     kelly_fraction: float = 0.5,
+    execution_mode: str = "cross",
 ) -> pd.DataFrame:
     """Walk resolved trades chronologically and compute cumulative balance.
 
@@ -198,6 +209,14 @@ def simulate_pnl(
       - "unit"  — buy `contracts` contracts per trade (constant).
       - "kelly" — stake = bankroll × kelly_fraction × Kelly-optimal fraction;
                   bankroll compounds.
+
+    execution_mode:
+      - "cross"      — pay the cross-spread (entry_price_cents). Always fills.
+      - "limit_100"  — post 1¢ inside the spread, assume 100% fills.
+      - "limit_70"   — same limit price, 70% deterministic fill rate.
+      - "limit_50"   — same limit price, 50% deterministic fill rate.
+      Missed limit fills produce $0 P&L (no fee, no exposure). Fill is
+      seeded so the curve is deterministic across reruns.
 
     All P&L is net of Kalshi trading fees (per-contract entry fee).
     """
@@ -207,12 +226,35 @@ def simulate_pnl(
         .reset_index(drop=True)
     )
 
+    fill_rate = {"cross": 1.0, "limit_100": 1.0, "limit_70": 0.7, "limit_50": 0.5}[execution_mode]
+    rng = random.Random(42)
+
     history = [{"date": None, "balance": starting_balance, "trade_pnl": 0.0}]
     balance = starting_balance
 
     for _, row in resolved.iterrows():
-        entry = int(row["entry_price_cents"])
+        cross_entry = int(row["entry_price_cents"])
         won = bool(row["won"])
+
+        if execution_mode == "cross":
+            entry = cross_entry
+        else:
+            bid, ask = row["market_yes_bid"], row["market_yes_ask"]
+            if pd.isna(bid) or pd.isna(ask) or ask <= bid + 1:
+                # No room to post inside the spread — fall back to cross.
+                entry = cross_entry
+            else:
+                entry = max(1, cross_entry - int(ask - bid - 1))
+
+        filled = rng.random() < fill_rate
+        if not filled:
+            history.append({
+                "date": pd.Timestamp(row["target_date"]),
+                "balance": balance,
+                "trade_pnl": 0.0,
+            })
+            continue
+
         fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
 
         if sizing_type == "unit":
@@ -498,7 +540,7 @@ def latest_available_init(conn, target_date, init_hour=12, model_aware=True):
 # TABS
 # =====================================================================
 
-tab_analysis, tab_trade = st.tabs(["Analysis", "Trading"])
+tab_analysis, tab_live, tab_backtest = st.tabs(["Analysis", "Live Trading", "Backtest"])
 
 
 # ---------------------------------------------------------------------
@@ -936,14 +978,525 @@ with tab_analysis:
 
 
 # ---------------------------------------------------------------------
-# TRADING TAB (operational view)
+# LIVE TRADING TAB (real account state + today's orders + risk envelope)
 # ---------------------------------------------------------------------
-with tab_trade:
-    st.title("Trading View")
+
+@st.cache_data(ttl=30)
+def _live_account_state() -> dict:
+    """Pull live state from Kalshi. Cached 30s so dashboard reloads don't hammer the API."""
+    from weather_markets.kalshi_api import KalshiClient, KalshiAuthError
+    out: dict = {"ok": False, "error": None,
+                 "balance_cents": None, "positions": [], "orders": [], "fills": []}
+    try:
+        client = KalshiClient()
+        out["api_base"] = client.api_base
+        out["balance_cents"] = client.get_balance().get("balance")
+        out["positions"] = client.get_positions().get("market_positions", [])
+        out["orders"] = client.get_orders(status="resting", limit=50).get("orders", [])
+        import time as _t
+        out["fills"] = client.get_fills(min_ts=int(_t.time()) - 7*86400, limit=50).get("fills", [])
+        client.close()
+        out["ok"] = True
+    except KalshiAuthError as e:
+        out["error"] = f"Kalshi auth not configured: {e}"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
+@st.cache_data(ttl=30)
+def _live_db_state() -> dict:
+    """Pull live_trades aggregates from DB. Cached 30s."""
+    out: dict = {}
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM live_trades")
+        out["total_attempts"] = cur.fetchone()[0]
+        cur.execute("""
+            SELECT COALESCE(SUM(realized_pnl_cents), 0),
+                   COUNT(*) FILTER (WHERE settlement IS NOT NULL),
+                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')),
+                   COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = CURRENT_DATE), 0)
+            FROM live_trades
+        """)
+        out["cum_pnl_cents"], out["n_settled"], out["n_filled"], out["today_pnl_cents"] = cur.fetchone()
+        cur.execute("""
+            SELECT target_date,
+                   SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL) AS daily_pnl
+            FROM live_trades
+            GROUP BY target_date ORDER BY target_date
+        """)
+        out["pnl_by_day"] = cur.fetchall()
+        cur.execute("""
+            SELECT placed_at, target_date, ticker, side, count,
+                   limit_price_cents, cross_price_cents, edge,
+                   fill_status, fill_price_cents, settlement, realized_pnl_cents
+            FROM live_trades
+            WHERE target_date = CURRENT_DATE
+            ORDER BY placed_at
+        """)
+        out["today_trades"] = cur.fetchall()
+        cur.execute("""
+            SELECT AVG(market_yes_ask - market_yes_bid), COUNT(*)
+            FROM paper_trades
+            WHERE target_date >= CURRENT_DATE - INTERVAL '28 days'
+              AND entry_price_cents >= 60 AND ABS(edge) >= 0.10
+              AND market_yes_bid IS NOT NULL AND market_yes_ask IS NOT NULL
+              AND model_source = 'EMOS combined 00Z (rolling 45d)'
+        """)
+        spr, n = cur.fetchone()
+        out["spread_4wk"] = (float(spr), n) if spr is not None else (None, n)
+    return out
+
+
+@st.cache_data(ttl=15)
+def _enrich_positions(positions: list[dict]) -> list[dict]:
+    """For each non-zero position: fetch live market, compute unrealized P&L,
+    pull bracket info from DB, look up today's model probability if available.
+
+    Cached 15s — short enough that live P&L feels real, long enough to avoid
+    hammering Kalshi during dashboard refresh."""
+    from weather_markets.kalshi_api import KalshiClient, parse_position, parse_dollars_to_cents
+    open_positions = [p for p in positions if parse_position(p) != 0]
+    if not open_positions:
+        return []
+
+    enriched: list[dict] = []
+    client = KalshiClient()
+    today = date.today()
+    try:
+        with get_connection() as conn:
+            for p in open_positions:
+                ticker = p["ticker"]
+                pos = parse_position(p)
+                side = "yes" if pos > 0 else "no"
+                qty = abs(pos)
+                # Cost basis: market_exposure_dollars is the dollars committed; convert to cents.
+                exposure_cents = parse_dollars_to_cents(p, "market_exposure_dollars")
+                avg_cost_cents = (exposure_cents / qty) if qty else 0
+
+                # Live market (Kalshi returns prices as dollar strings; convert to cents)
+                try:
+                    mkt = client.get_market(ticker).get("market", {})
+                    if side == "yes":
+                        bid = parse_dollars_to_cents(mkt, "yes_bid_dollars")
+                        ask = parse_dollars_to_cents(mkt, "yes_ask_dollars")
+                    else:
+                        bid = parse_dollars_to_cents(mkt, "no_bid_dollars")
+                        ask = parse_dollars_to_cents(mkt, "no_ask_dollars")
+                    if bid == 0 and ask == 0:
+                        bid = ask = None  # missing or no quote
+                except Exception:
+                    bid = ask = None
+                mark = (bid + ask) / 2.0 if (bid is not None and ask is not None) else None
+
+                # Unrealized P&L = (mark - avg_cost) * qty, both in cents
+                if mark is not None:
+                    unrealized_cents = int(round((mark - avg_cost_cents) * qty))
+                else:
+                    unrealized_cents = None
+
+                # Bracket info + today's model view (if available from paper_trades)
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT bracket_type, strike_low, strike_high, target_date
+                        FROM contracts WHERE ticker = %s
+                    """, (ticker,))
+                    contract_row = cur.fetchone()
+                    if contract_row:
+                        bt, slo, shi, td = contract_row
+                        if bt == "greater_than":
+                            range_str = f">{int(slo)}°"
+                        elif bt == "less_than":
+                            range_str = f"<{int(shi)}°"
+                        else:
+                            range_str = f"{int(slo)}-{int(shi)}°"
+                    else:
+                        range_str = "?"
+                        td = None
+
+                    # Today's model edge for this contract (from paper-trade cron)
+                    model_p = market_mid = edge = None
+                    if td == today:
+                        cur.execute("""
+                            SELECT model_prob_yes, market_mid_prob, edge
+                            FROM paper_trades
+                            WHERE ticker = %s AND target_date = %s
+                              AND model_source = 'EMOS combined 00Z (rolling 45d)'
+                            ORDER BY logged_at DESC LIMIT 1
+                        """, (ticker, td))
+                        mp_row = cur.fetchone()
+                        if mp_row:
+                            model_p, market_mid, edge = mp_row
+
+                # Action heuristic
+                if edge is not None:
+                    # If we're long YES and current model edge is still positive → HOLD
+                    # If we're long NO  and current model edge is still negative → HOLD
+                    # If the sign flipped → REVIEW
+                    if (side == "yes" and edge > 0) or (side == "no" and edge < 0):
+                        action = "HOLD (model agrees)"
+                    else:
+                        action = "REVIEW (model flipped)"
+                else:
+                    action = "—"
+
+                enriched.append({
+                    "ticker": ticker,
+                    "range": range_str,
+                    "target_date": td,
+                    "side": side,
+                    "qty": qty,
+                    "avg_cost_cents": avg_cost_cents,
+                    "bid": bid,
+                    "ask": ask,
+                    "mark": mark,
+                    "unrealized_cents": unrealized_cents,
+                    "model_p": float(model_p) if model_p is not None else None,
+                    "market_mid": float(market_mid) if market_mid is not None else None,
+                    "edge": float(edge) if edge is not None else None,
+                    "action": action,
+                    "realized_pnl_cents": parse_dollars_to_cents(p, "realized_pnl_dollars"),
+                    "fees_paid_cents": parse_dollars_to_cents(p, "fees_paid_dollars"),
+                })
+    finally:
+        client.close()
+    return enriched
+
+
+def _to_local_time(dt_or_str, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Convert a UTC datetime, ISO string, or naive timestamp to Eastern time.
+    Uses America/New_York zone so EST↔EDT switches automatically."""
+    from zoneinfo import ZoneInfo
+    if dt_or_str is None or dt_or_str == "":
+        return ""
+    if isinstance(dt_or_str, str):
+        s = dt_or_str.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return dt_or_str
+    else:
+        dt = dt_or_str
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo("America/New_York")).strftime(fmt)
+
+
+def _read_recent_alerts(n: int = 10) -> list[str]:
+    from pathlib import Path
+    p = Path("/var/log/weather/alerts.log")
+    if not p.exists():
+        return []
+    try:
+        with p.open() as f:
+            return f.readlines()[-n:]
+    except Exception:
+        return []
+
+
+def _read_halt_reason() -> str | None:
+    from pathlib import Path
+    p = Path.home() / ".kalshi" / "halt"
+    if p.exists():
+        return p.read_text().strip()
+    return None
+
+
+@st.fragment(run_every="15s")
+def _live_trading_panel():
+    """Auto-refreshing Live Trading view. Re-runs every 15s; underlying
+    Kalshi/DB calls are @st.cache_data ttl=15-30s so API rate stays low."""
+    # Refresh indicator (shows EST time so user can see it's updating)
+    from zoneinfo import ZoneInfo
+    now_local = datetime.now(ZoneInfo("America/New_York"))
+    st.caption(f"⟳ Updated {now_local.strftime('%I:%M:%S %p %Z')} (auto-refreshes every 15s)")
+
+    halt_reason = _read_halt_reason()
+    if halt_reason:
+        st.error(f"🛑 **STRATEGY HALTED.** No new orders will be placed by the cron until "
+                 f"this file is removed: `~/.kalshi/halt`\n\n```\n{halt_reason}\n```")
+        st.markdown("To clear: investigate root cause, then `rm ~/.kalshi/halt` to re-enable trading.")
+
+    # Pull state
+    live = _live_account_state()
+    db = _live_db_state()
+
+    if not live["ok"]:
+        st.warning(f"Kalshi API unavailable: {live['error']}")
+
+    is_demo = live.get("api_base") and "demo" in live["api_base"]
+    env_label = "DEMO" if is_demo else "LIVE (real money)"
+
+    # === Top status row ===
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        bal = live.get("balance_cents")
+        st.metric("Account balance", f"${bal/100:,.2f}" if bal is not None else "—", env_label)
+    with m2:
+        st.metric("Cumulative live P&L", f"${int(db['cum_pnl_cents'])/100:+,.2f}",
+                  f"{db['n_settled']} settled trades")
+    with m3:
+        st.metric("Today's realized P&L", f"${int(db['today_pnl_cents'])/100:+,.2f}",
+                  f"{len(db['today_trades'])} orders placed today" if db['today_trades'] else "no orders today")
+    with m4:
+        from weather_markets.kalshi_api import parse_position
+        open_contracts = sum(abs(parse_position(p)) for p in live.get("positions", []))
+        st.metric("Open contracts (Kalshi)", open_contracts, f"{len(live.get('orders', []))} resting orders")
+
+    st.divider()
+
+    # === Risk envelope ===
+    st.subheader("Risk envelope")
+    st.caption("All four bars must stay green. A breached limit halts the strategy.")
+    r1, r2, r3, r4 = st.columns(4)
+    with r1:
+        cum_pct = max(0, min(100, abs(int(db['cum_pnl_cents'])/100) / 300 * 100)) if db['cum_pnl_cents'] < 0 else 0
+        st.metric("Cumulative drawdown", f"${int(db['cum_pnl_cents'])/100:+,.2f}", f"limit −$300", delta_color="inverse")
+        st.progress(min(1.0, cum_pct/100), text=f"{cum_pct:.0f}% of kill threshold")
+    with r2:
+        today_loss_pct = max(0, min(100, abs(int(db['today_pnl_cents'])/100) / 50 * 100)) if db['today_pnl_cents'] < 0 else 0
+        st.metric("Today's loss", f"${int(db['today_pnl_cents'])/100:+,.2f}", "limit −$50", delta_color="inverse")
+        st.progress(min(1.0, today_loss_pct/100), text=f"{today_loss_pct:.0f}% of daily limit")
+    with r3:
+        at_cap = open_contracts >= 200
+        delta = "AT CAP — new orders blocked" if at_cap else "limit 200"
+        st.metric("Open contracts", open_contracts, delta,
+                  delta_color="inverse" if at_cap else "normal")
+        st.progress(min(1.0, open_contracts/200), text=f"{open_contracts/200*100:.0f}% of cap")
+        if at_cap:
+            st.caption("⚠️ Live-trade cron will skip new signals until a position closes.")
+    with r4:
+        spr_val, spr_n = db['spread_4wk']
+        if spr_val is None:
+            st.metric("4wk avg spread", "—", "limit 5¢")
+            st.caption("Insufficient data")
+        else:
+            st.metric("4wk avg spread", f"{spr_val:.2f}¢", f"limit 5¢ (over {spr_n} trades)")
+            st.progress(min(1.0, spr_val/5), text=f"{spr_val/5*100:.0f}% of regime kill")
+
+    st.divider()
+
+    # === Current positions with live unrealized P&L ===
+    st.subheader("Current positions")
+    st.caption("Each row = one contract you hold. Mark = current bid/ask mid. "
+               "Unrealized P&L = (mark − avg cost) × qty. Refreshes every 15 seconds.")
+
+    positions_for_enrich = live.get("positions", [])
+    from weather_markets.kalshi_api import parse_position as _parse_pos
+    if not positions_for_enrich or all(_parse_pos(p) == 0 for p in positions_for_enrich):
+        st.info("No open positions right now.")
+    else:
+        try:
+            enriched = _enrich_positions(positions_for_enrich)
+        except Exception as e:
+            st.warning(f"Could not enrich positions: {type(e).__name__}: {e}")
+            enriched = []
+
+        if not enriched:
+            st.info("No open positions right now.")
+        else:
+            # Display as table with conditional formatting
+            import pandas as pd
+            rows = []
+            total_unrealized_cents = 0
+            for e in enriched:
+                upnl = e["unrealized_cents"]
+                if upnl is not None:
+                    total_unrealized_cents += upnl
+                rows.append({
+                    "Contract": e["ticker"].replace("KXHIGHNY-", ""),
+                    "Range": e["range"],
+                    "Side": e["side"].upper(),
+                    "Qty": e["qty"],
+                    "Avg cost": f"{e['avg_cost_cents']:.1f}¢",
+                    "Bid": f"{e['bid']}¢" if e["bid"] is not None else "—",
+                    "Ask": f"{e['ask']}¢" if e["ask"] is not None else "—",
+                    "Mark": f"{e['mark']:.1f}¢" if e["mark"] is not None else "—",
+                    "Unrealized P&L": f"${e['unrealized_cents']/100:+,.2f}" if e["unrealized_cents"] is not None else "—",
+                    "Model P": f"{e['model_p']:.1%}" if e["model_p"] is not None else "—",
+                    "Market P": f"{e['market_mid']:.1%}" if e["market_mid"] is not None else "—",
+                    "Edge": f"{e['edge']:+.1%}" if e["edge"] is not None else "—",
+                    "Signal": e["action"],
+                })
+            df = pd.DataFrame(rows)
+
+            def color_pnl(v):
+                if "+" in str(v) and "$" in str(v):
+                    return "background-color: #1b4d2e; color: #b6f5c8"
+                if "-" in str(v) and "$" in str(v):
+                    return "background-color: #5c1a1a; color: #f5b6b6"
+                return ""
+
+            def color_signal(v):
+                if v == "HOLD (model agrees)":
+                    return "background-color: #1b4d2e; color: #b6f5c8"
+                if v == "REVIEW (model flipped)":
+                    return "background-color: #5c4a1a; color: #f5e0b6"
+                return ""
+
+            styled = (df.style
+                .map(color_pnl, subset=["Unrealized P&L"])
+                .map(color_signal, subset=["Signal"]))
+            st.dataframe(styled, width="stretch", hide_index=True)
+
+            # Aggregate footer
+            n_pos = len(enriched)
+            st.metric("Total unrealized P&L across all positions",
+                      f"${total_unrealized_cents/100:+,.2f}",
+                      f"{n_pos} position{'s' if n_pos != 1 else ''}")
+
+    st.divider()
+
+    # === P&L Timeline ===
+    st.subheader("Cumulative P&L since first live trade")
+    if db['pnl_by_day']:
+        import pandas as pd
+        pnl_df = pd.DataFrame(db['pnl_by_day'], columns=["date", "daily_pnl_cents"])
+        pnl_df["daily_pnl_dollars"] = pnl_df["daily_pnl_cents"].fillna(0).astype(float) / 100.0
+        pnl_df["cum_pnl_dollars"] = pnl_df["daily_pnl_dollars"].cumsum()
+        pnl_df["date"] = pd.to_datetime(pnl_df["date"])
+        line = alt.Chart(pnl_df).mark_line(point=True).encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("cum_pnl_dollars:Q", title="Cumulative P&L ($)"),
+            tooltip=[alt.Tooltip("date:T"),
+                     alt.Tooltip("daily_pnl_dollars:Q", title="Day P&L", format="$.2f"),
+                     alt.Tooltip("cum_pnl_dollars:Q", title="Cumulative", format="$.2f")],
+        )
+        zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4,4], color="gray").encode(y="y:Q")
+        st.altair_chart((line + zero_line).properties(height=240), width="stretch")
+    else:
+        st.info("No live trades yet. Chart will populate after first fill + settlement.")
+
+    st.divider()
+
+    # === Today's orders table ===
+    st.subheader("Today's live orders")
+    if db['today_trades']:
+        import pandas as pd
+        cols = ["placed_at", "target_date", "ticker", "side", "count",
+                "limit", "cross", "edge", "status", "fill_price", "settled", "pnl"]
+        rows = []
+        for r in db['today_trades']:
+            (placed, td, tk, side, cnt, lim, cross, edge, status, fp, settle, pnl) = r
+            rows.append({
+                "placed_at (ET)": _to_local_time(placed, "%I:%M:%S %p") if placed else "",
+                "target_date": str(td),
+                "ticker": tk.replace("KXHIGHNY-", ""),
+                "side": side.upper(),
+                "count": cnt,
+                "limit": f"{lim}¢",
+                "cross": f"{cross}¢",
+                "edge": f"{float(edge):+.1%}",
+                "status": status,
+                "fill_price": f"{fp}¢" if fp else "—",
+                "settled": settle if settle else "—",
+                "pnl": f"${int(pnl)/100:+,.2f}" if pnl is not None else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.caption("Cron hasn't placed any orders today (either no signals passed filters, or hasn't fired yet).")
+
+    st.divider()
+
+    # === Open Kalshi orders + recent fills (side by side) ===
+    o1, o2 = st.columns(2)
+    with o1:
+        st.subheader("Open orders on Kalshi")
+        orders = live.get("orders", [])
+        if orders:
+            import pandas as pd
+            from weather_markets.kalshi_api import parse_count as _pc, parse_dollars_to_cents as _pd
+            order_rows = []
+            for o in orders[:10]:
+                price_c = _pd(o, "yes_price_dollars") or _pd(o, "no_price_dollars")
+                order_rows.append({
+                    "ticker": o.get("ticker", "").replace("KXHIGHNY-", ""),
+                    "side": o.get("side", "").upper(),
+                    "remaining": _pc(o, "remaining_count_fp"),
+                    "price": f"{price_c}¢" if price_c else "—",
+                    "placed (ET)": _to_local_time(o.get("created_time", ""), "%m-%d %I:%M:%S %p"),
+                })
+            st.dataframe(pd.DataFrame(order_rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No resting orders.")
+    with o2:
+        st.subheader("Recent fills (7 days)")
+        fills = live.get("fills", [])
+        if fills:
+            import pandas as pd
+            from weather_markets.kalshi_api import parse_count as _pc, parse_dollars_to_cents as _pd
+            fill_rows = []
+            for f in fills[:10]:
+                price_c = _pd(f, "yes_price_dollars") or _pd(f, "no_price_dollars")
+                fill_rows.append({
+                    "time (ET)": _to_local_time(f.get("created_time", ""), "%m-%d %I:%M:%S %p"),
+                    "ticker": f.get("ticker", "").replace("KXHIGHNY-", ""),
+                    "side": f.get("side", "").upper(),
+                    "count": _pc(f, "count_fp"),
+                    "price": f"{price_c}¢" if price_c else "—",
+                })
+            st.dataframe(pd.DataFrame(fill_rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No fills in the last 7 days.")
+
+    st.divider()
+
+    # === Recent alerts ===
+    st.subheader("Recent alerts")
+    alerts = _read_recent_alerts(10)
+    if alerts:
+        # Rewrite leading ISO UTC timestamp to ET for readability.
+        converted = []
+        for line in alerts:
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and "T" in parts[0]:
+                local_ts = _to_local_time(parts[0], "%Y-%m-%d %I:%M:%S %p ET")
+                converted.append(f"{local_ts} {parts[1]}")
+            else:
+                converted.append(line)
+        st.code("".join(converted), language="log")
+    else:
+        st.caption("No alerts logged.")
+
+    st.divider()
+
+    # === Strategy parameters (static reference) ===
+    with st.expander("Strategy parameters in effect"):
+        st.markdown("""
+- **Production filter:** |edge| ≥ 10%, entry ≥ 60¢
+- **Decision time:** 14:45 UTC daily
+- **Model:** EMOS combined GEFS+IFS 00Z, rolling 45-day fit
+- **Sizing:** Half-Kelly, capped at $25 per trade
+- **Execution:** post-only limit at 1¢ inside the spread
+- **Risk caps:**
+    - max stake per trade: $25
+    - max open contracts: 200 (runaway-bug circuit breaker)
+- **Kill criteria (immutable):**
+    - cumulative drawdown < −$300 → halt
+    - daily loss > −$50 → block new orders for 24h
+    - 4-week avg spread > 5¢ → halt (regime kill)
+    - first-30-attempts fill rate < 40% → halt
+    - first-60-trade forward mean < −1¢/trade → halt
+""")
+
+
+with tab_live:
+    st.title("Live Trading")
+    _live_trading_panel()
+
+
+# ---------------------------------------------------------------------
+# BACKTEST TAB (forecast-vs-market diagnostic view)
+# Was previously labeled "Trading View"; the actual live trading lives in
+# the Live Trading tab now.
+# ---------------------------------------------------------------------
+with tab_backtest:
+    st.title("Backtest / Forecast View")
     st.markdown(
         "Today's combined GEFS+ECMWF forecast vs current Kalshi prices. "
         "Edge = model probability minus market mid. Large positive edge means "
-        "the model thinks YES is underpriced."
+        "the model thinks YES is underpriced. **This is a diagnostic view — "
+        "actual live trading is in the Live Trading tab.**"
     )
 
     # Controls
@@ -957,14 +1510,9 @@ with tab_trade:
     with ctrl2:
         model_choice = st.radio(
             "Probability source",
-            options=[
-                "Raw combined",
-                "EMOS combined",
-                "EMOS combined (rolling 45d)",
-                "EMOS combined 00Z (rolling 45d)",
-            ],
+            options=["EMOS combined 00Z (rolling 45d)"],
             index=0,
-            help="Which model drives the edge and signal columns.",
+            help="Production strategy: combined GEFS+IFS 00Z ensemble, post-processed with a rolling 45-day EMOS fit.",
         )
     with ctrl3:
         edge_threshold = st.slider(
@@ -973,48 +1521,21 @@ with tab_trade:
             help="Flag BUY YES / BUY NO when |edge| exceeds this.",
         )
 
-    # Forecast configuration varies by probability source. The combined 00Z option
-    # uses a different init (00Z) and an earlier decision time (14:45 UTC, matching
-    # the market-open paper-trade cron) than the legacy 12Z combined views.
-    if model_choice == "EMOS combined 00Z (rolling 45d)":
-        cfg = {
-            "init_hour": 0,
-            "models": ["gefs", "ifs"],
-            "ensemble_label": "Combined 00Z",
-            "decision_hour": 14,
-            "decision_minute": 45,
-        }
-    else:
-        cfg = {
-            "init_hour": 12,
-            "models": ["gefs", "ifs"],
-            "ensemble_label": "Combined",
-            "decision_hour": 18,
-            "decision_minute": 45,
-        }
+    # Production strategy: 00Z init, 14:45 UTC decision time.
+    cfg = {
+        "init_hour": 0,
+        "models": ["gefs", "ifs"],
+        "ensemble_label": "Combined 00Z",
+        "decision_hour": 14,
+        "decision_minute": 45,
+    }
 
-    # Pick EMOS params based on radio choice.
-    if model_choice == "EMOS combined 00Z (rolling 45d)":
-        emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=0)
-        if emos_params is None:
-            st.warning(
-                "Rolling combined 00Z EMOS unavailable — fewer than 30 days of training data. "
-                "Showing raw combined probabilities only."
-            )
-    elif model_choice == "EMOS combined (rolling 45d)":
-        emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=12)
-        if emos_params is None:
-            st.warning(
-                "Rolling EMOS unavailable — fewer than 30 days of training data "
-                "for this target date. Falling back to full-sample EMOS."
-            )
-            emos_params = fit_combined_emos()
-            if emos_params is None:
-                st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
-    else:
-        emos_params = fit_combined_emos()
-        if emos_params is None:
-            st.warning("Not enough combined training data to fit EMOS. Showing raw only.")
+    emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=0)
+    if emos_params is None:
+        st.warning(
+            "Rolling combined 00Z EMOS unavailable — fewer than 30 days of training data. "
+            "Showing raw combined probabilities only."
+        )
 
     with get_connection() as conn:
         # Resolve which forecast run to use (canonical init for the chosen workflow).
@@ -1318,7 +1839,7 @@ with tab_trade:
                 f"source = {source_filter}, n_filtered = {n_total})."
             )
         else:
-            c1, c2, c3 = st.columns([1, 1, 2])
+            c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
             with c1:
                 starting_balance = st.number_input(
                     "Starting balance ($)", min_value=1.0, value=100.0, step=10.0,
@@ -1335,6 +1856,23 @@ with tab_trade:
                     ),
                 )
             with c3:
+                execution_label = st.radio(
+                    "Execution",
+                    ["Cross spread", "Limit (100% fill)", "Limit (70% fill)", "Limit (50% fill)"],
+                    index=0,
+                    help=(
+                        "Cross spread = pay the marketable price (paper-trade default). "
+                        "Limit = post 1¢ inside the spread, missed fills count as $0. "
+                        "Fill seed is fixed so the curve is deterministic."
+                    ),
+                )
+                execution_mode = {
+                    "Cross spread": "cross",
+                    "Limit (100% fill)": "limit_100",
+                    "Limit (70% fill)": "limit_70",
+                    "Limit (50% fill)": "limit_50",
+                }[execution_label]
+            with c4:
                 if sizing_type == "Unit":
                     contracts_per_trade = st.number_input(
                         "Contracts per trade", min_value=1, value=1, step=1,
@@ -1354,9 +1892,15 @@ with tab_trade:
                     strategy_label = f"Kelly ({kelly_pct}%)"
 
             if sizing_type == "Unit":
-                sim_df = simulate_pnl(pt_df, starting_balance, "unit", contracts=int(contracts_per_trade))
+                sim_df = simulate_pnl(
+                    pt_df, starting_balance, "unit",
+                    contracts=int(contracts_per_trade), execution_mode=execution_mode,
+                )
             else:
-                sim_df = simulate_pnl(pt_df, starting_balance, "kelly", kelly_fraction=kelly_fraction)
+                sim_df = simulate_pnl(
+                    pt_df, starting_balance, "kelly",
+                    kelly_fraction=kelly_fraction, execution_mode=execution_mode,
+                )
             final_balance = sim_df["balance"].iloc[-1]
             return_pct = (final_balance / starting_balance - 1) * 100
             n_won = int(pt_df["won"].sum())
@@ -1388,10 +1932,11 @@ with tab_trade:
             )
             st.altair_chart((line + baseline).properties(height=300), width="stretch")
             st.caption(
-                f"Strategy: {strategy_label}. Filter: |edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢, source = {source_filter}. "
+                f"Strategy: {strategy_label}. Execution: {execution_label}. "
+                f"Filter: |edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢, source = {source_filter}. "
                 f"P&L is net of Kalshi trading fees "
                 f"(per-contract: $0.07 × P × (1-P), rounded up to nearest cent). "
-                "Slippage and partial fills not modeled."
+                f"Limit mode posts 1¢ inside the spread; missed fills (seed=42) are $0."
             )
 
     # Recent paper trades log (with outcomes)
@@ -1410,6 +1955,19 @@ with tab_trade:
                 return "Lost"
             return "Pending"
 
+        # Limit-target = entry minus (spread - 1). Saves (spread - 1)¢/contract by
+        # posting inside the spread rather than crossing it. Shown as guidance for
+        # manual real-money trading; paper sim still uses cross-spread entry.
+        def limit_target(row):
+            bid, ask = row["market_yes_bid"], row["market_yes_ask"]
+            entry = row["entry_price_cents"]
+            if pd.isna(bid) or pd.isna(ask) or ask <= bid + 1:
+                return None
+            return int(entry - (ask - bid - 1))
+
+        recent_with_target = recent.copy()
+        recent_with_target["limit_target_cents"] = recent.apply(limit_target, axis=1)
+
         table = pd.DataFrame({
             "Date": recent["target_date"].astype(str),
             "Contract": recent["ticker"].str.replace("KXHIGHNY-", "", regex=False),
@@ -1417,7 +1975,10 @@ with tab_trade:
             "Model P": recent["model_prob_yes"].map(lambda x: f"{x:.1%}"),
             "Market P": recent["market_mid_prob"].map(lambda x: f"{x:.1%}"),
             "Edge": recent["edge"].map(lambda x: f"{x:+.1%}"),
-            "Entry": recent["entry_price_cents"].map(lambda x: f"{x}¢"),
+            "Entry (cross)": recent["entry_price_cents"].map(lambda x: f"{x}¢"),
+            "Limit target": recent_with_target["limit_target_cents"].map(
+                lambda x: f"{int(x)}¢" if pd.notna(x) else "—"
+            ),
             "High": recent["high_temp_f"].map(lambda x: f"{x:.0f}°" if pd.notna(x) else "—"),
             "Outcome": recent["won"].map(fmt_outcome),
             "P&L/unit": recent["pnl_cents_per_unit"].map(lambda x: f"{x:+.0f}¢" if pd.notna(x) else "—"),
@@ -1433,4 +1994,9 @@ with tab_trade:
         styled = table.style.map(highlight_outcome, subset=["Outcome"])
         st.dataframe(styled, width="stretch", hide_index=True)
         n_dates = recent["target_date"].nunique()
-        st.caption(f"Showing {len(recent)} most recent entries across {n_dates} distinct target date(s).")
+        st.caption(
+            f"Showing {len(recent)} most recent entries across {n_dates} distinct target date(s). "
+            "**Entry (cross)** = the marketable price (paper sim uses this). "
+            "**Limit target** = posting 1¢ inside the spread (better fill if it executes); "
+            "savings = spread − 1¢ per contract. Use limit-target for real trades when possible."
+        )

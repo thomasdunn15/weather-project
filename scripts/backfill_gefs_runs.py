@@ -29,12 +29,14 @@ def main() -> None:
     parser.add_argument("--run-hour", type=int, required=True, choices=sorted(FORECAST_HOURS_BY_RUN_HOUR))
     parser.add_argument("--start", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
     parser.add_argument("--end", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
+    parser.add_argument("--forecast-hours", type=lambda s: [int(x) for x in s.split(",")],
+                        default=None, help="Override forecast-hour list, comma-separated (e.g. '30,33,36').")
     args = parser.parse_args()
 
     if args.end < args.start:
         parser.error("--end must be on or after --start")
 
-    forecast_hours = FORECAST_HOURS_BY_RUN_HOUR[args.run_hour]
+    forecast_hours = args.forecast_hours if args.forecast_hours is not None else FORECAST_HOURS_BY_RUN_HOUR[args.run_hour]
     total_days = (args.end - args.start).days + 1
 
     print(

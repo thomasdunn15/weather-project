@@ -172,11 +172,110 @@ def fit_emos_rolling(
         return None
     train_start = train_end - timedelta(days=window_days - 1)
 
-    models_arg = ["gefs", "ifs"] if model == "combined" else [model]
+    if model == "combined":
+        models_arg = ["gefs", "ifs"]
+    elif model == "combined_hrrr":
+        models_arg = ["gefs", "ifs", "hrrr"]
+    else:
+        models_arg = [model]
     means, stds, obs, dates = collect_training_pairs(
         conn, train_start, train_end,
         station_id=station_id, models=models_arg,
         init_hour=init_hour,
+    )
+
+    if len(means) < min_train_days:
+        return None
+
+    result = fit_emos(means, stds, obs)
+    result["train_start"] = dates[0]
+    result["train_end"] = dates[-1]
+    result["n_train_days_used"] = len(means)
+    return result
+
+
+def fit_emos_rolling_equal_weight(
+    target_date: date,
+    conn,
+    *,
+    window_days: int = 45,
+    station_id: str = "KNYC",
+    models: list[str] | None = None,
+    min_train_days: int = 30,
+    init_hour: int = 0,
+) -> dict | None:
+    """Rolling EMOS fit using equal-model weighting (vs flat member weighting).
+
+    Calls collect_training_pairs_equal_weight, then runs the same fit_emos
+    optimizer as the flat-weight version. Use for HRRR-weighting experiments.
+    """
+    from .aggregation import collect_training_pairs_equal_weight
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(date) FROM observations WHERE date <= %s AND station_id = %s",
+            (target_date - timedelta(days=1), station_id),
+        )
+        row = cur.fetchone()
+    train_end = row[0] if row else None
+    if train_end is None:
+        return None
+    train_start = train_end - timedelta(days=window_days - 1)
+
+    means, stds, obs, dates = collect_training_pairs_equal_weight(
+        conn, train_start, train_end,
+        station_id=station_id, models=models, init_hour=init_hour,
+    )
+    if len(means) < min_train_days:
+        return None
+
+    result = fit_emos(means, stds, obs)
+    result["train_start"] = dates[0]
+    result["train_end"] = dates[-1]
+    result["n_train_days_used"] = len(means)
+    return result
+
+
+def fit_emos_rolling_for_lows(
+    target_date: date,
+    conn,
+    *,
+    window_days: int = 45,
+    station_id: str = "KNYC",
+    model: str = "combined",
+    min_train_days: int = 30,
+) -> dict | None:
+    """Rolling EMOS for day-ahead morning lows.
+
+    Mirrors fit_emos_rolling but uses collect_training_pairs_for_lows. Training
+    pairs are (predicted_morning_low_from_prior_day_00Z, observed_low_on_day_D).
+    init_hour is implicitly 00Z (day-ahead architecture).
+
+    Returns None when fewer than min_train_days effective days are available.
+    """
+    from .aggregation import collect_training_pairs_for_lows
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(date) FROM observations WHERE date <= %s AND station_id = %s AND low_temp_f IS NOT NULL",
+            (target_date - timedelta(days=1), station_id),
+        )
+        row = cur.fetchone()
+    train_end = row[0] if row else None
+    if train_end is None:
+        return None
+    train_start = train_end - timedelta(days=window_days - 1)
+
+    if model == "combined":
+        models_arg = ["gefs", "ifs"]
+    elif model == "combined_hrrr":
+        models_arg = ["gefs", "ifs", "hrrr"]
+    else:
+        models_arg = [model]
+
+    means, stds, obs, dates = collect_training_pairs_for_lows(
+        conn, train_start, train_end,
+        station_id=station_id, models=models_arg,
     )
 
     if len(means) < min_train_days:

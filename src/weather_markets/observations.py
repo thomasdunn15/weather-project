@@ -26,24 +26,28 @@ def parse_observations(raw_data: dict, station_id: str) -> list[tuple]:
         high = entry.get('high')
         if high is None:
             continue
+        low = entry.get('low')
         d = date.fromisoformat(entry['valid'])
-        rows.append((d, station_id, float(high)))
+        rows.append((d, station_id, float(high), float(low) if low is not None else None))
     return rows
 
 def insert_observations(rows: list[tuple], conn) -> int:
     if not rows:
         return 0
-    
+
+    # ON CONFLICT update low_temp_f so re-ingestion fills it in for rows that
+    # were originally inserted before the low column existed.
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO observations (date, station_id, high_temp_f)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING
+            INSERT INTO observations (date, station_id, high_temp_f, low_temp_f)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (date, station_id) DO UPDATE
+              SET low_temp_f = COALESCE(observations.low_temp_f, EXCLUDED.low_temp_f)
             """,
             rows,
         )
-    
+
     return len(rows)
 def ingest_observations(years: list[int], station_id: str = "KNYC") -> dict:
     

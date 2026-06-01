@@ -98,20 +98,30 @@ def main() -> None:
     if args.as_of is not None:
         print(f"  as-of recovery: prices and trade-decision moment set to {snapshot_cutoff.isoformat()}")
 
+    # Translate the pseudo-model "combined" into the actual model names stored
+    # in the forecasts table. Mirrors backfill_paper_trades.py to keep cron and
+    # backfill behavior identical.
+    if MODEL == "combined":
+        models_list = ["gefs", "ifs"]
+    elif MODEL == "combined_hrrr":
+        models_list = ["gefs", "ifs", "hrrr"]
+    else:
+        models_list = [MODEL]
+
     with get_connection() as conn:
-        # 1. Today's 00Z ECMWF init must have forecast data.
+        # 1. At least one of the underlying model forecasts must be present for today's init.
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM forecasts WHERE station_id = %s AND init_time = %s AND model = %s LIMIT 1",
-                (STATION_ID, init_time, MODEL),
+                "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
+                (STATION_ID, models_list, init_time),
             )
             if cur.fetchone() is None:
                 print(f"  no {MODEL} forecast for init {init_time.isoformat()}. Skipping.")
                 return
 
-        # 2. Today's ECMWF-only ensemble.
+        # 2. Today's combined ensemble across all underlying models.
         ensemble_values = compute_combined_daily_highs(
-            init_time, today, conn, station_id=STATION_ID, models=[MODEL],
+            init_time, today, conn, station_id=STATION_ID, models=models_list,
         )
         n_members = len(ensemble_values)
         ensemble_mean = statistics.mean(ensemble_values)
@@ -210,13 +220,17 @@ def main() -> None:
                         edge, EDGE_THRESHOLD, position, entry_price, notes,
                     ),
                 )
-                trades_logged.append((ticker, position, edge, entry_price, model_p, market_mid))
+                # Limit-target (posting 1¢ inside spread) saves (spread - 1)¢/contract
+                # vs crossing the spread. Guidance for manual real-money trading.
+                spread = ask - bid
+                limit_target = entry_price - max(0, spread - 1)
+                trades_logged.append((ticker, position, edge, entry_price, limit_target, model_p, market_mid))
 
         # 8. Summary.
         print(f"  contracts with prices: {n_checked}")
         print(f"  trades logged: {len(trades_logged)}")
-        for ticker, pos, e, entry, mp, mm in trades_logged:
-            print(f"    {ticker:30s} {pos:8s}  model={mp:.3f}  market={mm:.3f}  edge={e:+.3f}  entry={entry}¢")
+        for ticker, pos, e, entry, lim, mp, mm in trades_logged:
+            print(f"    {ticker:30s} {pos:8s}  model={mp:.3f}  market={mm:.3f}  edge={e:+.3f}  entry(cross)={entry}¢ limit(post)={lim}¢")
 
 
 if __name__ == "__main__":
