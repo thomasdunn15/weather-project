@@ -62,15 +62,21 @@ DECISION_HOUR = 14
 DECISION_MINUTE = 45
 
 # ---- risk envelope (DO NOT EDIT during live trading) -----------------------
-MAX_STAKE_DOLLARS = 25.0           # per single trade
-MAX_OPEN_CONTRACTS = 200           # across all positions (runaway-bug circuit breaker; ~5 max-stake trades)
+MAX_STAKE_DOLLARS = 50.0           # per single trade (5% of $1k starting bankroll)
+MAX_OPEN_CONTRACTS = 200           # across all positions (runaway-bug circuit breaker)
 DAILY_LOSS_LIMIT_DOLLARS = 50.0    # absolute, e.g. -$50
 CUMULATIVE_KILL_DOLLARS = 300.0    # halt permanently if total down > $300
 SPREAD_REGIME_MAX_CENTS = 5.0      # halt if 4-week avg spread > this
 HALT_FILE = Path.home() / ".kalshi" / "halt"
 
-# Half-Kelly: stake = bankroll × KELLY_FRACTION × Kelly_optimal
-KELLY_FRACTION = 0.5
+# ---- sizing (pre-committed 2026-06-01 before Phase 8 starts) ---------------
+# Unit sizing decisively beats half-Kelly on Sharpe (1.74 vs 0.56-0.90) per
+# backtest grid; comparable absolute return at far less variance. Choice locked
+# BEFORE first live cron fires so it counts as pre-Phase-8 methodology.
+SIZING_MODE = "unit"               # "unit" (fixed contract count) or "half_kelly"
+UNIT_CONTRACTS = 75                # fixed count per trade; cap below clips this
+                                   # if stake would exceed MAX_STAKE_DOLLARS
+KELLY_FRACTION = 0.5               # only used when SIZING_MODE == "half_kelly"
 
 
 def kalshi_fee_cents(entry_price_cents: int) -> int:
@@ -286,17 +292,29 @@ def compute_signals_for_today(conn, today: date) -> list[dict]:
 
 
 def size_trade(balance_cents: int, signal: dict) -> int:
-    """Return number of contracts to trade for this signal, given current balance.
+    """Return number of contracts to trade for this signal.
 
-    Half-Kelly stake, capped at MAX_STAKE_DOLLARS, then converted to integer
-    contract count at the limit price.
+    Unit mode (production): fixed UNIT_CONTRACTS, clipped if it would exceed
+    MAX_STAKE_DOLLARS at the signal's limit price (e.g. at very high entry).
+    Half-Kelly mode (legacy): stake = balance × kelly_fraction × kelly_optimal,
+    capped at MAX_STAKE_DOLLARS.
     """
-    f_optimal = kelly_optimal(signal["p_win"], signal["limit_price"])
+    limit_price = signal["limit_price"]
+    if limit_price <= 0:
+        return 0
+
+    if SIZING_MODE == "unit":
+        intended_stake = UNIT_CONTRACTS * limit_price / 100.0
+        if intended_stake > MAX_STAKE_DOLLARS:
+            return max(0, int(MAX_STAKE_DOLLARS / (limit_price / 100.0)))
+        return UNIT_CONTRACTS
+
+    # half_kelly fallback
+    f_optimal = kelly_optimal(signal["p_win"], limit_price)
     f_chosen = f_optimal * KELLY_FRACTION
     stake_dollars = (balance_cents / 100.0) * f_chosen
     stake_dollars = min(stake_dollars, MAX_STAKE_DOLLARS)
-    contracts = int(stake_dollars / (signal["limit_price"] / 100.0))
-    return max(0, contracts)
+    return max(0, int(stake_dollars / (limit_price / 100.0)))
 
 
 def main() -> int:
@@ -397,7 +415,8 @@ def main() -> int:
                           s['limit_price'], s['cross_price'], MODEL_SOURCE,
                           s['model_p'], s['market_mid'], s['edge'],
                           kalshi_order_id, client_order_id,
-                          f"half-Kelly={KELLY_FRACTION}, balance=${balance/100:.2f}"))
+                          f"sizing={SIZING_MODE}({UNIT_CONTRACTS if SIZING_MODE == 'unit' else KELLY_FRACTION}), "
+                          f"balance=${balance/100:.2f}"))
                 placed += 1
                 print(f"    placed: order_id={kalshi_order_id}")
             except Exception as e:

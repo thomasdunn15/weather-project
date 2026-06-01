@@ -246,35 +246,66 @@ def simulate_pnl(
             else:
                 entry = max(1, cross_entry - int(ask - bid - 1))
 
+        # Bracket label for display (same logic as Edge by bracket table)
+        bt = row.get("bracket_type")
+        if bt == "greater_than":
+            bracket_str = f">{int(row['strike_low'])}°"
+        elif bt == "less_than":
+            bracket_str = f"<{int(row['strike_high'])}°"
+        else:
+            bracket_str = f"{int(row['strike_low'])}-{int(row['strike_high'])}°"
+
         filled = rng.random() < fill_rate
         if not filled:
             history.append({
                 "date": pd.Timestamp(row["target_date"]),
                 "balance": balance,
                 "trade_pnl": 0.0,
+                "ticker": row.get("ticker"),
+                "bracket": bracket_str,
+                "side": row.get("position"),
+                "edge": float(row.get("edge", 0)),
+                "entry_price_cents": entry,
+                "contracts": 0,
+                "stake_dollars": 0.0,
+                "won": bool(row["won"]),
+                "filled": False,
             })
             continue
 
         fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
 
         if sizing_type == "unit":
+            num_contracts_actual = int(contracts)
             gross_pnl = contracts * (100 - entry if won else -entry) / 100.0
             trade_pnl = gross_pnl - contracts * fee_per_contract
+            stake_dollars = contracts * entry / 100.0
         else:  # kelly
             p_win = row["model_prob_yes"] if row["position"] == "BUY_YES" else (1 - row["model_prob_yes"])
             b = (100 - entry) / entry
             f = _kelly_fraction(p_win, entry) * kelly_fraction
             stake = balance * f  # dollars
             num_contracts = stake / (entry / 100.0) if entry > 0 else 0
+            num_contracts_actual = int(round(num_contracts))
             total_fee = num_contracts * fee_per_contract
             gross_pnl = stake * b if won else -stake
             trade_pnl = gross_pnl - total_fee
+            stake_dollars = stake
 
         balance += trade_pnl
         history.append({
             "date": pd.Timestamp(row["target_date"]),
             "balance": balance,
             "trade_pnl": trade_pnl,
+            "ticker": row.get("ticker"),
+            "bracket": bracket_str,
+            "side": row.get("position"),
+            "edge": float(row.get("edge", 0)),
+            "entry_price_cents": entry,
+            "contracts": num_contracts_actual,
+            "stake_dollars": stake_dollars,
+            "won": bool(row["won"]),
+            "filled": True,
         })
 
     return pd.DataFrame(history)
@@ -1466,10 +1497,10 @@ def _live_trading_panel():
 - **Production filter:** |edge| ≥ 10%, entry ≥ 60¢
 - **Decision time:** 14:45 UTC daily
 - **Model:** EMOS combined GEFS+IFS 00Z, rolling 45-day fit
-- **Sizing:** Half-Kelly, capped at $25 per trade
+- **Sizing:** Unit (75 contracts/trade), clipped if stake would exceed $50
 - **Execution:** post-only limit at 1¢ inside the spread
 - **Risk caps:**
-    - max stake per trade: $25
+    - max stake per trade: $50 (5% of $1k bankroll)
     - max open contracts: 200 (runaway-bug circuit breaker)
 - **Kill criteria (immutable):**
     - cumulative drawdown < −$300 → halt
@@ -1905,14 +1936,36 @@ with tab_backtest:
             return_pct = (final_balance / starting_balance - 1) * 100
             n_won = int(pt_df["won"].sum())
 
-            m1, m2, m3, m4 = st.columns(4)
+            # Annualized Sharpe ratio. Uses per-trade P&L as a fraction of
+            # starting bankroll. Annualizes by sqrt(trades_per_year). Only counts
+            # FILLED trades (limit-mode misses excluded; they're 0 P&L by design).
+            # No risk-free rate subtraction (negligible on Kalshi-style horizons).
+            sharpe = float("nan")
+            if "filled" in sim_df.columns:
+                filled_pnl = sim_df.loc[sim_df["filled"] == True, "trade_pnl"]
+                if len(filled_pnl) >= 2 and filled_pnl.std() > 0:
+                    per_trade_returns = filled_pnl / starting_balance
+                    # Annualize from the window span
+                    dates = sim_df.dropna(subset=["date"])["date"]
+                    if len(dates) >= 2:
+                        window_days = max(1, (dates.max() - dates.min()).days)
+                        trades_per_year = len(filled_pnl) * 365 / window_days
+                    else:
+                        trades_per_year = len(filled_pnl)
+                    sharpe = (per_trade_returns.mean() / per_trade_returns.std()) * (trades_per_year ** 0.5)
+
+            m1, m2, m3, m4, m5 = st.columns(5)
             with m1:
                 st.metric("Final balance", f"${final_balance:.2f}", f"{return_pct:+.1f}%")
             with m2:
                 st.metric("Resolved trades", f"{n_won}/{n_resolved}", f"{n_won/n_resolved*100:.0f}% win rate")
             with m3:
-                st.metric("Pending", n_total - n_resolved)
+                st.metric("Sharpe (annualized)", f"{sharpe:.2f}" if sharpe == sharpe else "—",
+                          help="Per-trade P&L annualized by sqrt(trades/year). Uses filled trades only. "
+                               "No risk-free subtraction. Higher = better risk-adjusted return.")
             with m4:
+                st.metric("Pending", n_total - n_resolved)
+            with m5:
                 st.metric("Filtered / total", f"{n_total} / {n_total_all}")
 
             plot_df = sim_df.dropna(subset=["date"]).copy()
@@ -1938,6 +1991,61 @@ with tab_backtest:
                 f"(per-contract: $0.07 × P × (1-P), rounded up to nearest cent). "
                 f"Limit mode posts 1¢ inside the spread; missed fills (seed=42) are $0."
             )
+
+            # === Per-trade detail (what made up the curve above) ===
+            st.markdown("**Trade-by-trade detail** — every paper trade that contributed to the curve above.")
+            trade_rows = sim_df.dropna(subset=["date"]).copy()
+            if not trade_rows.empty and "ticker" in trade_rows.columns:
+                # Newest first so today's trades are at the top
+                trade_rows = trade_rows.sort_values("date", ascending=False).reset_index(drop=True)
+
+                table = pd.DataFrame({
+                    "Date": trade_rows["date"].dt.strftime("%Y-%m-%d"),
+                    "Contract": trade_rows["ticker"].astype(str).str.replace("KXHIGHNY-", "", regex=False),
+                    "Bracket": trade_rows["bracket"],
+                    "Side": trade_rows["side"],
+                    "Edge": trade_rows["edge"].map(lambda x: f"{x:+.1%}"),
+                    "Entry": trade_rows["entry_price_cents"].map(lambda x: f"{int(x)}¢"),
+                    "Contracts": trade_rows["contracts"].map(lambda x: f"{int(x)}" if pd.notna(x) else "—"),
+                    "Stake": trade_rows["stake_dollars"].map(lambda x: f"${x:.2f}"),
+                    "Filled": trade_rows["filled"].map(lambda x: "✓" if x else "missed"),
+                    "Won": trade_rows["won"].map(lambda x: "WIN" if x else "LOSS"),
+                    "Trade P&L": trade_rows["trade_pnl"].map(lambda x: f"${x:+,.2f}"),
+                    "Running balance": trade_rows["balance"].map(lambda x: f"${x:,.2f}"),
+                })
+
+                def color_pnl(v):
+                    if "+" in str(v):
+                        return "background-color: #1b4d2e; color: #b6f5c8"
+                    if "-" in str(v):
+                        return "background-color: #5c1a1a; color: #f5b6b6"
+                    return ""
+
+                def color_outcome(v):
+                    if v == "WIN":
+                        return "background-color: #1b4d2e; color: #b6f5c8"
+                    if v == "LOSS":
+                        return "background-color: #5c1a1a; color: #f5b6b6"
+                    if v == "missed":
+                        return "color: #888"
+                    return ""
+
+                styled = (table.style
+                    .map(color_pnl, subset=["Trade P&L"])
+                    .map(color_outcome, subset=["Won", "Filled"]))
+                st.dataframe(styled, width="stretch", hide_index=True, height=420)
+
+                # Summary footer
+                n_total = len(trade_rows)
+                n_filled = int(trade_rows["filled"].sum())
+                n_wins = int(trade_rows["won"].sum())
+                fc1, fc2, fc3, fc4 = st.columns(4)
+                with fc1: st.metric("Trades", n_total)
+                with fc2: st.metric("Filled", f"{n_filled} ({n_filled/n_total*100:.0f}%)" if n_total else "—")
+                with fc3: st.metric("Wins", f"{n_wins} ({n_wins/n_total*100:.0f}%)" if n_total else "—")
+                with fc4: st.metric("Avg P&L / trade", f"${trade_rows['trade_pnl'].mean():+,.2f}")
+            else:
+                st.caption("No trades in this filter window.")
 
     # Recent paper trades log (with outcomes)
     st.subheader("Recent paper trades")

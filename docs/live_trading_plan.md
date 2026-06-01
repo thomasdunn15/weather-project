@@ -3,7 +3,9 @@
 **Status:** Pre-launch. No live capital deployed yet.
 **Strategy:** KXHIGHNY (NYC daily highs), combined GEFS+IFS 00Z + rolling 45-day EMOS.
 **Production filter:** |edge| ≥ 10%, entry ≥ 60¢, decision at 14:45 UTC.
-**Sizing:** Half-Kelly (≤25% of f*), capped to per-trade max.
+**Sizing:** Unit — 75 contracts/trade, clipped if stake would exceed $50.
+  (Switched from half-Kelly on 2026-06-01 after backtest showed Sharpe 1.74 vs Kelly's
+   0.56-0.90. Pre-committed BEFORE first live cron fire.)
 **Initial capital:** $1,000.
 
 Phases below are **strictly sequential** — don't start a phase until the prior one's acceptance criteria pass.
@@ -25,8 +27,8 @@ Phases below are **strictly sequential** — don't start a phase until the prior
 
 | Limit | Value | Trigger action |
 |---|---|---|
-| Max stake per single trade | $25 | Order rejected, log warning |
-| Max open contracts at any moment | 200 | New orders blocked until close (runaway-bug circuit breaker; ~5 max-stake trades) |
+| Max stake per single trade | $50 (5% of $1k bankroll) | Order count clipped to fit cap |
+| Max open contracts at any moment | 200 | New orders blocked until close (runaway-bug circuit breaker; ~4 max-stake trades) |
 | Max daily P&L drawdown | −$50 | Halt new orders for 24h |
 | **Cumulative kill drawdown** | **−$300 at any time months 1–6** | Halt strategy permanently, manual review required |
 | Forward mean P&L over first 60 trades | < −1¢/trade | Halt strategy permanently |
