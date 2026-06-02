@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from herbie import Herbie
 import numpy as np
 from .db import get_connection
+from .stations import get as get_station
 import pandas as pd
 
 # 3-hour windowed max temperature, peak heating hours for NYC
@@ -21,9 +22,6 @@ DEFAULT_FORECAST_HOURS = [3, 6, 9, 12]
 # extracted dataset means a partial GRIB download (often a stale cache from
 # an interrupted prior run) — warn loudly so it doesn't go unnoticed.
 EXPECTED_ENFO_MEMBERS = 50
-
-KNYC_LAT = 40.78
-KNYC_LON = -73.97
 
 
 def _extract_temps(H: Herbie):
@@ -83,6 +81,7 @@ def ingest_ecmwf_run(
         forecast_hours = DEFAULT_FORECAST_HOURS
 
     run_time_naive = run_time.replace(tzinfo=None) if run_time.tzinfo else run_time
+    station = get_station(station_id)
 
     rows = []
 
@@ -101,10 +100,10 @@ def ingest_ecmwf_run(
             else:
                 ds, var_key, source = _extract_temps(H)
 
-            # Extract KNYC point for all 50 members
+            # Extract station point for all 50 members
             station_temps_k = ds[var_key].sel(
-                latitude=KNYC_LAT,
-                longitude=KNYC_LON,
+                latitude=station.latitude,
+                longitude=station.longitude,
                 method='nearest',
             )
 

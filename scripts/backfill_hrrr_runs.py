@@ -24,6 +24,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
     parser.add_argument("--end", type=parse_date, required=True, help="YYYY-MM-DD (inclusive)")
+    parser.add_argument("--station", default="KNYC",
+                        help="Station ID (default KNYC). Must exist in src/weather_markets/stations.py")
     args = parser.parse_args()
 
     if args.end < args.start:
@@ -44,7 +46,7 @@ def main() -> None:
         t0 = time.time()
         try:
             result = ingest_hrrr_run(
-                run_time=run_time, station_id="KNYC", forecast_hours=FORECAST_HOURS,
+                run_time=run_time, station_id=args.station, forecast_hours=FORECAST_HOURS,
             )
             elapsed = time.time() - t0
             print(f"OK in {elapsed:.0f}s: {result.get('rows_inserted')} rows", flush=True)

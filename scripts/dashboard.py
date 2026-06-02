@@ -201,14 +201,19 @@ def simulate_pnl(
     *,
     contracts: int = 1,
     kelly_fraction: float = 0.5,
+    scaling_pct: float = 0.05,
     execution_mode: str = "cross",
 ) -> pd.DataFrame:
     """Walk resolved trades chronologically and compute cumulative balance.
 
     sizing_type:
-      - "unit"  — buy `contracts` contracts per trade (constant).
-      - "kelly" — stake = bankroll × kelly_fraction × Kelly-optimal fraction;
-                  bankroll compounds.
+      - "unit"    — buy `contracts` contracts per trade (constant; ignores bankroll).
+      - "kelly"   — stake = bankroll × kelly_fraction × Kelly-optimal fraction;
+                    bankroll compounds. Bets MORE on high-edge trades.
+      - "scaling" — stake = bankroll × scaling_pct (fixed % of CURRENT bankroll);
+                    bankroll compounds but the % is constant regardless of edge.
+                    Risk-per-trade is deterministic; aggressiveness doesn't depend
+                    on the model's confidence in any particular signal.
 
     execution_mode:
       - "cross"      — pay the cross-spread (entry_price_cents). Always fills.
@@ -280,6 +285,16 @@ def simulate_pnl(
             gross_pnl = contracts * (100 - entry if won else -entry) / 100.0
             trade_pnl = gross_pnl - contracts * fee_per_contract
             stake_dollars = contracts * entry / 100.0
+        elif sizing_type == "scaling":
+            # Fixed % of CURRENT bankroll, no Kelly multiplier
+            b = (100 - entry) / entry
+            stake = balance * scaling_pct
+            num_contracts = stake / (entry / 100.0) if entry > 0 else 0
+            num_contracts_actual = int(round(num_contracts))
+            total_fee = num_contracts * fee_per_contract
+            gross_pnl = stake * b if won else -stake
+            trade_pnl = gross_pnl - total_fee
+            stake_dollars = stake
         else:  # kelly
             p_win = row["model_prob_yes"] if row["position"] == "BUY_YES" else (1 - row["model_prob_yes"])
             b = (100 - entry) / entry
@@ -1225,6 +1240,23 @@ def _read_recent_alerts(n: int = 10) -> list[str]:
         return []
 
 
+def _read_log_tail(path: str, n: int = 60) -> str:
+    """Read the last n lines of a log file. Returns formatted string with header
+    if file is missing or empty."""
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return f"(no log yet at {path} — cron hasn't fired or output is elsewhere)"
+    try:
+        with p.open() as f:
+            lines = f.readlines()
+        if not lines:
+            return f"(log {path} is empty)"
+        return "".join(lines[-n:])
+    except Exception as e:
+        return f"(error reading {path}: {e})"
+
+
 def _read_halt_reason() -> str | None:
     from pathlib import Path
     p = Path.home() / ".kalshi" / "halt"
@@ -1469,6 +1501,25 @@ def _live_trading_panel():
             st.dataframe(pd.DataFrame(fill_rows), width="stretch", hide_index=True)
         else:
             st.caption("No fills in the last 7 days.")
+
+    st.divider()
+
+    # === Cron activity (tabbed view of the four daily cron logs) ===
+    st.subheader("Cron activity")
+    st.caption("Last entries from each daily cron log. Use these to confirm trades fired, "
+               "see what got filled, and surface errors that didn't reach the alerts file.")
+
+    log_tabs = st.tabs(["live_trade", "paper_trade", "monitor_fills", "reconcile"])
+    log_configs = [
+        ("/var/log/weather/live_trade.log",     "Live trade decision (14:46 UTC daily)"),
+        ("/var/log/weather/paper_trade.log",    "Paper-trade signal log (14:45 UTC daily)"),
+        ("/var/log/weather/monitor_fills.log",  "Fill checker (every 30 min 15-19 UTC + 20:00 EOD cancel)"),
+        ("/var/log/weather/reconcile.log",      "Settlement + daily P&L summary (04:00 UTC daily)"),
+    ]
+    for tab, (path, caption) in zip(log_tabs, log_configs):
+        with tab:
+            st.caption(caption)
+            st.code(_read_log_tail(path, n=60), language="log")
 
     st.divider()
 
@@ -1878,12 +1929,13 @@ with tab_backtest:
             with c2:
                 sizing_type = st.radio(
                     "Sizing strategy",
-                    ["Unit", "Kelly"],
-                    index=1,
+                    ["Unit", "Kelly", "Scaling"],
+                    index=0,
                     horizontal=True,
                     help=(
-                        "Unit: a fixed number of contracts per trade. "
-                        "Kelly: stake = bankroll × (chosen fraction) × Kelly-optimal fraction."
+                        "Unit: fixed contract count per trade (ignores bankroll). "
+                        "Kelly: stake = bankroll × Kelly_optimal × chosen fraction (bets MORE on high-edge signals). "
+                        "Scaling: stake = bankroll × chosen %% (fixed % of current bankroll, edge-agnostic)."
                     ),
                 )
             with c3:
@@ -1904,14 +1956,28 @@ with tab_backtest:
                     "Limit (50% fill)": "limit_50",
                 }[execution_label]
             with c4:
+                # Defaults — only the active mode's value is used by the sim
+                contracts_per_trade = 1
+                kelly_fraction = 0.5
+                scaling_pct = 0.05
+
                 if sizing_type == "Unit":
                     contracts_per_trade = st.number_input(
                         "Contracts per trade", min_value=1, value=1, step=1,
-                        help="Same fixed count on every trade.",
+                        help="Same fixed count on every trade. Ignores bankroll.",
                     )
-                    kelly_fraction = 0.5  # unused
                     strategy_label = f"Unit ({contracts_per_trade} contract{'s' if contracts_per_trade != 1 else ''})"
-                else:
+                elif sizing_type == "Scaling":
+                    scaling_pct_int = st.select_slider(
+                        "% of bankroll per trade",
+                        options=[1, 2, 3, 5, 7, 10, 15, 20, 25],
+                        value=5,
+                        help="Each trade stakes this fixed percentage of CURRENT bankroll, "
+                             "regardless of edge magnitude. Compounds with wins/losses.",
+                    )
+                    scaling_pct = scaling_pct_int / 100.0
+                    strategy_label = f"Scaling ({scaling_pct_int}% of bankroll)"
+                else:  # Kelly
                     kelly_pct = st.select_slider(
                         "Kelly fraction (%)",
                         options=[10, 20, 25, 33, 50, 75, 100],
@@ -1919,19 +1985,16 @@ with tab_backtest:
                         help="Multiplier on the Kelly-optimal stake. 50% = half Kelly (conservative).",
                     )
                     kelly_fraction = kelly_pct / 100.0
-                    contracts_per_trade = 1  # unused
                     strategy_label = f"Kelly ({kelly_pct}%)"
 
-            if sizing_type == "Unit":
-                sim_df = simulate_pnl(
-                    pt_df, starting_balance, "unit",
-                    contracts=int(contracts_per_trade), execution_mode=execution_mode,
-                )
-            else:
-                sim_df = simulate_pnl(
-                    pt_df, starting_balance, "kelly",
-                    kelly_fraction=kelly_fraction, execution_mode=execution_mode,
-                )
+            sim_mode = {"Unit": "unit", "Kelly": "kelly", "Scaling": "scaling"}[sizing_type]
+            sim_df = simulate_pnl(
+                pt_df, starting_balance, sim_mode,
+                contracts=int(contracts_per_trade),
+                kelly_fraction=kelly_fraction,
+                scaling_pct=scaling_pct,
+                execution_mode=execution_mode,
+            )
             final_balance = sim_df["balance"].iloc[-1]
             return_pct = (final_balance / starting_balance - 1) * 100
             n_won = int(pt_df["won"].sum())

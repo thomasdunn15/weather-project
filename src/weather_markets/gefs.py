@@ -85,8 +85,10 @@ def ingest_gefs_run(run_time: datetime, station_id: str = "KNYC", members: range
     if forecast_hours is None:
         forecast_hours = DEFAULT_FORECAST_HOURS
 
-    latitude = 40.7794
-    longitude = -73.97
+    from .stations import get as get_station
+    station = get_station(station_id)
+    latitude = station.latitude
+    longitude = station.longitude
 
     # Accumulate all rows
     all_rows = []

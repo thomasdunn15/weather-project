@@ -18,8 +18,8 @@ from .db import get_connection
 
 DEFAULT_FORECAST_HOURS = [15, 18, 21, 24]   # matches ECMWF 00Z afternoon peak window
 
-KNYC_LAT = 40.78
-KNYC_LON = -73.97
+# NOTE: HRRR uses a 2D Lambert grid; nearest-cell lookup is done per station_id
+# at first call inside ingest_hrrr_run, then cached across forecast hours.
 
 
 def _nearest_yx(lat2d: np.ndarray, lon2d: np.ndarray, target_lat: float, target_lon: float) -> tuple[int, int]:
@@ -50,6 +50,9 @@ def ingest_hrrr_run(
     if forecast_hours is None:
         forecast_hours = DEFAULT_FORECAST_HOURS
 
+    from .stations import get as get_station
+    station = get_station(station_id)
+
     run_time_naive = run_time.replace(tzinfo=None) if run_time.tzinfo else run_time
 
     rows = []
@@ -71,7 +74,7 @@ def ingest_hrrr_run(
 
             if cached_yx is None:
                 cached_yx = _nearest_yx(
-                    ds.latitude.values, ds.longitude.values, KNYC_LAT, KNYC_LON,
+                    ds.latitude.values, ds.longitude.values, station.latitude, station.longitude,
                 )
             yi, xi = cached_yx
 

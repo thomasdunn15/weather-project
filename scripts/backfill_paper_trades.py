@@ -35,9 +35,11 @@ from weather_markets.aggregation import (
     fetch_contracts_for_date,
 )
 from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
+from weather_markets.stations import get as get_station
 
 
-STATION_ID = "KNYC"
+# cfg.station is now read from --station CLI flag (default KNYC for backwards compat).
+# Stored as cfg.station at runtime so all helpers stay station-aware.
 
 INSERT_SQL = """
     INSERT INTO paper_trades (
@@ -75,7 +77,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
-            (STATION_ID, models_list, init_time),
+            (cfg.station, models_list, init_time),
         )
         if cur.fetchone() is None:
             return 0, "no_forecast"
@@ -83,7 +85,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     # 2. Ensemble
     try:
         ensemble_values = compute_combined_daily_highs(
-            init_time, target_date, conn, station_id=STATION_ID, models=models_list,
+            init_time, target_date, conn, station_id=cfg.station, models=models_list,
         )
     except Exception:
         return 0, "no_forecast"
@@ -97,7 +99,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     # 3. Rolling EMOS
     emos = fit_emos_rolling(
         target_date, conn,
-        window_days=cfg.window_days, station_id=STATION_ID,
+        window_days=cfg.window_days, station_id=cfg.station,
         model=cfg.model, init_hour=cfg.init_hour,
     )
     if emos is None:
@@ -109,7 +111,12 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     emos_sigma = math.sqrt(emos_var)
 
     # 4. Contracts
-    contracts = fetch_contracts_for_date(target_date, conn, station_id=STATION_ID)
+    # Series defaults to cfg.station's Kalshi series (e.g. KXHIGHCHI for KORD).
+    contracts = fetch_contracts_for_date(
+        target_date, conn,
+        station_id=cfg.station,
+        series=get_station(cfg.station).kalshi_series,
+    )
     if not contracts:
         return 0, "no_contracts"
 
@@ -172,6 +179,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
     parser.add_argument("--end-date", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), required=True)
+    parser.add_argument("--station", default="KNYC",
+                        help="Station ID (default KNYC). Must exist in src/weather_markets/stations.py — "
+                             "determines lat/lon AND which Kalshi series to filter contracts on.")
     parser.add_argument("--model", choices=["combined", "gefs", "ifs", "combined_hrrr"], default="ifs",
                         help="Ensemble source for EMOS fit and ensemble computation. "
                              "'combined_hrrr' = gefs+ifs+hrrr.")
