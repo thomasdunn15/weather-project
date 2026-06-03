@@ -121,4 +121,72 @@ After Thu evening we will have all four city verdicts on the same locked-in test
 
 ## Evaluation log
 
-*(empty — to be filled as each city's data completes)*
+### NYC + Chicago — recorded 2026-06-03 (before Miami/Austin land)
+
+Per-model expansion (GEFS / IFS / Combined) of the pre-committed cell
+(entry ≥ 0¢, edge ≥ 10%, limit-100%, net of fees):
+
+| Model    | NYC mean (t)            | Chicago mean (t)         |
+|----------|-------------------------|--------------------------|
+| GEFS     | **−2.56¢** (t=−2.37)    | **+3.41¢** (t=+1.99)     |
+| IFS      | **−1.53¢** (t=−1.48)    | **+3.31¢** (t=+2.32)     |
+| Combined | **−1.11¢** (t=−0.89)    | **+3.87¢** (t=+2.50)     |
+
+**Verdict** (against the locked thresholds, mean ≥ +2.0¢ AND t ≥ 1.5):
+
+- **NYC: FAIL** on all 3 models (negative or near-zero on the pre-committed filter).
+- **Chicago: PASS** on all 3 models (combined and GEFS pass cleanly; IFS borderline).
+
+Stronger evidence emerges when edge threshold is raised (NOT part of the
+pre-committed verdict, recorded here for interpretation only): Chicago shows
+**monotone increasing mean with rising edge threshold**, reaching +11.91¢
+(t=+3.34) at edge≥25% combined/limit. NYC is flat-near-zero across all
+edge thresholds. This monotone signature is what a real edge looks like.
+
+### Sanity-check on the Chicago signal (2026-06-03)
+
+Before crediting Chicago's positive result, ran 5 bug checks:
+
+1. **Observations distribution** — KORD avg 61.7°F, std 21.7°F; KNYC avg 62.5°F,
+   std 19.3°F. Consistent with continental vs maritime climate. ✅
+2. **Forecast field storage** — KORD IFS uses `tmax_f` (mx2t3); KNYC IFS has
+   both `tmax_f` and `temperature_f` (2t fallback). EMOS calibrates either
+   source independently. Not a bug. ✅
+3. **Contracts attribution** — 2190 KXHIGHCHI rows, all correctly linked to
+   station_id=KORD. ✅
+4. **Bid-ask spreads** — KORD median spread 2¢ vs KNYC 1¢; mean 2.53¢ vs
+   2.33¢. Mildly wider, **not dramatic** — does NOT strongly support the
+   "less efficient market" theory. ⚠️
+5. **End-to-end trade walk-through** — 5 high-edge KORD trades sampled, math
+   reproduces, 4 wins / 1 loss consistent with cell-mean positive. ✅
+
+No bug found. The Chicago signal is real *in the data*; whether it's real
+*in the world* is what Miami/Austin will tell us.
+
+### Hypothesis to test on Miami / Austin
+
+The most plausible mechanism for Chicago's edge is **variance mispricing**:
+
+> Kalshi prices contracts in fixed 1°F brackets. If a city's actual daily-high
+> distribution is **wider** than the market's implied distribution, more
+> outcomes fall in tail brackets. Market makers underprice the tails, EMOS
+> catches it, edge is positive.
+
+This predicts:
+
+| City     | Expected daily-high variance | Predicted verdict |
+|----------|------------------------------|-------------------|
+| NYC      | Low (maritime, 19.3°F)       | No edge ✓ observed |
+| Chicago  | High (continental, 21.7°F)   | Edge   ✓ observed |
+| **Miami**  | **Very low** (tropical maritime) | **Predict: no edge / fail** |
+| **Austin** | **High** (continental, hot extremes) | **Predict: edge / pass** |
+
+If Miami fails and Austin passes, the variance hypothesis is supported and
+we should add more high-variance cities (Denver, Minneapolis, Phoenix). If
+Miami passes or Austin fails, the variance hypothesis is wrong and we're
+back to "Chicago got lucky" or some other unidentified mechanism.
+
+**Additional check to run on Miami/Austin when data lands:**
+1. Compute KMIA and KAUS daily-high std for 2025-05-27 → 2026-05-26.
+2. Plot mean PnL vs city std across all 4 cities — should be roughly monotone if variance hypothesis holds.
+3. Spot-check 5 high-edge trades per city for math consistency.
