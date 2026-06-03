@@ -9,6 +9,7 @@ less data than always-yesterday.
 import argparse
 from datetime import date, datetime, timezone, timedelta
 from weather_markets.ecmwf import ingest_ecmwf_run
+from weather_markets.stations import all_stations
 
 
 # Forecast hours per init hour. 12Z spans afternoon + next-day morning;
@@ -19,16 +20,16 @@ FORECAST_HOURS_BY_RUN_HOUR = {
 }
 
 
-def attempt_ingest(target_day: date, run_hour: int, forecast_hours: list[int]) -> bool:
-    """Try to ingest one ECMWF run. Returns True if any rows were inserted."""
+def attempt_ingest(target_day: date, run_hour: int, forecast_hours: list[int], station_id: str) -> bool:
+    """Try to ingest one ECMWF run for one station. Returns True if any rows were inserted."""
     run_time = datetime(
         target_day.year, target_day.month, target_day.day,
         run_hour, 0, tzinfo=timezone.utc,
     )
-    print(f"Attempting ECMWF ingest for {run_time.isoformat()}")
+    print(f"Attempting ECMWF ingest for {run_time.isoformat()} / {station_id}")
     try:
         result = ingest_ecmwf_run(
-            run_time=run_time, station_id="KNYC", forecast_hours=forecast_hours,
+            run_time=run_time, station_id=station_id, forecast_hours=forecast_hours,
         )
         print(result)
         return result.get("rows_inserted", 0) > 0
@@ -52,10 +53,13 @@ def main() -> None:
     today = datetime.now(tz=timezone.utc).date()
     yesterday = today - timedelta(days=1)
 
-    if attempt_ingest(today, args.run_hour, forecast_hours):
-        return
-    print(f"Today's {args.run_hour:02d}Z run not yet published; falling back to yesterday.")
-    attempt_ingest(yesterday, args.run_hour, forecast_hours)
+    for station in all_stations():
+        print(f"\n========= {station.station_id} ({station.city}) =========")
+        if attempt_ingest(today, args.run_hour, forecast_hours, station.station_id):
+            continue
+        print(f"Today's {args.run_hour:02d}Z run not yet published for {station.station_id}; "
+              "falling back to yesterday.")
+        attempt_ingest(yesterday, args.run_hour, forecast_hours, station.station_id)
 
 
 if __name__ == "__main__":

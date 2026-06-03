@@ -138,7 +138,14 @@ def main() -> None:
                         help="YYYY-MM-DD (inclusive, target_date)")
     args = parser.parse_args()
 
+    # Look up the station_id that corresponds to this series (from the registry).
+    # Falls back to KNYC if the series isn't in the registry yet.
+    from weather_markets.stations import all_stations
+    series_to_station = {s.kalshi_series: s.station_id for s in all_stations()}
+    station_id_for_series = series_to_station.get(args.series, "KNYC")
+
     print(f"Discovering {args.series} contracts with target_date in [{args.start_date}, {args.end_date}]")
+    print(f"  (will insert with station_id={station_id_for_series})")
 
     # 1. Live endpoint (status=settled) for post-cutoff markets
     print("\n--- /markets?status=settled (live partition) ---", flush=True)
@@ -168,7 +175,7 @@ def main() -> None:
         if not (args.start_date <= target <= args.end_date):
             out_of_range += 1
             continue
-        parsed = parse_market(m)
+        parsed = parse_market(m, station_id=station_id_for_series)
         if parsed:
             rows.append(parsed)
         else:

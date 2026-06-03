@@ -52,6 +52,24 @@ STATIONS: dict[str, Station] = {
         timezone="America/Chicago",
         tz_abbr="CT",
     ),
+    "KMIA": Station(
+        station_id="KMIA",
+        city="Miami",
+        latitude=25.79,
+        longitude=-80.29,
+        kalshi_series="KXHIGHMIA",
+        timezone="America/New_York",
+        tz_abbr="ET",
+    ),
+    "KAUS": Station(
+        station_id="KAUS",
+        city="Austin",
+        latitude=30.19,
+        longitude=-97.67,
+        kalshi_series="KXHIGHAUS",
+        timezone="America/Chicago",
+        tz_abbr="CT",
+    ),
 }
 
 
