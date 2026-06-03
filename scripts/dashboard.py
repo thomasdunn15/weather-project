@@ -190,6 +190,27 @@ def _kelly_fraction(p_win: float, entry_price_cents: int) -> float:
     return max(0.0, f)
 
 
+def _apply_stake_cap(
+    raw_stake: float,
+    balance: float,
+    max_stake_pct: float | None,
+    max_stake_dollars: float | None,
+) -> tuple[float, bool]:
+    """Clamp `raw_stake` to whichever cap binds (pct of bankroll, $ ceiling).
+    Returns (clamped_stake, was_capped). A None cap is treated as +inf.
+
+    Required because uncapped Kelly bets the model's full conviction (up to
+    100% of bankroll on near-certain trades), which guarantees ruin on one
+    loss. Scaling needs it too: at high overfit means, 5% compounds to fantasy
+    multi-billion balances unreachable at Kalshi depth (~$1k per side)."""
+    pct_cap = balance * max_stake_pct if max_stake_pct is not None else float("inf")
+    dollar_cap = max_stake_dollars if max_stake_dollars is not None else float("inf")
+    cap = min(pct_cap, dollar_cap)
+    if raw_stake > cap:
+        return cap, True
+    return raw_stake, False
+
+
 def kalshi_fee_cents(entry_price_cents: int) -> int:
     """Kalshi trading fee per contract in cents.
 
@@ -212,6 +233,8 @@ def simulate_pnl(
     kelly_fraction: float = 0.5,
     scaling_pct: float = 0.05,
     execution_mode: str = "cross",
+    max_stake_pct: float | None = 0.05,
+    max_stake_dollars: float | None = None,
 ) -> pd.DataFrame:
     """Walk resolved trades chronologically and compute cumulative balance.
 
@@ -223,6 +246,14 @@ def simulate_pnl(
                     bankroll compounds but the % is constant regardless of edge.
                     Risk-per-trade is deterministic; aggressiveness doesn't depend
                     on the model's confidence in any particular signal.
+
+    max_stake_pct / max_stake_dollars: stake caps applied to Kelly and Scaling.
+    Both are evaluated; the lower binds. Set either to None to disable that cap.
+    Defaults to 5% of bankroll, matching live_trade.py's MAX_STAKE_DOLLARS
+    ($50 on $1k bankroll). Without these caps, Kelly blows up to $0 when a
+    near-1.0 model_prob says "bet 50%+ of bankroll" and that trade loses, and
+    Scaling compounds to multi-billion fantasy numbers that can't actually be
+    filled on Kalshi's ~$1k-depth markets.
 
     execution_mode:
       - "cross"      — pay the cross-spread (entry_price_cents). Always fills.
@@ -289,6 +320,7 @@ def simulate_pnl(
 
         fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
 
+        was_capped = False  # only relevant for kelly/scaling; unit ignores caps
         if sizing_type == "unit":
             num_contracts_actual = int(contracts)
             gross_pnl = contracts * (100 - entry if won else -entry) / 100.0
@@ -297,7 +329,8 @@ def simulate_pnl(
         elif sizing_type == "scaling":
             # Fixed % of CURRENT bankroll, no Kelly multiplier
             b = (100 - entry) / entry
-            stake = balance * scaling_pct
+            raw_stake = balance * scaling_pct
+            stake, was_capped = _apply_stake_cap(raw_stake, balance, max_stake_pct, max_stake_dollars)
             num_contracts = stake / (entry / 100.0) if entry > 0 else 0
             num_contracts_actual = int(round(num_contracts))
             total_fee = num_contracts * fee_per_contract
@@ -308,7 +341,8 @@ def simulate_pnl(
             p_win = row["model_prob_yes"] if row["position"] == "BUY_YES" else (1 - row["model_prob_yes"])
             b = (100 - entry) / entry
             f = _kelly_fraction(p_win, entry) * kelly_fraction
-            stake = balance * f  # dollars
+            raw_stake = balance * f  # dollars
+            stake, was_capped = _apply_stake_cap(raw_stake, balance, max_stake_pct, max_stake_dollars)
             num_contracts = stake / (entry / 100.0) if entry > 0 else 0
             num_contracts_actual = int(round(num_contracts))
             total_fee = num_contracts * fee_per_contract
@@ -330,6 +364,7 @@ def simulate_pnl(
             "stake_dollars": stake_dollars,
             "won": bool(row["won"]),
             "filled": True,
+            "stake_capped": was_capped,
         })
 
     return pd.DataFrame(history)
@@ -1697,24 +1732,36 @@ with tab_backtest:
         observed_high = fetch_observed_high(trade_date, conn, station_id=selected_station_id)
 
         # Market prices as of the paper-trade decision time for this workflow
-        # (14:45 UTC for 00Z ECMWF, 18:45 UTC for 12Z combined). Locks the
-        # displayed market state to when a trade would realistically be placed,
-        # so historical views don't show post-resolution prices.
+        # (14:45 UTC for 00Z ECMWF, 18:45 UTC for 12Z combined). For HISTORICAL
+        # dates this lock prevents post-decision (post-resolution) prices from
+        # contaminating backtest views. For TODAY (or any date where no snapshot
+        # exists before the decision time — e.g. a new city that just started
+        # being snapshotted), drop the upper bound and use the most recent
+        # snapshot we have.
         decision_time = datetime(
             trade_date.year, trade_date.month, trade_date.day,
             cfg["decision_hour"], cfg["decision_minute"], tzinfo=timezone.utc,
         )
+        today_utc = datetime.now(tz=timezone.utc).date()
+        lock_to_decision_time = trade_date < today_utc
         market_probs = {}
         if contracts:
             tickers = [c["ticker"] for c in contracts]
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
-                    FROM prices
-                    WHERE ticker = ANY(%s)
-                      AND snapshot_at <= %s
-                    ORDER BY ticker, snapshot_at DESC
-                """, (tickers, decision_time))
+                if lock_to_decision_time:
+                    cur.execute("""
+                        SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
+                        FROM prices
+                        WHERE ticker = ANY(%s) AND snapshot_at <= %s
+                        ORDER BY ticker, snapshot_at DESC
+                    """, (tickers, decision_time))
+                else:
+                    cur.execute("""
+                        SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
+                        FROM prices
+                        WHERE ticker = ANY(%s)
+                        ORDER BY ticker, snapshot_at DESC
+                    """, (tickers,))
                 for ticker, bid, ask, snap in cur.fetchall():
                     if bid is not None and ask is not None:
                         market_probs[ticker] = (bid + ask) / 200
@@ -2099,12 +2146,47 @@ with tab_backtest:
                     strategy_label = f"Kelly ({kelly_pct}%)"
 
             sim_mode = {"Unit": "unit", "Kelly": "kelly", "Scaling": "scaling"}[sizing_type]
+
+            # Stake cap UI (Kelly + Scaling only). Without a cap, Kelly bets the
+            # model's full conviction (near-100% on confident trades → ruin on
+            # one loss), and Scaling compounds to fantasy multi-billion balances
+            # unreachable at Kalshi depth. Default 5% mirrors live_trade.py.
+            max_stake_pct = None
+            max_stake_dollars = None
+            if sim_mode in ("kelly", "scaling"):
+                cap_c1, cap_c2, cap_c3 = st.columns([1, 1, 2])
+                with cap_c1:
+                    cap_pct_int = st.select_slider(
+                        "Max stake (% of bankroll)",
+                        options=[1, 2, 5, 10, 20, 50, 100],
+                        value=5,
+                        help="Per-trade cap on stake as a fraction of CURRENT bankroll. "
+                             "Live trading uses 5%. Set to 100% to disable (matches old "
+                             "uncapped behavior — Kelly tanks to $0, Scaling compounds wildly).",
+                    )
+                    max_stake_pct = cap_pct_int / 100.0
+                with cap_c2:
+                    cap_dollar_input = st.number_input(
+                        "Max stake ($, hard cap)",
+                        min_value=0.0, value=0.0, step=10.0,
+                        help="Hard dollar ceiling per trade (0 = no $ cap, only the % cap applies). "
+                             "Use to model Kalshi market depth (~$1k per side).",
+                    )
+                    max_stake_dollars = cap_dollar_input if cap_dollar_input > 0 else None
+                with cap_c3:
+                    cap_summary = f"Active cap: {cap_pct_int}% of bankroll"
+                    if max_stake_dollars:
+                        cap_summary += f" OR ${max_stake_dollars:.0f}/trade (whichever lower)"
+                    st.caption(cap_summary)
+
             sim_df = simulate_pnl(
                 pt_df, starting_balance, sim_mode,
                 contracts=int(contracts_per_trade),
                 kelly_fraction=kelly_fraction,
                 scaling_pct=scaling_pct,
                 execution_mode=execution_mode,
+                max_stake_pct=max_stake_pct,
+                max_stake_dollars=max_stake_dollars,
             )
             final_balance = sim_df["balance"].iloc[-1]
             return_pct = (final_balance / starting_balance - 1) * 100
@@ -2158,12 +2240,22 @@ with tab_backtest:
                 .encode(y="y:Q")
             )
             st.altair_chart((line + baseline).properties(height=300), width="stretch")
+
+            cap_note = ""
+            if sim_mode in ("kelly", "scaling") and "stake_capped" in sim_df.columns:
+                n_capped = int(sim_df["stake_capped"].fillna(False).sum())
+                if n_capped > 0:
+                    cap_note = (
+                        f" **Stake cap bound on {n_capped} of {n_resolved} trades** — "
+                        "raw sizing exceeded the cap and was clamped. Without the cap, "
+                        "balance curves are misleading (Kelly → $0, Scaling → fantasy)."
+                    )
             st.caption(
                 f"Strategy: {strategy_label}. Execution: {execution_label}. "
                 f"Filter: |edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢, source = {source_filter}. "
                 f"P&L is net of Kalshi trading fees "
                 f"(per-contract: $0.07 × P × (1-P), rounded up to nearest cent). "
-                f"Limit mode posts 1¢ inside the spread; missed fills (seed=42) are $0."
+                f"Limit mode posts 1¢ inside the spread; missed fills (seed=42) are $0." + cap_note
             )
 
             # === Per-trade detail (what made up the curve above) ===
