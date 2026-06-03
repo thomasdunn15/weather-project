@@ -31,6 +31,7 @@ from weather_markets.evaluation import (
     brier_score,
     calibration_bins,
 )
+from weather_markets.stations import all_stations, get as get_station
 
 # set_page_config MUST be the first Streamlit call, before tabs or any other st.* call.
 st.set_page_config(
@@ -77,29 +78,29 @@ def collect_training_data():
 
 
 @st.cache_data
-def collect_combined_training_data():
+def collect_combined_training_data(station_id: str = "KNYC"):
     """Collect COMBINED (GEFS+ECMWF) ensemble stats over the full year for EMOS fitting."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT MAX(date) FROM observations WHERE station_id = %s", ("KNYC",))
+            cur.execute("SELECT MAX(date) FROM observations WHERE station_id = %s", (station_id,))
             end = cur.fetchone()[0]
         return collect_training_pairs(
             conn, date(2025, 5, 1), end,
-            station_id="KNYC", models=["gefs", "ifs"],
+            station_id=station_id, models=["gefs", "ifs"],
         )
 
 
 @st.cache_data
-def fit_combined_emos():
+def fit_combined_emos(station_id: str = "KNYC"):
     """Fit EMOS once on the full-year combined ensemble. Returns params dict."""
-    means, stds, obs, dates = collect_combined_training_data()
+    means, stds, obs, dates = collect_combined_training_data(station_id=station_id)
     if len(means) < 10:
         return None
     return fit_emos(means, stds, obs)
 
 
 @st.cache_data(ttl=3600)
-def fit_emos_rolling_cached(trade_date, window_days=45, model="combined", init_hour=12):
+def fit_emos_rolling_cached(trade_date, window_days=45, model="combined", init_hour=12, station_id: str = "KNYC"):
     """Cached rolling-window EMOS fit. Returns None when fewer than min_train_days
     (default 30) effective training days are available.
 
@@ -108,12 +109,12 @@ def fit_emos_rolling_cached(trade_date, window_days=45, model="combined", init_h
     with get_connection() as conn:
         return fit_emos_rolling(
             trade_date, conn,
-            window_days=window_days, station_id="KNYC",
+            window_days=window_days, station_id=station_id,
             model=model, init_hour=init_hour,
         )
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=10)
 def paper_trades_with_outcomes(limit: int = 500):
     """Pull paper trades joined with contracts and observations.
 
@@ -140,8 +141,16 @@ def paper_trades_with_outcomes(limit: int = 500):
                        o.high_temp_f
                 FROM paper_trades pt
                 JOIN contracts c ON c.ticker = pt.ticker
-                LEFT JOIN observations o
-                    ON o.date = pt.target_date AND o.station_id = 'KNYC'
+                -- LATERAL subquery is a TimescaleDB workaround: the planner
+                -- silently returns wrong results when LEFT JOIN'ing a hypertable
+                -- (observations) on a key that references another table's column
+                -- (c.station_id). Wrapping observations in LATERAL forces row-wise
+                -- evaluation and gives correct results.
+                LEFT JOIN LATERAL (
+                    SELECT high_temp_f FROM observations
+                    WHERE date = pt.target_date AND station_id = c.station_id
+                    LIMIT 1
+                ) o ON TRUE
                 WHERE pt.target_date >= '2025-05-27'
                 ORDER BY pt.target_date DESC, pt.logged_at DESC
                 LIMIT %s
@@ -557,7 +566,7 @@ def run_multimodel_comparison():
     return pd.DataFrame(rows)
 
 
-def latest_available_init(conn, target_date, init_hour=12, model_aware=True):
+def latest_available_init(conn, target_date, init_hour=12, model_aware=True, station_id: str = "KNYC"):
     """
     Return the target date's init_hour UTC init_time IF forecast data exists
     for it, else None. Matches backtest methodology (canonical same-day run at
@@ -577,7 +586,7 @@ def latest_available_init(conn, target_date, init_hour=12, model_aware=True):
             WHERE station_id = %s
               AND init_time = %s
             LIMIT 1
-        """, ("KNYC", preferred))
+        """, (station_id, preferred))
         row = cur.fetchone()
     return preferred if row else None
 
@@ -1581,6 +1590,22 @@ with tab_backtest:
         "actual live trading is in the Live Trading tab.**"
     )
 
+    # City selector drives station/series for the WHOLE tab: forecast view,
+    # edge by bracket, AND the downstream P&L simulation.
+    _stations = all_stations()
+    _city_labels = {f"{s.city} ({s.station_id})": s.station_id for s in _stations}
+    _default_city = next(iter(_city_labels))  # KNYC sorts first
+    chosen_city_label = st.selectbox(
+        "City",
+        options=list(_city_labels.keys()),
+        index=0,
+        help="Switches the entire backtest tab — forecast, edge table, and P&L sim — "
+             "to the selected city's contracts, station, and EMOS calibration.",
+    )
+    selected_station_id = _city_labels[chosen_city_label]
+    selected_station = get_station(selected_station_id)
+    selected_series = selected_station.kalshi_series
+
     # Controls
     ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
     with ctrl1:
@@ -1612,20 +1637,25 @@ with tab_backtest:
         "decision_minute": 45,
     }
 
-    emos_params = fit_emos_rolling_cached(trade_date, model="combined", init_hour=0)
+    emos_params = fit_emos_rolling_cached(
+        trade_date, model="combined", init_hour=0, station_id=selected_station_id,
+    )
     if emos_params is None:
         st.warning(
-            "Rolling combined 00Z EMOS unavailable — fewer than 30 days of training data. "
-            "Showing raw combined probabilities only."
+            f"Rolling combined 00Z EMOS unavailable for {selected_station.city} — "
+            "fewer than 30 days of training data. Showing raw combined probabilities only."
         )
 
     with get_connection() as conn:
         # Resolve which forecast run to use (canonical init for the chosen workflow).
-        chosen_init = latest_available_init(conn, trade_date, init_hour=cfg["init_hour"])
+        chosen_init = latest_available_init(
+            conn, trade_date, init_hour=cfg["init_hour"], station_id=selected_station_id,
+        )
 
         if chosen_init is None:
             st.info(
-                f"No {cfg['init_hour']:02d} UTC forecast is available yet for {trade_date}. "
+                f"No {cfg['init_hour']:02d} UTC forecast is available yet for "
+                f"{selected_station.city} on {trade_date}. "
                 "Check back after the next ingest cron runs."
             )
             st.stop()
@@ -1639,7 +1669,8 @@ with tab_backtest:
         # Ensemble for the chosen run (single model or combined per cfg).
         try:
             combined_values = compute_combined_daily_highs(
-                chosen_init, trade_date, conn, models=cfg["models"],
+                chosen_init, trade_date, conn,
+                station_id=selected_station_id, models=cfg["models"],
             )
         except Exception as e:
             st.error(f"Could not load forecast: {e}")
@@ -1656,12 +1687,14 @@ with tab_backtest:
                     WHERE init_time = %s AND station_id = %s AND model = ANY(%s)
                     GROUP BY model
                     """,
-                    (chosen_init, "KNYC", cfg["models"]),
+                    (chosen_init, selected_station_id, cfg["models"]),
                 )
                 models_present = {row[0] for row in cur.fetchall()}
 
-        contracts = fetch_contracts_for_date(trade_date, conn)
-        observed_high = fetch_observed_high(trade_date, conn)
+        contracts = fetch_contracts_for_date(
+            trade_date, conn, station_id=selected_station_id, series=selected_series,
+        )
+        observed_high = fetch_observed_high(trade_date, conn, station_id=selected_station_id)
 
         # Market prices as of the paper-trade decision time for this workflow
         # (14:45 UTC for 00Z ECMWF, 18:45 UTC for 12Z combined). Locks the
@@ -1786,7 +1819,7 @@ with tab_backtest:
             resolved = "YES" if contract_resolved_yes(int(observed_high), c) else "NO"
 
         rows.append({
-            "Contract": ticker.replace("KXHIGHNY-", ""),
+            "Contract": ticker.replace(f"{selected_series}-", ""),
             "Range": range_label(c),
             "Raw P": f"{raw_probs.get(ticker, 0):.1%}",
             "EMOS P": f"{emos_probs.get(ticker, 0):.1%}" if emos_probs else "—",
@@ -1837,41 +1870,119 @@ with tab_backtest:
     elif int(pt_df_all["won"].notna().sum()) == 0:
         st.info(f"{n_total_all} paper trade(s) logged, none resolved yet. Simulation appears once observations land.")
     else:
-        # Filter controls — restrict the trade set before simulating
-        f1, f2, f3 = st.columns([1, 1, 2])
+        # --- Scope paper_trades to the city chosen at the top of the tab ----
+        # Filter model_sources to those belonging to the selected city. NYC's
+        # sources don't have a city tag in their name (legacy); everywhere else
+        # tags the city name in the source string ("Chicago", "Miami", etc.).
+        other_city_tags = [s.city for s in all_stations() if s.station_id != "KNYC"]
+        all_sources = sorted(pt_df_all["model_source"].unique().tolist())
+        if selected_station_id == "KNYC":
+            city_sources = [s for s in all_sources if not any(t in s for t in other_city_tags)]
+        else:
+            city_sources = [s for s in all_sources if selected_station.city in s]
+
+        if not city_sources:
+            st.info(
+                f"No paper trades for {selected_station.city} yet — "
+                "backfill or daily cron hasn't populated trades for this city."
+            )
+            st.stop()
+
+        # Compute overfit-optimal (entry, edge) per source. Brute search over a
+        # standard grid; pick the cell with highest mean P&L at n>=20.
+        # NOT cached — closures over the outer pt_df_all DataFrame don't play
+        # well with st.cache_data (it can't see the data changed). Recomputes
+        # on each rerun, which is fine because the grid is tiny.
+        def _overfit_optimal_for_source(source: str) -> tuple[int, float, dict]:
+            """Returns (best_entry_pct, best_edge_pct, stats_dict)."""
+            subset = pt_df_all[pt_df_all["model_source"] == source].copy()
+            subset = subset[subset["won"].notna()]
+            if len(subset) < 20:
+                return (60, 0.10, {"mean": 0, "n": len(subset)})
+            best = (60, 0.10, {"mean": -999, "n": 0})
+            for et in [0, 30, 50, 60, 65, 70, 75, 80]:
+                for ed in [0.10, 0.125, 0.15, 0.20, 0.25, 0.30]:
+                    cell = subset[
+                        (subset["entry_price_cents"] >= et)
+                        & (subset["edge"].abs() >= ed)
+                    ]
+                    if len(cell) < 20:
+                        continue
+                    fees = cell["entry_price_cents"].astype(int).map(kalshi_fee_cents)
+                    net = cell["pnl_cents_per_unit"] - fees
+                    m = float(net.mean())
+                    if m > best[2]["mean"]:
+                        best = (et, ed, {"mean": m, "n": len(cell), "win": float(cell["won"].mean())})
+            return best
+
+        # --- Model-variant selector (gefs / ifs / combined) within the chosen city.
+        def _variant_label(s: str) -> str:
+            if "GEFS" in s and "combined" not in s: return "GEFS only"
+            if "ECMWF" in s or ("IFS" in s and "combined" not in s): return "ECMWF only"
+            if "combined" in s: return "Combined (GEFS + ECMWF)"
+            return s
+        variant_labels = {_variant_label(s): s for s in city_sources}
+        # Prefer combined as default
+        default_variant = next((l for l in variant_labels if "Combined" in l), list(variant_labels)[0])
+
+        c_select, c_info = st.columns([1, 2])
+        with c_select:
+            chosen_variant = st.radio(
+                f"{selected_station.city} model variant",
+                options=list(variant_labels.keys()),
+                index=list(variant_labels.keys()).index(default_variant),
+                help="Toggle between the three EMOS variants available for this city. "
+                     "Combined is the production source; single-model variants are diagnostics.",
+            )
+            source_filter = variant_labels[chosen_variant]
+        with c_info:
+            opt_entry, opt_edge, opt_stats = _overfit_optimal_for_source(source_filter)
+            if opt_stats.get("mean", 0) > -100:
+                st.info(
+                    f"**Overfit-optimal filter for {selected_station.city} / {chosen_variant}:** "
+                    f"entry ≥ {opt_entry}¢ AND |edge| ≥ {opt_edge:.0%} → "
+                    f"mean P&L {opt_stats['mean']:+.2f}¢/trade across n={opt_stats['n']} trades "
+                    f"({opt_stats.get('win', 0)*100:.0f}% win rate). "
+                    "**Filters below are set to this — adjust to explore.**"
+                )
+
+        st.warning(
+            "⚠️ **Overfit defaults.** These filters were selected POST-HOC by scanning the city's data "
+            "for the best mean P&L. They are NOT pre-committed strategy choices. Different cities have "
+            "different 'optimal' filters that contradict each other — that's the signature of overfitting. "
+            "The live strategy uses NYC's pre-committed filter (entry ≥ 60¢, |edge| ≥ 10%) unchanged."
+        )
+
+        # --- Filter controls. Defaults wire to the city's overfit-optimal. ----
+        # Use a session key per source so sliders snap when the city changes.
+        slider_key_suffix = source_filter.replace(" ", "_")
+        f1, f2 = st.columns(2)
         with f1:
             edge_filter = st.slider(
                 "Min |edge| filter", min_value=0.10, max_value=0.50,
-                value=0.10, step=0.01,
-                help="Only include trades where |edge| ≥ this. Lower thresholds aren't available because the cron only logs trades at |edge| ≥ 0.10.",
+                value=max(0.10, opt_edge), step=0.01,
+                key=f"edge_filter_{slider_key_suffix}",
+                help="Only include trades where |edge| ≥ this. Lower thresholds aren't available "
+                     "because the cron only logs trades at |edge| ≥ 0.10.",
             )
         with f2:
             min_entry_price = st.slider(
                 "Min entry price (¢)", min_value=0, max_value=99,
-                value=60, step=1,
-                help="Only include trades where entry price ≥ this. Default 60¢ comes from the 2026-05-28 backtest discovery that filtering to entry ≥ 60 produces positive net P&L across all configs (combined 00Z: +3.07¢/trade, t=+1.01, n=189). Pre-registered as production filter; subset patterns require forward validation.",
-            )
-        with f3:
-            sources = sorted(pt_df_all["model_source"].unique().tolist())
-            # Default to combined 00Z (current production) if present, else first
-            default_idx = 0
-            for i, s in enumerate(sources):
-                if "combined 00Z" in s:
-                    default_idx = i
-                    break
-            source_filter = st.radio(
-                "Model source",
-                options=sources,
-                index=default_idx,
-                help="Which paper-trade configuration to simulate. Pre-registered protocol: don't pool across configurations when evaluating edge.",
+                value=int(opt_entry), step=1,
+                key=f"entry_filter_{slider_key_suffix}",
+                help="Only include trades where entry price ≥ this. Default snaps to the city's "
+                     "overfit-optimal cell.",
             )
 
-        # Strategy comparison table — all model_sources at the chosen edge + entry filters.
+        # Strategy comparison table — this city's model_sources at the chosen edge + entry filters.
         # Shows the headline edge-test stats for each configuration side-by-side so you
         # can compare without toggling the radio.
-        st.markdown(f"**Strategy comparison** (|edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢)")
+        st.markdown(
+            f"**Strategy comparison — {selected_station.city}** "
+            f"(|edge| ≥ {edge_filter:.0%}, entry ≥ {min_entry_price}¢)"
+        )
         comparison_rows = []
-        for source in sorted(pt_df_all["model_source"].unique()):
+        for source in sorted(city_sources):
             subset = pt_df_all[
                 (pt_df_all["model_source"] == source)
                 & (pt_df_all["edge"].abs() >= edge_filter)
@@ -2064,7 +2175,7 @@ with tab_backtest:
 
                 table = pd.DataFrame({
                     "Date": trade_rows["date"].dt.strftime("%Y-%m-%d"),
-                    "Contract": trade_rows["ticker"].astype(str).str.replace("KXHIGHNY-", "", regex=False),
+                    "Contract": trade_rows["ticker"].astype(str).str.replace(f"{selected_series}-", "", regex=False),
                     "Bracket": trade_rows["bracket"],
                     "Side": trade_rows["side"],
                     "Edge": trade_rows["edge"].map(lambda x: f"{x:+.1%}"),
@@ -2141,7 +2252,7 @@ with tab_backtest:
 
         table = pd.DataFrame({
             "Date": recent["target_date"].astype(str),
-            "Contract": recent["ticker"].str.replace("KXHIGHNY-", "", regex=False),
+            "Contract": recent["ticker"].str.replace(f"{selected_series}-", "", regex=False),
             "Position": recent["position"],
             "Model P": recent["model_prob_yes"].map(lambda x: f"{x:.1%}"),
             "Market P": recent["market_mid_prob"].map(lambda x: f"{x:.1%}"),
