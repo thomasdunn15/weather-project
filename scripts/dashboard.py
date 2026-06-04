@@ -1831,6 +1831,38 @@ with tab_backtest:
     # Edge table
     st.subheader("Edge by bracket")
 
+    # Pull stored snapshot values from paper_trades for this day so the Edge
+    # column reflects the edge AT DECISION TIME (when the cron fired), not the
+    # ever-moving current edge. Contracts with no paper_trades row (i.e. signal
+    # didn't pass |edge|>=10% at cron time) fall back to live-recomputed edge.
+    paper_source_for_city = (
+        "EMOS combined 00Z (rolling 45d)" if selected_station_id == "KNYC"
+        else f"EMOS combined 00Z {selected_station.city} (rolling 45d)"
+    )
+    paper_snapshot: dict[str, dict] = {}
+    with get_connection() as _pconn:
+        with _pconn.cursor() as _pcur:
+            _pcur.execute(
+                """SELECT ticker, edge, market_mid_prob, model_prob_yes,
+                          market_yes_bid, market_yes_ask, position, entry_price_cents,
+                          market_snapshot_at
+                   FROM paper_trades
+                   WHERE target_date = %s AND model_source = %s""",
+                (trade_date, paper_source_for_city),
+            )
+            for row in _pcur.fetchall():
+                paper_snapshot[row[0]] = {
+                    "edge": float(row[1]),
+                    "market_mid": float(row[2]),
+                    "model_p": float(row[3]),
+                    "yes_bid": row[4],
+                    "yes_ask": row[5],
+                    "position": row[6],
+                    "entry": row[7],
+                    "snap_at": row[8],
+                }
+    n_frozen = len(paper_snapshot)
+
     def range_label(c):
         if c["bracket_type"] == "greater_than":
             return f">{c['strike_low']}°"
@@ -1847,9 +1879,16 @@ with tab_backtest:
     rows = []
     for c in sorted(contracts, key=sort_key):
         ticker = c["ticker"]
-        m_prob = model_probs.get(ticker)
-        mkt = market_probs.get(ticker)
-        edge = (m_prob - mkt) if (m_prob is not None and mkt is not None) else None
+        # Prefer the stored snapshot (decision-time edge) over live-recomputed.
+        snap = paper_snapshot.get(ticker)
+        if snap is not None:
+            m_prob = snap["model_p"]
+            mkt = snap["market_mid"]
+            edge = snap["edge"]
+        else:
+            m_prob = model_probs.get(ticker)
+            mkt = market_probs.get(ticker)
+            edge = (m_prob - mkt) if (m_prob is not None and mkt is not None) else None
 
         if edge is None:
             signal = "—"
@@ -1899,11 +1938,17 @@ with tab_backtest:
     )
     st.dataframe(styled, width='stretch', hide_index=True)
 
+    if n_frozen > 0:
+        edge_basis = (
+            f"Edges for {n_frozen} of {len(contracts)} brackets are frozen at the 14:45 UTC "
+            "paper-trade snapshot (decision-time edge). Other brackets use the most recent price."
+        )
+    else:
+        edge_basis = "Edges computed from the most recent price snapshot (no paper-trade row exists yet for this day)."
     st.caption(
-        f"Signal source: {model_choice}. "
-        f"Flagging when |edge| ≥ {edge_threshold:.0%}. "
-        "Market prices are the most recent snapshot, which may be newer than the forecast run. "
-        "This is a decision aid, not advice — small sample, paper-trade first."
+        f"Signal source: {model_choice}. Flagging when |edge| ≥ {edge_threshold:.0%}. "
+        + edge_basis +
+        " This is a decision aid, not advice — small sample, paper-trade first."
     )
 
     # P&L simulation (resolved paper trades, configurable sizing + filters) + log table
