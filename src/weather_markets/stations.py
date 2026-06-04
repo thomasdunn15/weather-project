@@ -70,6 +70,24 @@ STATIONS: dict[str, Station] = {
         timezone="America/Chicago",
         tz_abbr="CT",
     ),
+    "KDEN": Station(
+        station_id="KDEN",
+        city="Denver",
+        latitude=39.86,
+        longitude=-104.67,
+        kalshi_series="KXHIGHDEN",
+        timezone="America/Denver",
+        tz_abbr="MT",
+    ),
+    "KLAX": Station(
+        station_id="KLAX",
+        city="Los Angeles",
+        latitude=33.94,
+        longitude=-118.41,
+        kalshi_series="KXHIGHLAX",
+        timezone="America/Los_Angeles",
+        tz_abbr="PT",
+    ),
 }
 
 
