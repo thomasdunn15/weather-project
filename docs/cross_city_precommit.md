@@ -190,3 +190,97 @@ back to "Chicago got lucky" or some other unidentified mechanism.
 1. Compute KMIA and KAUS daily-high std for 2025-05-27 → 2026-05-26.
 2. Plot mean PnL vs city std across all 4 cities — should be roughly monotone if variance hypothesis holds.
 3. Spot-check 5 high-edge trades per city for math consistency.
+
+### Miami + Austin verdicts — recorded 2026-06-04
+
+All 4 cities under the pre-committed test (entry ≥ 0¢, |edge| ≥ 10%,
+limit-100%, combined model, window 2025-05-27 to 2026-05-26):
+
+| City     | std°F | n_trades | limit mean (t)        | cross mean (t)        | Verdict             |
+|----------|-------|----------|-----------------------|-----------------------|---------------------|
+| New York | 19.3  | 897      | −0.55¢ (t=−0.44)      | −1.88¢ (t=−1.52)      | **FAIL**            |
+| Chicago  | 21.7  | 868      | **+3.83¢ (t=+2.72)**  | +2.29¢ (t=+1.64)      | **PASS**            |
+| Miami    | 6.8   | 521      | **+7.49¢ (t=+4.11)**  | +4.43¢ (t=+2.45)      | INSUFFICIENT (n<600)|
+| Austin   | 12.8  | 634      | +0.52¢ (t=+0.33)      | −0.73¢ (t=−0.47)      | MIXED               |
+
+**Tally: 1 PASS / 1 MIXED / 1 FAIL / 1 INSUFFICIENT.**
+
+Per the doc's interpretation matrix, 2-of-4 net positives reads as
+"Inconclusive; need more cities (LA, Denver, Phoenix)." But Miami's
+mean and t-stat are by far the strongest of any city — n=521 just
+narrowly missing the 600-trade floor is the only thing blocking a
+formal pass. Daily cron is now logging Miami; n=600 reached in
+roughly 80 more trading days.
+
+### What the data falsified
+
+**Variance hypothesis: FALSIFIED.** The predicted ordering does not hold.
+
+Sorted by std (low → high):
+
+| City     | std°F | Verdict             | Predicted |
+|----------|-------|---------------------|-----------|
+| Miami    | 6.8   | strongest signal    | NO edge   |
+| Austin   | 12.8  | no edge             | EDGE      |
+| New York | 19.3  | fail                | (control) |
+| Chicago  | 21.7  | pass                | (control) |
+
+Miami (lowest variance) has the **biggest** edge. Austin (high
+variance) has none. The data is not monotone in city std — it isn't
+even directionally correct. The "Kalshi underprices tail brackets
+in high-variance cities" mechanism is wrong, or wrong as the
+dominant effect.
+
+**Market-thinness hypothesis: ALSO FALSIFIED.** 24-hour volume on
+the test day:
+
+- Miami:   253,336 (largest of the four)
+- NYC:     125,137
+- Chicago:  88,869
+- Austin:   70,629
+
+Miami is **2× NYC's volume** and has the biggest edge. The "small
+markets are less efficient → more edge" theory does not survive
+this. Volume is uncorrelated (or anti-correlated) with edge.
+
+### Candidate replacement hypotheses
+
+Open questions that the 4-city data raises but doesn't answer:
+
+1. **Tropical predictability bonus.** Miami's daily-high distribution
+   is so tight (std 6.8°F) that EMOS calibrates extremely confidently
+   on the central bracket. Market may price wings as if "any city
+   could see ±15°F deviation" — actual probability near 0%. EMOS
+   spots the gap on every contract, hence the +9¢/trade NO bets and
+   the t=4.11.
+
+2. **Retail-dominated trading.** Miami's high volume may be retail
+   enthusiasm (hurricanes, beach weather, retirees) rather than
+   algorithmic market making. Volume ≠ informed price-setting.
+
+3. **EMOS may overfit on Miami's small sample / tight distribution**
+   — and the apparent edge is a one-year-of-data artifact that won't
+   replicate. Need ~12 more months to discriminate.
+
+4. **Chicago + Miami pass for unrelated reasons.** Different
+   mechanisms; the cross-city test only "validated" one of them.
+   Worth treating Chicago and Miami as independent experiments going
+   forward, not part of the same "universal edge" claim.
+
+### Next steps (none changes the live strategy)
+
+1. **Phase 8 NYC live trading unchanged.** Pre-committed for 30 days
+   of observation; today is day 2. Do not modify based on this data.
+2. **Continue forward paper-trade logging** for all 4 cities (daily
+   cron updated 2026-06-03 to iterate stations). In ~80 more days,
+   Miami will hit n=600 and we can re-evaluate against the
+   pre-committed test cleanly.
+3. **Do not promote Chicago to live** yet. The pre-committed bar was
+   pass on this filter; Chicago passed, but with a 30-day no-change
+   commitment on NYC, the conservative move is to wait until Miami's
+   sample size catches up — then either we have 2 PASSes (Chicago +
+   Miami) and the case for live cross-city is real, or Miami regresses
+   to noise and we drop the cross-city hypothesis entirely.
+4. **Consider adding Denver, Phoenix, LA** to extend coverage. Each
+   gives 1-2 days to backfill; not committing to trading any of them,
+   just gathering more samples to evaluate.
