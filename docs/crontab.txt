@@ -74,15 +74,15 @@
 # Each fires after paper trade so the cron-evaluated signals are already in paper_trades for the day.
 # live_trade.py has all risk controls baked in (halt file, cumulative drawdown, daily loss, contract cap, spread regime).
 
-# Live trade decision: 14:46 UTC (1 min after paper-trade cron to ensure today's snapshot is in DB).
-# --live actually places orders. Remove --live to dry-run.
-#
-# HALTED 2026-06-04: NYC strategy failed the pre-committed cross-city test
-# (mean -0.55c, t=-0.44). Pivoting forward focus to Chicago + Miami (PASS
-# verdicts) per user decision 2026-06-04. New live-trading cron lines for
-# KORD + KMIA will be added once the per-city pre-commit doc is reviewed.
-# See docs/chicago_miami_live_precommit.md (in draft).
+# NYC live trading HALTED 2026-06-04 — failed pre-committed cross-city test.
+# (See git log for full context.)
 # 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --live >> /var/log/weather/live_trade.log 2>&1
+#
+# CHICAGO + MIAMI live trading (approved 2026-06-04 per docs/chicago_miami_live_precommit.md).
+# Different decision times per city — Chicago 14:46 UTC (default), Miami 15:30 UTC
+# (per intraday-paper time-of-day analysis).
+46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
+30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.

@@ -65,12 +65,16 @@ a reason to tweak the other.
 
 ### Sizing — daily $ budget, not fixed contract count
 
-Total starting bankroll: **$2,000** (up from $1k after fund deposit).
+Total starting bankroll: **planned $2,000; actual at go-live $1,039**
+(deposit not fully cleared as of 2026-06-04 13:09 UTC). User decision
+2026-06-04: **proceed at the planned $200/day deployment despite the
+mismatch** — effective daily risk is therefore **20% of actual bankroll
+until the $2k deposit clears**, not 10% as originally planned.
 
-**Daily risk budget: $200/day = 10% of bankroll**, allocated 75/25 to
-Miami/Chicago to dampen Chicago's recent underperformance (May 2026 paper
-data showed all times of day negative on a small but consistent sample —
-see "Things explicitly traded off" below).
+**Daily risk budget: $200/day**, allocated 75/25 to Miami/Chicago to
+dampen Chicago's recent underperformance (May 2026 paper data showed all
+times of day negative on a small but consistent sample — see "Things
+explicitly traded off" below).
 
 ```
 DAILY_STAKE_BUDGET_MIAMI    = 150.0   # 7.5% of bankroll, 75% of daily total
