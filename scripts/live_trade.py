@@ -345,21 +345,29 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             p_win = 1 - model_p
         # NO MIN ENTRY FILTER (matches pre-committed cell entry>=0)
 
-        # Limit-target: 1¢ inside the spread
+        # Limit-target: 1¢ inside the spread when possible, else accept the cross.
+        # post_only_safe flag tells the order placement layer whether we can use
+        # post_only=True (only when our limit is strictly inside the spread).
+        # When spread <= 1, no room to post inside — set post_only=False so the
+        # order becomes a taker at the cross price. Matches backtest methodology
+        # (limit-100% used cross_entry when spread=1).
         spread = int(ask) - int(bid)
         if spread > 1:
             if side == "yes":
                 limit_price = int(ask) - (spread - 1)
             else:
                 limit_price = (100 - int(bid)) - (spread - 1)
+            post_only_safe = True
         else:
             limit_price = cross_entry
+            post_only_safe = False  # CRITICAL — see comment above
         limit_price = max(1, min(99, limit_price))
 
         signals.append({
             "ticker": ticker, "side": side, "limit_price": limit_price,
             "cross_price": cross_entry, "model_p": model_p,
             "market_mid": market_mid, "edge": edge, "p_win": p_win,
+            "post_only": post_only_safe,
         })
 
     # Sort by edge magnitude DESCENDING so highest-conviction trades get budget first
@@ -472,7 +480,8 @@ def main() -> int:
             try:
                 resp = client.place_limit_order(
                     ticker=s['ticker'], side=s['side'], count=count,
-                    price_cents=s['limit_price'], post_only=True,
+                    price_cents=s['limit_price'],
+                    post_only=s.get("post_only", True),
                     client_order_id=client_order_id,
                 )
                 order = resp.get("order", resp)
