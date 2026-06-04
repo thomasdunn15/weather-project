@@ -472,7 +472,10 @@ def main() -> int:
             total_contracts += count
             remaining_budget_cents -= count * s["limit_price"]
 
-            client_order_id = f"livech-{city}-{today.isoformat()}-{s['ticker']}-{s['side']}"
+            # Sanitize ticker dots — Kalshi rejects client_order_id containing '.'
+            # with 400 invalid_parameters (B85.5, B83.5, etc. brackets all have dots).
+            safe_ticker = s['ticker'].replace(".", "-")
+            client_order_id = f"livech-{city}-{today.isoformat()}-{safe_ticker}-{s['side']}"
 
             if not args.live:
                 continue
