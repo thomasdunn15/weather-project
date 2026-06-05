@@ -115,8 +115,12 @@ SPREAD_REGIME_MAX_CENTS = 5.0
 #                         "limit-100% assume 100% fill" intent.
 # "cross_with_premium"   = post at ask + premium cents to walk the book.
 #                         Highest fill rate, highest cost.
-EXECUTION_MODE = "cross_at_ask"
-CROSS_PREMIUM_CENTS = 0   # only used if EXECUTION_MODE == "cross_with_premium"
+# Revised 2026-06-05 — switched from cross_at_ask to cross_with_premium=1.
+# Rationale: cross_at_ask leaves unfilled portions resting at the ask (e.g. KMIA
+# B85.5 1071 contracts on 2026-06-04 never filled). Posting at ask+1 walks one
+# level deeper into the book, fills more, costs ~1c/contract extra.
+EXECUTION_MODE = "cross_with_premium"
+CROSS_PREMIUM_CENTS = 1   # used if EXECUTION_MODE == "cross_with_premium"
 
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
