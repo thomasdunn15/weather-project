@@ -201,6 +201,7 @@ def simulate_pnl(
     contracts: int = 1,
     kelly_fraction: float = 0.5,
     scaling_pct: float = 0.05,
+    amount_dollars: float = 25.0,
     execution_mode: str = "cross",
     max_stake_pct: float | None = 0.05,
     max_stake_dollars: float | None = None,
@@ -209,6 +210,10 @@ def simulate_pnl(
 
     sizing_type:
       - "unit"    — buy `contracts` contracts per trade (constant; ignores bankroll).
+      - "amount"  — stake = `amount_dollars` per trade (constant; ignores bankroll).
+                    Contracts = amount_dollars / (entry_price/100). Like unit, but
+                    risks the same DOLLARS regardless of contract price — at 10c
+                    entry you get 10x more contracts than at 100c entry.
       - "kelly"   — stake = bankroll × kelly_fraction × Kelly-optimal fraction;
                     bankroll compounds. Bets MORE on high-edge trades.
       - "scaling" — stake = bankroll × scaling_pct (fixed % of CURRENT bankroll);
@@ -289,12 +294,23 @@ def simulate_pnl(
 
         fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
 
-        was_capped = False  # only relevant for kelly/scaling; unit ignores caps
+        was_capped = False  # only relevant for kelly/scaling; unit/amount ignore caps
         if sizing_type == "unit":
             num_contracts_actual = int(contracts)
             gross_pnl = contracts * (100 - entry if won else -entry) / 100.0
             trade_pnl = gross_pnl - contracts * fee_per_contract
             stake_dollars = contracts * entry / 100.0
+        elif sizing_type == "amount":
+            # Fixed dollars per trade — like unit but in $ instead of contract count.
+            # Doesn't compound (uses amount_dollars, not bankroll-derived value).
+            stake = float(amount_dollars)
+            num_contracts = stake / (entry / 100.0) if entry > 0 else 0
+            num_contracts_actual = int(num_contracts)  # round DOWN — never over-bet
+            actual_stake = num_contracts_actual * entry / 100.0
+            total_fee = num_contracts_actual * fee_per_contract
+            gross_pnl = num_contracts_actual * (100 - entry if won else -entry) / 100.0
+            trade_pnl = gross_pnl - total_fee
+            stake_dollars = actual_stake
         elif sizing_type == "scaling":
             # Fixed % of CURRENT bankroll, no Kelly multiplier
             b = (100 - entry) / entry
@@ -1752,13 +1768,14 @@ with tab_backtest:
             with c2:
                 sizing_type = st.radio(
                     "Sizing strategy",
-                    ["Unit", "Kelly", "Scaling"],
+                    ["Unit", "Amount $", "Kelly", "Scaling"],
                     index=0,
                     horizontal=True,
                     help=(
-                        "Unit: fixed contract count per trade (ignores bankroll). "
-                        "Kelly: stake = bankroll × Kelly_optimal × chosen fraction (bets MORE on high-edge signals). "
-                        "Scaling: stake = bankroll × chosen %% (fixed % of current bankroll, edge-agnostic)."
+                        "Unit: fixed contract count per trade. "
+                        "Amount $: fixed dollars staked per trade (contracts = $ / entry_price). "
+                        "Kelly: stake = bankroll × Kelly_optimal × chosen fraction. "
+                        "Scaling: stake = bankroll × chosen % (compounds)."
                     ),
                 )
             with c3:
@@ -1783,6 +1800,7 @@ with tab_backtest:
                 contracts_per_trade = 1
                 kelly_fraction = 0.5
                 scaling_pct = 0.05
+                amount_dollars = 25.0
 
                 if sizing_type == "Unit":
                     contracts_per_trade = st.number_input(
@@ -1790,6 +1808,14 @@ with tab_backtest:
                         help="Same fixed count on every trade. Ignores bankroll.",
                     )
                     strategy_label = f"Unit ({contracts_per_trade} contract{'s' if contracts_per_trade != 1 else ''})"
+                elif sizing_type == "Amount $":
+                    amount_dollars = st.number_input(
+                        "Dollars per trade ($)", min_value=1.0, value=25.0, step=5.0,
+                        help="Fixed $ staked per trade. Contracts = $ / (entry_price / 100). "
+                             "At 10¢ entry, $25 = 250 contracts. At 50¢ entry, $25 = 50 contracts. "
+                             "Doesn't compound (no bankroll dependency).",
+                    )
+                    strategy_label = f"Amount (${amount_dollars:.0f}/trade)"
                 elif sizing_type == "Scaling":
                     scaling_pct_int = st.select_slider(
                         "% of bankroll per trade",
@@ -1810,7 +1836,8 @@ with tab_backtest:
                     kelly_fraction = kelly_pct / 100.0
                     strategy_label = f"Kelly ({kelly_pct}%)"
 
-            sim_mode = {"Unit": "unit", "Kelly": "kelly", "Scaling": "scaling"}[sizing_type]
+            sim_mode = {"Unit": "unit", "Amount $": "amount",
+                        "Kelly": "kelly", "Scaling": "scaling"}[sizing_type]
 
             # Stake cap UI (Kelly + Scaling only). Without a cap, Kelly bets the
             # model's full conviction (near-100% on confident trades → ruin on
@@ -1849,6 +1876,7 @@ with tab_backtest:
                 contracts=int(contracts_per_trade),
                 kelly_fraction=kelly_fraction,
                 scaling_pct=scaling_pct,
+                amount_dollars=float(amount_dollars),
                 execution_mode=execution_mode,
                 max_stake_pct=max_stake_pct,
                 max_stake_dollars=max_stake_dollars,
