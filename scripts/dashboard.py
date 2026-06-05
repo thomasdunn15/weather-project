@@ -1535,16 +1535,20 @@ with tab_backtest:
     rows = []
     for c in sorted(contracts, key=sort_key):
         ticker = c["ticker"]
-        # Prefer the stored snapshot (decision-time edge) over live-recomputed.
+        # ALL Market P / Edge / Signal values are frozen at the 14:45 UTC
+        # paper-trade snapshot. If no paper_trades row exists for this contract
+        # (didn't pass |edge|>=10% at decision time, or paper-trade cron hasn't
+        # fired yet today), show '—' rather than live-recomputed values — the
+        # whole point is to show what was true AT TRADE ENTRY.
         snap = paper_snapshot.get(ticker)
         if snap is not None:
             m_prob = snap["model_p"]
             mkt = snap["market_mid"]
             edge = snap["edge"]
         else:
-            m_prob = model_probs.get(ticker)
-            mkt = market_probs.get(ticker)
-            edge = (m_prob - mkt) if (m_prob is not None and mkt is not None) else None
+            m_prob = None
+            mkt = None
+            edge = None
 
         if edge is None:
             signal = "—"
@@ -1596,11 +1600,16 @@ with tab_backtest:
 
     if n_frozen > 0:
         edge_basis = (
-            f"Edges for {n_frozen} of {len(contracts)} brackets are frozen at the 14:45 UTC "
-            "paper-trade snapshot (decision-time edge). Other brackets use the most recent price."
+            f"Market P / Edge / Signal are frozen at the 14:45 UTC paper-trade snapshot "
+            f"({n_frozen} of {len(contracts)} brackets had a logged signal). "
+            "Brackets without a logged signal show '—' (|edge| was < 10% at decision time, "
+            "or cron hasn't fired yet today)."
         )
     else:
-        edge_basis = "Edges computed from the most recent price snapshot (no paper-trade row exists yet for this day)."
+        edge_basis = (
+            "No paper-trade signals logged for this day yet (cron fires at 14:45 UTC). "
+            "Market P / Edge / Signal columns will populate after the cron run."
+        )
     st.caption(
         f"Signal source: {model_choice}. Flagging when |edge| ≥ {edge_threshold:.0%}. "
         + edge_basis +
