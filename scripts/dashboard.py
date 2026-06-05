@@ -1923,7 +1923,25 @@ with tab_backtest:
                         trades_per_year = len(filled_pnl)
                     sharpe = (per_trade_returns.mean() / per_trade_returns.std()) * (trades_per_year ** 0.5)
 
-            m1, m2, m3, m4, m5 = st.columns(5)
+            # Max drawdown — largest peak-to-trough decline in the balance curve.
+            # Tells you the worst losing streak you'd have lived through. Reported
+            # both as % of running peak (risk-adjusted) and as $ (absolute).
+            balances = sim_df["balance"].dropna().astype(float).values
+            max_dd_pct = 0.0
+            max_dd_dollars = 0.0
+            if len(balances) > 1:
+                running_peak = balances[0]
+                for b in balances:
+                    if b > running_peak:
+                        running_peak = b
+                    dd_dollars = b - running_peak
+                    dd_pct = dd_dollars / running_peak if running_peak > 0 else 0
+                    if dd_dollars < max_dd_dollars:
+                        max_dd_dollars = dd_dollars
+                    if dd_pct < max_dd_pct:
+                        max_dd_pct = dd_pct
+
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
             with m1:
                 st.metric("Final balance", f"${final_balance:.2f}", f"{return_pct:+.1f}%")
             with m2:
@@ -1933,8 +1951,19 @@ with tab_backtest:
                           help="Per-trade P&L annualized by sqrt(trades/year). Uses filled trades only. "
                                "No risk-free subtraction. Higher = better risk-adjusted return.")
             with m4:
-                st.metric("Pending", n_total - n_resolved)
+                st.metric(
+                    "Max drawdown",
+                    f"{max_dd_pct*100:+.1f}%",
+                    f"${max_dd_dollars:,.2f} peak-to-trough",
+                    delta_color="inverse",
+                    help="Largest peak-to-trough decline in the balance curve. "
+                         "% is the deepest drop relative to running peak; $ is the absolute. "
+                         "A −20% max DD means at some point you'd have been 20% below your high. "
+                         "Closer to 0% = smoother ride.",
+                )
             with m5:
+                st.metric("Pending", n_total - n_resolved)
+            with m6:
                 st.metric("Filtered / total", f"{n_total} / {n_total_all}")
 
             plot_df = sim_df.dropna(subset=["date"]).copy()
