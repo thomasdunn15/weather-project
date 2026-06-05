@@ -58,9 +58,15 @@ INIT_HOUR = 0
 MODELS_LIST = ["gefs", "ifs"]
 
 # Per-city config. Constants here MUST NOT be edited mid-window — see pre-commit doc.
-# Bankroll target: $3k (current + pending deposit). Daily risk $300 = 10% bankroll.
-# Split 75/25 Miami/Chicago. SIZING_MODE = "even_split": stake = budget / n_signals
-# so every signal gets equal allocation rather than budget-first-by-edge.
+#
+# REVISION 2026-06-05: switch from "even_split $ budget" to "unit contract count"
+# sizing. Backtest showed Sharpe 3.96 (Unit 150) vs 1.37 (Amount $150) because
+# unit sizing has bounded per-trade dollar exposure on cheap entries (where most
+# signals are) while $-sizing scales up risk on cheap entries.
+#
+# Per-city contract count chosen 50/50 weighting Miami/Chicago: KMIA 400, KORD 200.
+# User decision: NO per-trade $ cap (max single-trade loss bounded by
+# UNIT_CONTRACTS * 99c — KMIA max $396, KORD max $198).
 CITY_CONFIG = {
     "KORD": {
         "city_name": "Chicago",
@@ -69,9 +75,10 @@ CITY_CONFIG = {
         "live_model_source_tag": "EMOS combined 00Z Chicago (rolling 45d) [LIVE]",
         "decision_hour": 14,
         "decision_minute": 46,
-        "daily_stake_budget_dollars":  75.0,    # 2.5% of $3k bankroll
-        "daily_loss_limit_dollars":    75.0,
-        "cumulative_kill_dollars":    200.0,
+        "sizing_mode": "unit",                  # "unit" or "even_split"
+        "unit_contracts": 200,                  # contracts per trade (unit mode only)
+        "daily_loss_limit_dollars":    250.0,
+        "cumulative_kill_dollars":     500.0,
         "max_open_contracts":         5000,
     },
     "KMIA": {
@@ -81,16 +88,17 @@ CITY_CONFIG = {
         "live_model_source_tag": "EMOS combined 00Z Miami (rolling 45d) [LIVE]",
         "decision_hour": 15,
         "decision_minute": 30,
-        "daily_stake_budget_dollars": 225.0,    # 7.5% of $3k bankroll
-        "daily_loss_limit_dollars":   225.0,
-        "cumulative_kill_dollars":    600.0,
+        "sizing_mode": "unit",
+        "unit_contracts": 400,
+        "daily_loss_limit_dollars":    500.0,
+        "cumulative_kill_dollars":    1000.0,
         "max_open_contracts":         5000,
     },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 300.0    # halt BOTH cities for the day
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 800.0     # halt BOTH cities permanently
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 700.0    # halt BOTH cities for the day
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1200.0    # halt BOTH cities permanently (40% of $3k)
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
@@ -414,7 +422,17 @@ def even_split_stake_cents(daily_budget_cents: int, n_signals: int) -> int:
 
 
 def size_trade(city: str, signal: dict, per_trade_stake_cents: int) -> int:
-    """Contracts = per_trade_stake / limit_price (integer)."""
+    """Contracts to place for one signal.
+
+    Two sizing modes per CITY_CONFIG[city]['sizing_mode']:
+      - "unit"        : fixed contract count (cfg['unit_contracts']) per trade.
+                        per_trade_stake_cents is IGNORED.
+      - "even_split"  : per_trade_stake / limit_price (integer).
+    """
+    cfg = CITY_CONFIG[city]
+    if cfg.get("sizing_mode") == "unit":
+        return int(cfg["unit_contracts"])
+    # even_split (legacy)
     limit_price = signal["limit_price"]
     if limit_price <= 0 or per_trade_stake_cents <= 0:
         return 0
@@ -443,9 +461,12 @@ def main() -> int:
 
     print(f"  api_base: {client.api_base}")
     print(f"  decision time: {cfg['decision_hour']:02d}:{cfg['decision_minute']:02d} UTC")
-    print(f"  daily stake budget: ${cfg['daily_stake_budget_dollars']:.0f}")
+    sizing_mode = cfg.get("sizing_mode", "even_split")
+    if sizing_mode == "unit":
+        print(f"  sizing: UNIT ({cfg['unit_contracts']} contracts/trade, no budget cap)")
+    else:
+        print(f"  sizing: even-split (${cfg.get('daily_stake_budget_dollars', 0):.0f} / n_signals)")
     print(f"  execution_mode: {EXECUTION_MODE}")
-    print(f"  sizing: even-split across all signals (budget / n_signals)")
 
     with get_connection() as conn:
         # Preflight
@@ -461,16 +482,9 @@ def main() -> int:
             send_alert("; ".join(failures), severity=severity, source=f"live_trade.{city}.preflight")
             return 2
 
-        # Stake-budget tracking: how much have we already placed today?
+        # Stake-budget tracking (informational only in unit mode)
         placed_today_cents = get_today_stake_deployed_cents(conn, today, cfg["live_model_source_tag"])
-        budget_cents = int(cfg["daily_stake_budget_dollars"] * 100)
-        remaining_budget_cents = max(0, budget_cents - placed_today_cents)
         print(f"\n  today's stake deployed so far: ${placed_today_cents/100:,.2f}")
-        print(f"  remaining daily budget: ${remaining_budget_cents/100:,.2f}")
-
-        if remaining_budget_cents <= 0:
-            print("  daily stake budget exhausted; no further trades today.")
-            return 0
 
         # Compute signals
         print("\n[Signal evaluation]")
@@ -491,11 +505,17 @@ def main() -> int:
             return 2
         print(f"\n  Kalshi account balance: ${balance/100:,.2f}")
 
-        # Even-split: divide remaining budget equally across ALL signals so no
-        # signal is skipped due to budget exhaust on earlier (higher-edge) trades.
-        per_trade_stake_cents = even_split_stake_cents(remaining_budget_cents, len(signals))
-        print(f"\n  per-signal stake: ${per_trade_stake_cents/100:,.2f} "
-              f"(budget ${remaining_budget_cents/100:,.2f} / {len(signals)} signals)")
+        # Sizing: unit mode ignores per-trade stake (uses cfg['unit_contracts']).
+        # Even-split mode divides daily budget across all signals.
+        if sizing_mode == "unit":
+            per_trade_stake_cents = 0  # unused by size_trade in unit mode
+            print(f"\n  sizing: {cfg['unit_contracts']} contracts/trade (unit, no budget cap)")
+        else:
+            budget_cents = int(cfg.get("daily_stake_budget_dollars", 0) * 100)
+            remaining_budget_cents = max(0, budget_cents - placed_today_cents)
+            per_trade_stake_cents = even_split_stake_cents(remaining_budget_cents, len(signals))
+            print(f"\n  per-signal stake: ${per_trade_stake_cents/100:,.2f} "
+                  f"(budget ${remaining_budget_cents/100:,.2f} / {len(signals)} signals)")
 
         print("\n[Order placement]")
         placed = 0; rejected = 0; total_contracts = 0
@@ -508,7 +528,9 @@ def main() -> int:
             stake_dollars = count * s['limit_price'] / 100.0
             print(f"  {s['ticker']}: {count} contracts @ {s['limit_price']}¢ = ${stake_dollars:.2f}")
             total_contracts += count
-            remaining_budget_cents -= count * s["limit_price"]
+            # Budget tracking only relevant in even_split mode.
+            if sizing_mode != "unit":
+                remaining_budget_cents -= count * s["limit_price"]
 
             # Sanitize ticker dots — Kalshi rejects client_order_id containing '.'
             # with 400 invalid_parameters (B85.5, B83.5, etc. brackets all have dots).
@@ -557,7 +579,7 @@ def main() -> int:
                           s['limit_price'], s['cross_price'], cfg["live_model_source_tag"],
                           s['model_p'], s['market_mid'], s['edge'],
                           kalshi_order_id, client_order_id,
-                          f"budget_pct={cfg['daily_stake_budget_dollars']/20.0:.2f}%, "
+                          f"sizing={sizing_mode}({cfg.get('unit_contracts','')}), "
                           f"balance=${balance/100:.2f}"))
                 placed += 1
                 print(f"    placed: order_id={kalshi_order_id}")
@@ -569,7 +591,8 @@ def main() -> int:
                     f"{type(e).__name__}: {e}", severity="warn", source=f"live_trade.{city}.place")
 
         print(f"\n  placed: {placed}, rejected: {rejected}, total contracts: {total_contracts}")
-        print(f"  remaining budget: ${remaining_budget_cents/100:,.2f}")
+        if sizing_mode != "unit":
+            print(f"  remaining budget: ${remaining_budget_cents/100:,.2f}")
         if args.live and rejected > 0:
             send_alert(
                 f"{city} live_trade summary {today}: placed={placed}, rejected={rejected}",

@@ -914,10 +914,21 @@ def _live_trading_panel():
                 f"${city_total:+,.2f}",
                 f"realized ${city_realized:+,.2f} + unrealized ${city_unrealized:+,.2f}",
             )
+            # Activity label depends on sizing mode (unit = no dollar budget cap)
+            if ccfg.get("sizing_mode") == "unit":
+                activity_caption = (
+                    f"${d['today_stake_cents']/100:.0f} deployed "
+                    f"(unit {ccfg.get('unit_contracts', '?')} contracts/trade)"
+                )
+            else:
+                activity_caption = (
+                    f"${d['today_stake_cents']/100:.0f} / "
+                    f"${ccfg.get('daily_stake_budget_dollars', 0):.0f} budget deployed"
+                )
             st.metric(
                 f"{ccfg['city_name']} — today's activity",
                 f"{d['n_today_orders']} orders",
-                f"${d['today_stake_cents']/100:.0f} / ${ccfg['daily_stake_budget_dollars']:.0f} budget deployed",
+                activity_caption,
             )
 
     st.divider()
@@ -1235,9 +1246,14 @@ def _live_trading_panel():
                     f"4wk avg spread > {cfg['SPREAD_MAX']:.0f}¢")
         st.markdown("**Per-city:**")
         for city, ccfg in cfg["CITY_CONFIG"].items():
+            mode = ccfg.get("sizing_mode", "even_split")
+            if mode == "unit":
+                sizing_str = f"sizing: unit ({ccfg.get('unit_contracts', '?')} contracts/trade)"
+            else:
+                sizing_str = f"daily budget ${ccfg.get('daily_stake_budget_dollars', 0):.0f}"
             st.markdown(
                 f"- **{ccfg['city_name']}** ({city}, decision {ccfg['decision_hour']:02d}:{ccfg['decision_minute']:02d} UTC) — "
-                f"daily budget ${ccfg['daily_stake_budget_dollars']:.0f}, "
+                f"{sizing_str}, "
                 f"daily loss halt −${ccfg['daily_loss_limit_dollars']:.0f}, "
                 f"cumulative kill −${ccfg['cumulative_kill_dollars']:.0f}, "
                 f"max open contracts {ccfg['max_open_contracts']}"
