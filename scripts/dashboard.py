@@ -35,7 +35,7 @@ from weather_markets.stations import all_stations, get as get_station
 
 # set_page_config MUST be the first Streamlit call, before tabs or any other st.* call.
 st.set_page_config(
-    page_title="NYC Weather Forecasting Dashboard",
+    page_title="Kalshi Weather Trading",
     page_icon="🌡️",
     layout="wide",
 )
@@ -44,37 +44,6 @@ st.set_page_config(
 # =====================================================================
 # SHARED DATA LAYER (cached) — defined above the tabs so both can use it
 # =====================================================================
-
-@st.cache_data
-def collect_training_data():
-    """Collect GEFS ensemble stats, observations, dates from database (market window)."""
-    means, stds, obs, dates = [], [], [], []
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT MAX(date) FROM observations WHERE station_id = %s", ("KNYC",))
-            end = cur.fetchone()[0]
-
-        target_date = date(2026, 5, 5)
-        while target_date <= end:
-            init_time = datetime(
-                target_date.year, target_date.month, target_date.day,
-                12, 0, tzinfo=timezone.utc,
-            )
-            try:
-                highs = compute_daily_highs(init_time, target_date, conn)
-                observation = fetch_observed_high(target_date, conn)
-                if observation is not None:
-                    values = list(highs.values())
-                    means.append(statistics.mean(values))
-                    stds.append(statistics.stdev(values))
-                    obs.append(observation)
-                    dates.append(target_date)
-            except Exception:
-                pass
-            target_date += timedelta(days=1)
-
-    return means, stds, obs, dates
 
 
 @st.cache_data
@@ -370,237 +339,6 @@ def simulate_pnl(
     return pd.DataFrame(history)
 
 
-@st.cache_data
-def run_full_backtest():
-    """For each day in the market window, compute raw / EMOS / market Brier."""
-    means, stds, obs, dates = collect_training_data()
-
-    results = []
-
-    with get_connection() as conn:
-        for i, target_date in enumerate(dates):
-            init_time = datetime(
-                target_date.year, target_date.month, target_date.day,
-                12, 0, tzinfo=timezone.utc,
-            )
-
-            highs = compute_daily_highs(init_time, target_date, conn)
-            contracts = fetch_contracts_for_date(target_date, conn)
-
-            if not contracts:
-                continue
-
-            observation = int(obs[i])
-
-            # Raw
-            raw_probs = compute_ensemble_probabilities(highs, contracts)
-            raw_scores = evaluate_predictions(raw_probs, contracts, observation)
-            raw_brier = sum(raw_scores.values()) / len(raw_scores)
-
-            # EMOS LOO
-            train_means = means[:i] + means[i+1:]
-            train_stds = stds[:i] + stds[i+1:]
-            train_obs = obs[:i] + obs[i+1:]
-
-            emos_brier = None
-            if len(train_means) >= 2:
-                try:
-                    params = fit_emos(train_means, train_stds, train_obs)
-                except RuntimeError:
-                    params = None
-                if params is not None:
-                    corrected_mu = params['a'] + params['b'] * means[i]
-                    corrected_var = params['c'] + params['d'] * stds[i]**2
-                    if corrected_var > 0:
-                        corrected_sigma = math.sqrt(corrected_var)
-                        emos_probs = gaussian_to_bracket_probs(corrected_mu, corrected_sigma, contracts)
-                        emos_scores = evaluate_predictions(emos_probs, contracts, observation)
-                        emos_brier = sum(emos_scores.values()) / len(emos_scores)
-
-            # Market
-            tickers = [c["ticker"] for c in contracts]
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                    FROM prices
-                    WHERE ticker = ANY(%s) AND snapshot_at <= %s
-                    ORDER BY ticker, snapshot_at DESC
-                """, (tickers, init_time))
-                price_rows = cur.fetchall()
-
-            market_brier = None
-            if price_rows:
-                mkt_scores = []
-                price_dict = {t: (b, a) for t, b, a in price_rows if b is not None and a is not None}
-                for c in contracts:
-                    if c["ticker"] in price_dict:
-                        bid, ask = price_dict[c["ticker"]]
-                        mid_prob = (bid + ask) / 200  # cents to prob
-                        outcome = contract_resolved_yes(observation, c)
-                        mkt_scores.append(brier_score(mid_prob, outcome))
-                if mkt_scores:
-                    market_brier = sum(mkt_scores) / len(mkt_scores)
-
-            results.append({
-                "date": target_date,
-                "observed": observation,
-                "raw_brier": raw_brier,
-                "emos_brier": emos_brier,
-                "market_brier": market_brier,
-            })
-
-    return pd.DataFrame(results)
-
-
-@st.cache_data
-def collect_calibration_pairs():
-    """For each day in backtest range, collect (probability, outcome) pairs per model."""
-    means, stds, obs, dates = collect_training_data()
-
-    raw_pairs = []
-    emos_pairs = []
-    market_pairs = []
-
-    with get_connection() as conn:
-        for i, target_date in enumerate(dates):
-            init_time = datetime(
-                target_date.year, target_date.month, target_date.day,
-                12, 0, tzinfo=timezone.utc,
-            )
-
-            highs = compute_daily_highs(init_time, target_date, conn)
-            contracts = fetch_contracts_for_date(target_date, conn)
-            if not contracts:
-                continue
-
-            observation = int(obs[i])
-
-            # Raw
-            raw_probs = compute_ensemble_probabilities(highs, contracts)
-            for c in contracts:
-                outcome = contract_resolved_yes(observation, c)
-                raw_pairs.append((raw_probs[c["ticker"]], outcome))
-
-            # EMOS LOO
-            train_means = means[:i] + means[i+1:]
-            train_stds = stds[:i] + stds[i+1:]
-            train_obs = obs[:i] + obs[i+1:]
-
-            if len(train_means) >= 2:
-                try:
-                    params = fit_emos(train_means, train_stds, train_obs)
-                except RuntimeError:
-                    params = None
-                if params is not None:
-                    emos_mu = params['a'] + params['b'] * means[i]
-                    emos_var = params['c'] + params['d'] * stds[i]**2
-                    if emos_var > 0:
-                        emos_sigma = math.sqrt(emos_var)
-                        emos_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
-                        for c in contracts:
-                            outcome = contract_resolved_yes(observation, c)
-                            emos_pairs.append((emos_probs[c["ticker"]], outcome))
-
-            # Market
-            tickers = [c["ticker"] for c in contracts]
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                    FROM prices
-                    WHERE ticker = ANY(%s) AND snapshot_at <= %s
-                    ORDER BY ticker, snapshot_at DESC
-                """, (tickers, init_time))
-                for ticker, bid, ask in cur.fetchall():
-                    if bid is not None and ask is not None:
-                        mid_prob = (bid + ask) / 200
-                        c = next(c for c in contracts if c["ticker"] == ticker)
-                        outcome = contract_resolved_yes(observation, c)
-                        market_pairs.append((mid_prob, outcome))
-
-    return raw_pairs, emos_pairs, market_pairs
-
-
-@st.cache_data
-def build_diagnostic_df():
-    means, stds, obs, dates = collect_training_data()
-
-    rows = []
-    for i, target_date in enumerate(dates):
-        raw_pred = means[i]
-        raw_std = stds[i]
-        observed = obs[i]
-        raw_error = raw_pred - observed
-        raw_abs_error = abs(raw_error)
-
-        rows.append({
-            "date": target_date,
-            "raw_predicted": raw_pred,
-            "raw_std": raw_std,
-            "observed": observed,
-            "raw_error": raw_error,
-            "raw_abs_error": raw_abs_error,
-        })
-
-    return pd.DataFrame(rows)
-
-
-@st.cache_data
-def run_multimodel_comparison():
-    """Six-way MAE/CRPS comparison: raw vs EMOS for gefs, ifs, combined (full year)."""
-    from weather_markets.emos import crps_gaussian
-
-    def collect(conn, source, start, end):
-        m_, s_, o_ = [], [], []
-        td = start
-        while td <= end:
-            it = datetime(td.year, td.month, td.day, 12, 0, tzinfo=timezone.utc)
-            try:
-                if source == "combined":
-                    values = compute_combined_daily_highs(it, td, conn)
-                else:
-                    values = list(compute_daily_highs(it, td, conn, model=source).values())
-            except Exception:
-                td += timedelta(days=1); continue
-            if len(values) < 2:
-                td += timedelta(days=1); continue
-            ob = fetch_observed_high(td, conn)
-            if ob is None:
-                td += timedelta(days=1); continue
-            m_.append(statistics.mean(values)); s_.append(statistics.stdev(values)); o_.append(ob)
-            td += timedelta(days=1)
-        return m_, s_, o_
-
-    rows = []
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT MAX(date) FROM observations WHERE station_id=%s", ("KNYC",))
-            end = cur.fetchone()[0]
-        for source in ["gefs", "ifs", "combined"]:
-            m_, s_, o_ = collect(conn, source, date(2025, 5, 1), end)
-            n = len(m_)
-            if n < 10:
-                continue
-            raw_mae = sum(abs(a - b) for a, b in zip(m_, o_)) / n
-            raw_crps = sum(crps_gaussian(a, c, b) for a, c, b in zip(m_, s_, o_) if c > 0) / n
-            try:
-                params = fit_emos(m_, s_, o_)
-            except RuntimeError:
-                continue
-            e_abs, e_crps = [], []
-            for a, c, b in zip(m_, s_, o_):
-                mu = params["a"] + params["b"] * a
-                var = params["c"] + params["d"] * c**2
-                if var <= 0:
-                    continue
-                e_abs.append(abs(mu - b)); e_crps.append(crps_gaussian(mu, math.sqrt(var), b))
-            rows.append({
-                "Source": source, "Days": n,
-                "Raw MAE": raw_mae, "EMOS MAE": sum(e_abs) / len(e_abs),
-                "Raw CRPS": raw_crps, "EMOS CRPS": sum(e_crps) / len(e_crps),
-            })
-    return pd.DataFrame(rows)
-
-
 def latest_available_init(conn, target_date, init_hour=12, model_aware=True, station_id: str = "KNYC"):
     """
     Return the target date's init_hour UTC init_time IF forecast data exists
@@ -630,441 +368,7 @@ def latest_available_init(conn, target_date, init_hour=12, model_aware=True, sta
 # TABS
 # =====================================================================
 
-tab_analysis, tab_live, tab_backtest = st.tabs(["Analysis", "Live Trading", "Backtest"])
-
-
-# ---------------------------------------------------------------------
-# ANALYSIS TAB (existing panels)
-# ---------------------------------------------------------------------
-with tab_analysis:
-    st.title("NYC Weather Forecasting Dashboard")
-    st.markdown(
-        "Backtesting raw ensemble vs EMOS vs Kalshi market predictions "
-        "for daily NYC high temperatures."
-    )
-
-    with st.sidebar:
-        st.header("Info")
-        st.markdown("""
-        This dashboard compares three forecasting approaches for NYC daily high temperatures:
-
-        - **Raw Ensemble**: Naive probability from GEFS 31-member ensemble
-        - **EMOS**: Gaussian post-processing with leave-one-out validation
-        - **Market**: Kalshi mid-price implied probabilities
-
-        Lower Brier score = better forecast.
-        """)
-        st.divider()
-        if st.button("Clear Cache"):
-            st.cache_data.clear()
-            st.rerun()
-
-    df = run_full_backtest()
-
-    if df.empty:
-        st.error("No backtest data available.")
-        st.stop()
-
-    # === Panel 1: Summary stats ===
-    st.header("Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Days backtested", len(df))
-    with col2:
-        raw_mean = df['raw_brier'].mean()
-        st.metric("Raw Ensemble Brier", f"{raw_mean:.4f}")
-    with col3:
-        emos_mean = df['emos_brier'].mean()
-        delta = emos_mean - raw_mean
-        st.metric("EMOS Brier", f"{emos_mean:.4f}", delta=f"{delta:+.4f}", delta_color="inverse")
-    with col4:
-        market_mean = df['market_brier'].mean()
-        delta = market_mean - raw_mean
-        st.metric("Market Brier", f"{market_mean:.4f}", delta=f"{delta:+.4f}", delta_color="inverse")
-
-    # === Panel 2: Daily comparison chart ===
-    st.header("Daily Brier Comparison")
-
-    chart_df = df.melt(
-        id_vars=['date'],
-        value_vars=['raw_brier', 'emos_brier', 'market_brier'],
-        var_name='Model',
-        value_name='Brier Score'
-    )
-    chart_df['date_str'] = chart_df['date'].astype(str)
-    chart_df['Model'] = chart_df['Model'].map({
-        'raw_brier': 'Raw Ensemble',
-        'emos_brier': 'EMOS',
-        'market_brier': 'Market',
-    })
-
-    chart = alt.Chart(chart_df).mark_bar().encode(
-        x=alt.X('date_str:N', title='Date', sort=None),
-        xOffset='Model:N',
-        y=alt.Y('Brier Score:Q', title='Brier Score'),
-        color=alt.Color(
-            'Model:N',
-            scale=alt.Scale(
-                domain=['Raw Ensemble', 'EMOS', 'Market'],
-                range=['#ff6b6b', '#4ecdc4', '#ffe66d'],
-            ),
-        ),
-        tooltip=['date_str:N', 'Model:N', 'Brier Score:Q'],
-    ).properties(height=400)
-
-    st.altair_chart(chart, width='stretch')
-
-    # === Panel 3: Per-day data table ===
-    st.header("Per-Day Details")
-    display_df = df.copy()
-    display_df['raw_brier'] = display_df['raw_brier'].round(4)
-    display_df['emos_brier'] = display_df['emos_brier'].round(4)
-    display_df['market_brier'] = display_df['market_brier'].round(4)
-    st.dataframe(display_df, width='stretch')
-
-    # === Panel 4: Rolling Mean Brier ===
-    st.header("Rolling Mean Brier")
-    cumulative_df = pd.DataFrame()
-    for col in ['raw_brier', 'emos_brier', 'market_brier']:
-        cumulative_df[col] = df[col].expanding().mean()
-    cumulative_df['date'] = df['date']
-
-    melted = cumulative_df.melt(
-        id_vars=['date'],
-        value_vars=['raw_brier', 'emos_brier', 'market_brier'],
-        var_name='Model',
-        value_name='Cumulative Brier'
-    )
-    melted['Model'] = melted['Model'].map({
-        'raw_brier': 'Raw Ensemble',
-        'emos_brier': 'EMOS',
-        'market_brier': 'Market',
-    })
-    st.line_chart(melted, x='date', y='Cumulative Brier', color='Model')
-
-    # === Panel 5: Per-day drill-down ===
-    st.header("Per-Day Drill-Down")
-    available_dates = df['date'].tolist()
-    selected_date = st.selectbox(
-        "Select a date to investigate",
-        options=available_dates,
-        format_func=lambda d: d.strftime("%a %b %d, %Y"),
-        index=len(available_dates) - 1,
-    )
-
-    with get_connection() as conn:
-        init_time = datetime(
-            selected_date.year, selected_date.month, selected_date.day,
-            12, 0, tzinfo=timezone.utc,
-        )
-        highs = compute_daily_highs(init_time, selected_date, conn)
-        contracts = fetch_contracts_for_date(selected_date, conn)
-        observed = fetch_observed_high(selected_date, conn)
-
-        raw_probs = compute_ensemble_probabilities(highs, contracts) if contracts else {}
-
-        means, stds, obs, dates = collect_training_data()
-        idx = dates.index(selected_date)
-        train_means = means[:idx] + means[idx+1:]
-        train_stds = stds[:idx] + stds[idx+1:]
-        train_obs = obs[:idx] + obs[idx+1:]
-
-        emos_probs = {}
-        emos_mu = None
-        if len(train_means) >= 2 and contracts:
-            params = fit_emos(train_means, train_stds, train_obs)
-            emos_mu = params['a'] + params['b'] * means[idx]
-            emos_var = params['c'] + params['d'] * stds[idx]**2
-            if emos_var > 0:
-                emos_sigma = math.sqrt(emos_var)
-                emos_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
-
-        market_probs = {}
-        if contracts:
-            tickers = [c["ticker"] for c in contracts]
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                    FROM prices
-                    WHERE ticker = ANY(%s) AND snapshot_at <= %s
-                    ORDER BY ticker, snapshot_at DESC
-                """, (tickers, init_time))
-                for ticker, bid, ask in cur.fetchall():
-                    if bid is not None and ask is not None:
-                        market_probs[ticker] = (bid + ask) / 200
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Observed", f"{observed}°F" if observed else "—")
-    with col2:
-        ensemble_mean = statistics.mean(highs.values())
-        st.metric("Raw mean", f"{ensemble_mean:.1f}°F")
-    with col3:
-        if emos_mu is not None:
-            st.metric("EMOS mean", f"{emos_mu:.1f}°F")
-        else:
-            st.metric("EMOS mean", "—")
-    with col4:
-        raw_err = ensemble_mean - observed if observed else None
-        st.metric("Raw error", f"{raw_err:+.1f}°F" if raw_err is not None else "—")
-
-    st.subheader("Ensemble Member Distribution")
-    hist_df = pd.DataFrame({
-        'temperature': list(highs.values()),
-        'count': [1] * len(highs),
-    })
-    hist_chart = alt.Chart(hist_df).mark_bar(opacity=0.7).encode(
-        x=alt.X('temperature:Q', bin=alt.Bin(step=0.5), title='Predicted High (°F)'),
-        y=alt.Y('count():Q', title='Member Count'),
-        color=alt.value('#4ecdc4'),
-    ).properties(height=300)
-
-    if observed is not None:
-        obs_line = alt.Chart(pd.DataFrame({'observed': [observed]})).mark_rule(
-            color='#ff6b6b', strokeWidth=3,
-        ).encode(x='observed:Q')
-        chart_combined = hist_chart + obs_line
-    else:
-        chart_combined = hist_chart
-    st.altair_chart(chart_combined, width='stretch')
-
-    st.subheader("Contract Probabilities")
-    if contracts:
-        table_rows = []
-        for c in contracts:
-            ticker = c["ticker"]
-            if c["bracket_type"] == "greater_than":
-                range_str = f">{c['strike_low']}°"
-            elif c["bracket_type"] == "less_than":
-                range_str = f"<{c['strike_high']}°"
-            else:
-                range_str = f"{c['strike_low']}-{c['strike_high']}°"
-
-            outcome = contract_resolved_yes(int(observed), c) if observed else None
-
-            table_rows.append({
-                "Contract": ticker.replace("KXHIGHNY-", ""),
-                "Range": range_str,
-                "Raw P": f"{raw_probs.get(ticker, 0):.1%}" if raw_probs else "—",
-                "EMOS P": f"{emos_probs.get(ticker, 0):.1%}" if emos_probs else "—",
-                "Market P": f"{market_probs.get(ticker, 0):.1%}" if market_probs else "—",
-                "Resolved": "YES" if outcome else "NO" if outcome is not None else "—",
-            })
-        st.dataframe(pd.DataFrame(table_rows), width='stretch', hide_index=True)
-
-    # === Panel 6: Calibration plot ===
-    st.header("🎯 Calibration")
-    st.markdown(
-        "Are predicted probabilities reliable? "
-        "If a model says 70% and the event happens 70% of the time, it's calibrated. "
-        "Points on the diagonal = perfect calibration. "
-        "Points below = overconfident. Points above = underconfident."
-    )
-
-    raw_pairs, emos_pairs, market_pairs = collect_calibration_pairs()
-    n_bins = st.slider("Number of bins", min_value=3, max_value=10, value=5)
-
-    raw_bins = calibration_bins(raw_pairs, n_bins=n_bins)
-    emos_bins = calibration_bins(emos_pairs, n_bins=n_bins)
-    market_bins = calibration_bins(market_pairs, n_bins=n_bins)
-
-    def bins_to_df(bins_data, model_name):
-        return pd.DataFrame([
-            {
-                "mean_predicted": b["mean_predicted"],
-                "fraction_true": b["fraction_true"],
-                "count": b["count"],
-                "Model": model_name,
-            }
-            for b in bins_data
-        ])
-
-    calib_df = pd.concat([
-        bins_to_df(raw_bins, "Raw Ensemble"),
-        bins_to_df(emos_bins, "EMOS"),
-        bins_to_df(market_bins, "Market"),
-    ], ignore_index=True)
-
-    diagonal_df = pd.DataFrame({"mean_predicted": [0, 1], "fraction_true": [0, 1]})
-    diagonal_chart = alt.Chart(diagonal_df).mark_line(
-        color='gray', strokeDash=[5, 5],
-    ).encode(x='mean_predicted:Q', y='fraction_true:Q')
-
-    points_chart = alt.Chart(calib_df).mark_circle().encode(
-        x=alt.X('mean_predicted:Q', scale=alt.Scale(domain=[0, 1]),
-                title='Mean Predicted Probability'),
-        y=alt.Y('fraction_true:Q', scale=alt.Scale(domain=[0, 1]),
-                title='Observed Fraction True'),
-        size=alt.Size('count:Q', title='Sample size', scale=alt.Scale(range=[50, 500])),
-        color=alt.Color('Model:N', scale=alt.Scale(
-            domain=['Raw Ensemble', 'EMOS', 'Market'],
-            range=['#ff6b6b', '#4ecdc4', '#ffe66d'])),
-        tooltip=['Model:N', 'mean_predicted:Q', 'fraction_true:Q', 'count:Q'],
-    )
-
-    lines_chart = alt.Chart(calib_df).mark_line(opacity=0.3).encode(
-        x='mean_predicted:Q', y='fraction_true:Q',
-        color=alt.Color('Model:N', scale=alt.Scale(
-            domain=['Raw Ensemble', 'EMOS', 'Market'],
-            range=['#ff6b6b', '#4ecdc4', '#ffe66d'])),
-    )
-
-    calib_chart = (diagonal_chart + lines_chart + points_chart).properties(height=500, width=600)
-    st.altair_chart(calib_chart, width='stretch')
-
-    with st.expander("Per-bin data"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**Raw Ensemble**")
-            st.dataframe(bins_to_df(raw_bins, "Raw").drop(columns=["Model"]))
-        with c2:
-            st.markdown("**EMOS**")
-            st.dataframe(bins_to_df(emos_bins, "EMOS").drop(columns=["Model"]))
-        with c3:
-            st.markdown("**Market**")
-            st.dataframe(bins_to_df(market_bins, "Market").drop(columns=["Model"]))
-
-    # === Panel 7: Diagnostics ===
-    st.header("🔬 Diagnostics")
-    st.markdown(
-        "Three views into model behavior. These help reveal where EMOS works "
-        "and where it falls short."
-    )
-
-    diag_df = build_diagnostic_df()
-
-    st.subheader("1. Is bias systematic in predicted temperature?")
-    st.markdown(
-        "If the model has a constant bias (e.g., always 1.6°F too warm), "
-        "this scatter should show a horizontal trend. "
-        "If the bias depends on temperature, you'll see a slope."
-    )
-    scatter_1 = alt.Chart(diag_df).mark_circle(size=100).encode(
-        x=alt.X('raw_predicted:Q', title='Raw Predicted Mean (°F)', scale=alt.Scale(zero=False)),
-        y=alt.Y('raw_error:Q', title='Error (predicted - observed, °F)'),
-        tooltip=['date:T', 'raw_predicted:Q', 'observed:Q', 'raw_error:Q'],
-    )
-    zero_line_1 = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(
-        color='gray', strokeDash=[5, 5]).encode(y='y:Q')
-    regression_1 = alt.Chart(diag_df).transform_regression(
-        'raw_predicted', 'raw_error', method='linear'
-    ).mark_line(color='red').encode(x='raw_predicted:Q', y='raw_error:Q')
-    st.altair_chart((scatter_1 + zero_line_1 + regression_1).properties(height=350),
-                    width='stretch')
-    st.caption(
-        "Gray dashed line = no bias. Red line = best linear fit through points. "
-        "If the red line slopes downward, bias decreases as predicted temperature rises."
-    )
-
-    st.subheader("2. Does ensemble spread predict actual uncertainty?")
-    st.markdown(
-        "Theoretically, days where ensemble members disagree more should have "
-        "bigger forecast errors. If spread is informative, you'll see a positive slope."
-    )
-    scatter_2 = alt.Chart(diag_df).mark_circle(size=100).encode(
-        x=alt.X('raw_std:Q', title='Ensemble Standard Deviation (°F)', scale=alt.Scale(zero=False)),
-        y=alt.Y('raw_abs_error:Q', title='Absolute Error (°F)', scale=alt.Scale(zero=False)),
-        tooltip=['date:T', 'raw_std:Q', 'raw_abs_error:Q', 'observed:Q'],
-    )
-    regression_2 = alt.Chart(diag_df).transform_regression(
-        'raw_std', 'raw_abs_error', method='linear'
-    ).mark_line(color='red').encode(x='raw_std:Q', y='raw_abs_error:Q')
-    st.altair_chart((scatter_2 + regression_2).properties(height=350),
-                    width='stretch')
-    st.caption(
-        "If ensemble spread is informative, points should slope upward. "
-        "Flat or negative slope = under-dispersion."
-    )
-
-    st.subheader("3. Is the model calibrated differently for confident vs uncertain predictions?")
-    st.markdown(
-        "Split predictions into 'high confidence' (>70%) and 'low confidence' (<30%) bins. "
-        "Are both bands calibrated, or just one?"
-    )
-
-    def calibration_summary(pairs, label):
-        high_conf = [(p, o) for p, o in pairs if p > 0.7]
-        low_conf = [(p, o) for p, o in pairs if p < 0.3]
-        mid_conf = [(p, o) for p, o in pairs if 0.3 <= p <= 0.7]
-
-        def stats(pp):
-            if not pp:
-                return None, None, 0
-            probs = [p for p, _ in pp]
-            outcomes = [o for _, o in pp]
-            return sum(probs) / len(probs), sum(outcomes) / len(outcomes), len(pp)
-
-        high_pred, high_actual, high_n = stats(high_conf)
-        mid_pred, mid_actual, mid_n = stats(mid_conf)
-        low_pred, low_actual, low_n = stats(low_conf)
-        return [
-            {"Model": label, "Regime": "High (>70%)",
-             "Mean Predicted": high_pred, "Actual Rate": high_actual, "Count": high_n},
-            {"Model": label, "Regime": "Mid (30-70%)",
-             "Mean Predicted": mid_pred, "Actual Rate": mid_actual, "Count": mid_n},
-            {"Model": label, "Regime": "Low (<30%)",
-             "Mean Predicted": low_pred, "Actual Rate": low_actual, "Count": low_n},
-        ]
-
-    rows_3 = []
-    rows_3.extend(calibration_summary(raw_pairs, "Raw Ensemble"))
-    rows_3.extend(calibration_summary(emos_pairs, "EMOS"))
-    rows_3.extend(calibration_summary(market_pairs, "Market"))
-
-    regime_df = pd.DataFrame(rows_3)
-    regime_display_df = regime_df.dropna(subset=['Mean Predicted']).copy()
-    regime_display_df['Mean Predicted'] = regime_display_df['Mean Predicted'].apply(
-        lambda x: f"{x:.1%}" if x else "—")
-    regime_display_df['Actual Rate'] = regime_display_df['Actual Rate'].apply(
-        lambda x: f"{x:.1%}" if x is not None else "—")
-    st.dataframe(regime_display_df, width='stretch', hide_index=True)
-    st.caption(
-        "If predicted and actual rates match in a regime, the model is calibrated there. "
-        "With few days, low counts mean any single regime is noisy."
-    )
-
-
-    # === Panel 8: Multi-model comparison (full year) ===
-    st.header("Multi-Model Comparison (full year)")
-    st.markdown(
-        "MAE and CRPS over the full year for GEFS, ECMWF, and combined ensembles, "
-        "raw vs EMOS-calibrated. Lower is better. This is the trustworthy large-sample result."
-    )
-
-    mm_df = run_multimodel_comparison()
-    if mm_df.empty:
-        st.info("Not enough data for the multi-model comparison yet.")
-    else:
-        mae_long = mm_df.melt(id_vars=["Source"], value_vars=["Raw MAE", "EMOS MAE"],
-                              var_name="Method", value_name="MAE")
-        mae_chart = alt.Chart(mae_long).mark_bar().encode(
-            x=alt.X("Source:N", title=None),
-            xOffset="Method:N",
-            y=alt.Y("MAE:Q", title="MAE (degrees F)"),
-            color=alt.Color("Method:N", scale=alt.Scale(
-                domain=["Raw MAE", "EMOS MAE"], range=["#ff6b6b", "#4ecdc4"])),
-            tooltip=["Source:N", "Method:N", alt.Tooltip("MAE:Q", format=".2f")],
-        ).properties(height=300, title="Mean Absolute Error")
-        st.altair_chart(mae_chart, width='stretch')
-
-        crps_long = mm_df.melt(id_vars=["Source"], value_vars=["Raw CRPS", "EMOS CRPS"],
-                               var_name="Method", value_name="CRPS")
-        crps_chart = alt.Chart(crps_long).mark_bar().encode(
-            x=alt.X("Source:N", title=None),
-            xOffset="Method:N",
-            y=alt.Y("CRPS:Q", title="CRPS"),
-            color=alt.Color("Method:N", scale=alt.Scale(
-                domain=["Raw CRPS", "EMOS CRPS"], range=["#ff6b6b", "#4ecdc4"])),
-            tooltip=["Source:N", "Method:N", alt.Tooltip("CRPS:Q", format=".3f")],
-        ).properties(height=300, title="CRPS (probabilistic quality)")
-        st.altair_chart(crps_chart, width='stretch')
-
-        disp = mm_df.copy()
-        disp["MAE improve"] = ((disp["Raw MAE"] - disp["EMOS MAE"]) / disp["Raw MAE"] * 100).map(lambda x: f"{x:+.1f}%")
-        disp["CRPS improve"] = ((disp["Raw CRPS"] - disp["EMOS CRPS"]) / disp["Raw CRPS"] * 100).map(lambda x: f"{x:+.1f}%")
-        for col in ["Raw MAE", "EMOS MAE", "Raw CRPS", "EMOS CRPS"]:
-            disp[col] = disp[col].map(lambda x: f"{x:.3f}")
-        st.dataframe(disp, width='stretch', hide_index=True)
+tab_live, tab_backtest = st.tabs(["Live Trading", "Backtest"])
 
 
 # ---------------------------------------------------------------------
@@ -1094,21 +398,86 @@ def _live_account_state() -> dict:
     return out
 
 
+def _strip_series(ticker: str) -> str:
+    """Strip the KXHIGH<city>- prefix from a ticker for compact display.
+    e.g. 'KXHIGHCHI-26JUN05-B85.5' -> '26JUN05-B85.5'."""
+    import re as _re
+    return _re.sub(r"^KXHIGH[A-Z]+-", "", ticker or "")
+
+
+# Constants imported from live_trade.py so the dashboard stays in sync with the cron.
+# (Adding scripts/ to sys.path because scripts isn't a package; safe import — live_trade
+# guards its main() with __name__ == '__main__'.)
+def _live_trade_config():
+    import sys as _sys
+    from pathlib import Path as _P
+    scripts_dir = str(_P(__file__).parent)
+    if scripts_dir not in _sys.path:
+        _sys.path.insert(0, scripts_dir)
+    import live_trade as _lt
+    return {
+        "CITY_CONFIG": _lt.CITY_CONFIG,
+        "AGG_DAILY_LOSS": _lt.AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS,
+        "AGG_CUM_KILL":   _lt.AGGREGATE_CUMULATIVE_KILL_DOLLARS,
+        "SPREAD_MAX":     _lt.SPREAD_REGIME_MAX_CENTS,
+        "EDGE_THRESHOLD": _lt.EDGE_THRESHOLD,
+        "EXECUTION_MODE": getattr(_lt, "EXECUTION_MODE", "post_inside_spread"),
+    }
+
+
 @st.cache_data(ttl=30)
 def _live_db_state() -> dict:
-    """Pull live_trades aggregates from DB. Cached 30s."""
-    out: dict = {}
+    """Pull live_trades aggregates from DB. Cached 30s.
+
+    Returns dict with per-city scoping (KORD, KMIA) plus aggregate.
+    Per-city is keyed by the LIVE model_source tag in live_trades."""
+    cfg = _live_trade_config()
+    out: dict = {"per_city": {}, "agg": {}, "pnl_by_day": [], "today_trades": []}
+
+    def _city_query(cur, src_like: str) -> dict:
+        cur.execute(
+            """SELECT COALESCE(SUM(realized_pnl_cents), 0),
+                      COUNT(*) FILTER (WHERE settlement IS NOT NULL),
+                      COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')),
+                      COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = CURRENT_DATE), 0),
+                      COUNT(*) FILTER (WHERE target_date = CURRENT_DATE),
+                      COALESCE(SUM(count * limit_price_cents) FILTER (WHERE target_date = CURRENT_DATE), 0)
+               FROM live_trades WHERE model_source LIKE %s""",
+            (src_like,),
+        )
+        cum, n_settle, n_fill, today, n_today, stake_today_cents = cur.fetchone()
+        return {
+            "cum_pnl_cents": int(cum),
+            "n_settled": int(n_settle),
+            "n_filled": int(n_fill),
+            "today_pnl_cents": int(today),
+            "n_today_orders": int(n_today),
+            "today_stake_cents": int(stake_today_cents),
+        }
+
     with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM live_trades")
-        out["total_attempts"] = cur.fetchone()[0]
+        # Aggregate (all rows)
         cur.execute("""
             SELECT COALESCE(SUM(realized_pnl_cents), 0),
+                   COUNT(*),
                    COUNT(*) FILTER (WHERE settlement IS NOT NULL),
-                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')),
                    COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = CURRENT_DATE), 0)
             FROM live_trades
         """)
-        out["cum_pnl_cents"], out["n_settled"], out["n_filled"], out["today_pnl_cents"] = cur.fetchone()
+        agg_cum, agg_total, agg_settled, agg_today = cur.fetchone()
+        out["agg"] = {
+            "cum_pnl_cents": int(agg_cum),
+            "total_attempts": int(agg_total),
+            "n_settled": int(agg_settled),
+            "today_pnl_cents": int(agg_today),
+        }
+
+        # Per-city
+        for city in cfg["CITY_CONFIG"]:
+            tag = cfg["CITY_CONFIG"][city]["live_model_source_tag"]
+            out["per_city"][city] = _city_query(cur, tag)
+
+        # Daily P&L for chart
         cur.execute("""
             SELECT target_date,
                    SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL) AS daily_pnl
@@ -1116,25 +485,31 @@ def _live_db_state() -> dict:
             GROUP BY target_date ORDER BY target_date
         """)
         out["pnl_by_day"] = cur.fetchall()
+
+        # Today's trades — all cities
         cur.execute("""
             SELECT placed_at, target_date, ticker, side, count,
                    limit_price_cents, cross_price_cents, edge,
-                   fill_status, fill_price_cents, settlement, realized_pnl_cents
+                   fill_status, fill_price_cents, settlement, realized_pnl_cents, model_source
             FROM live_trades
             WHERE target_date = CURRENT_DATE
             ORDER BY placed_at
         """)
         out["today_trades"] = cur.fetchall()
-        cur.execute("""
-            SELECT AVG(market_yes_ask - market_yes_bid), COUNT(*)
-            FROM paper_trades
-            WHERE target_date >= CURRENT_DATE - INTERVAL '28 days'
-              AND entry_price_cents >= 60 AND ABS(edge) >= 0.10
-              AND market_yes_bid IS NOT NULL AND market_yes_ask IS NOT NULL
-              AND model_source = 'EMOS combined 00Z (rolling 45d)'
-        """)
-        spr, n = cur.fetchone()
-        out["spread_4wk"] = (float(spr), n) if spr is not None else (None, n)
+
+        # Per-city rolling 4wk avg spread (from paper data on the paper source)
+        out["spread_4wk_per_city"] = {}
+        for city, ccfg in cfg["CITY_CONFIG"].items():
+            cur.execute("""
+                SELECT AVG(market_yes_ask - market_yes_bid), COUNT(*)
+                FROM paper_trades
+                WHERE target_date >= CURRENT_DATE - INTERVAL '28 days'
+                  AND ABS(edge) >= %s
+                  AND market_yes_bid IS NOT NULL AND market_yes_ask IS NOT NULL
+                  AND model_source = %s
+            """, (cfg["EDGE_THRESHOLD"], ccfg["paper_model_source"]))
+            spr, n = cur.fetchone()
+            out["spread_4wk_per_city"][city] = (float(spr) if spr is not None else None, int(n))
     return out
 
 
@@ -1204,19 +579,35 @@ def _enrich_positions(positions: list[dict]) -> list[dict]:
                         range_str = "?"
                         td = None
 
-                    # Today's model edge for this contract (from paper-trade cron)
+                    # Today's model edge for this contract — derive paper source from ticker
+                    # series so KORD/KMIA positions resolve to their own paper data.
                     model_p = market_mid = edge = None
                     if td == today:
-                        cur.execute("""
-                            SELECT model_prob_yes, market_mid_prob, edge
-                            FROM paper_trades
-                            WHERE ticker = %s AND target_date = %s
-                              AND model_source = 'EMOS combined 00Z (rolling 45d)'
-                            ORDER BY logged_at DESC LIMIT 1
-                        """, (ticker, td))
-                        mp_row = cur.fetchone()
-                        if mp_row:
-                            model_p, market_mid, edge = mp_row
+                        series = ticker.split("-")[0]  # KXHIGHCHI, KXHIGHMIA, etc.
+                        # Find the station for this series (registry-driven)
+                        try:
+                            from weather_markets.stations import all_stations as _all_st
+                            station_for_series = next(
+                                (s for s in _all_st() if s.kalshi_series == series), None,
+                            )
+                        except Exception:
+                            station_for_series = None
+                        if station_for_series is not None:
+                            paper_src = (
+                                "EMOS combined 00Z (rolling 45d)"
+                                if station_for_series.station_id == "KNYC"
+                                else f"EMOS combined 00Z {station_for_series.city} (rolling 45d)"
+                            )
+                            cur.execute("""
+                                SELECT model_prob_yes, market_mid_prob, edge
+                                FROM paper_trades
+                                WHERE ticker = %s AND target_date = %s
+                                  AND model_source = %s
+                                ORDER BY logged_at DESC LIMIT 1
+                            """, (ticker, td, paper_src))
+                            mp_row = cur.fetchone()
+                            if mp_row:
+                                model_p, market_mid, edge = mp_row
 
                 # Action heuristic
                 if edge is not None:
@@ -1301,28 +692,134 @@ def _read_log_tail(path: str, n: int = 60) -> str:
         return f"(error reading {path}: {e})"
 
 
-def _read_halt_reason() -> str | None:
+def _read_halts() -> list[tuple[str, str, str]]:
+    """Returns list of (scope, file_path, reason). Empty list = no halts active.
+
+    Multi-city halt-file structure (see live_trade.py CITY_CONFIG):
+      halt/ALL  — halts BOTH cities
+      halt/KORD — halts Chicago only
+      halt/KMIA — halts Miami only
+    """
     from pathlib import Path
-    p = Path.home() / ".kalshi" / "halt"
-    if p.exists():
-        return p.read_text().strip()
-    return None
+    halt_dir = Path(__file__).parent.parent / "halt"
+    out = []
+    for scope in ["ALL", "KORD", "KMIA"]:
+        p = halt_dir / scope
+        if p.exists():
+            try:
+                out.append((scope, str(p), p.read_text().strip()))
+            except Exception as e:
+                out.append((scope, str(p), f"(unreadable: {e})"))
+    return out
+
+
+def _cron_health() -> list[dict]:
+    """Parse the tail of each daily cron log to surface last-run + status.
+
+    Returns list of dicts: {name, path, last_seen, status, last_line}.
+    status is 'ok' / 'stale' (no run in 25h) / 'error' (recent ERROR/Traceback).
+    """
+    from pathlib import Path
+    import re as _re
+    crons = [
+        ("Chicago live_trade (14:46 UTC)", "/var/log/weather/live_trade.log",  "Live trade decision for KORD"),
+        ("Miami live_trade (15:30 UTC)",   "/var/log/weather/live_trade.log",  "Live trade decision for KMIA"),
+        ("paper_trade (14:45 UTC)",        "/var/log/weather/paper_trade.log",  None),
+        ("monitor_fills (every 30 min)",   "/var/log/weather/monitor_fills.log", None),
+        ("reconcile (04:00 UTC)",          "/var/log/weather/reconcile.log",    None),
+    ]
+    out = []
+    for name, path, expect_marker in crons:
+        p = Path(path)
+        if not p.exists():
+            out.append({"name": name, "path": path, "status": "missing",
+                        "last_seen": None, "last_line": "(no log file)"})
+            continue
+        try:
+            with p.open() as f:
+                lines = f.readlines()
+        except Exception as e:
+            out.append({"name": name, "path": path, "status": "error",
+                        "last_seen": None, "last_line": f"(read err: {e})"})
+            continue
+        # If we expect a city marker, find the latest matching line
+        if expect_marker:
+            relevant = [l for l in lines if expect_marker in l]
+            tail = relevant[-12:] if relevant else lines[-4:]
+        else:
+            tail = lines[-12:]
+        joined = "".join(tail)
+        # Extract a timestamp from the most recent line that has one
+        ts_match = None
+        for line in reversed(tail):
+            m = _re.search(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})", line)
+            if m:
+                ts_match = m.group(1)
+                break
+        # Detect error keywords in recent tail
+        has_error = any(k in joined for k in ("ERROR", "Traceback", "[WARN", "FAIL", "exception"))
+        status = "error" if has_error else "ok"
+        # Stale check: if last_seen is older than 25h, mark stale
+        last_seen_dt = None
+        if ts_match:
+            try:
+                last_seen_dt = datetime.fromisoformat(ts_match.replace(" ", "T"))
+                if last_seen_dt.tzinfo is None:
+                    last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - last_seen_dt).total_seconds() > 25 * 3600:
+                    status = "stale"
+            except Exception:
+                pass
+        out.append({
+            "name": name, "path": path, "status": status,
+            "last_seen": last_seen_dt, "last_line": tail[-1].strip() if tail else "",
+        })
+    return out
+
+
+@st.cache_data(ttl=30)
+def _todays_signals_vs_fills():
+    """Cross-reference today's paper-trade signals with live_trades placements.
+    Returns list of dicts joined per ticker."""
+    cfg = _live_trade_config()
+    paper_sources = [c["paper_model_source"] for c in cfg["CITY_CONFIG"].values()]
+    live_sources = [c["live_model_source_tag"] for c in cfg["CITY_CONFIG"].values()]
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT pt.ticker, c.station_id, pt.position, pt.entry_price_cents, pt.edge,
+                   pt.model_prob_yes, pt.market_mid_prob,
+                   lt.count, lt.limit_price_cents, lt.fill_status,
+                   lt.fill_count, lt.fill_price_cents, lt.settlement, lt.realized_pnl_cents
+            FROM paper_trades pt
+            JOIN contracts c ON c.ticker = pt.ticker
+            LEFT JOIN live_trades lt ON lt.ticker = pt.ticker AND lt.target_date = pt.target_date
+                  AND lt.model_source = ANY(%s)
+            WHERE pt.target_date = CURRENT_DATE
+              AND pt.model_source = ANY(%s)
+            ORDER BY c.station_id, ABS(pt.edge) DESC
+        """, (live_sources, paper_sources))
+        return cur.fetchall()
 
 
 @st.fragment(run_every="15s")
 def _live_trading_panel():
     """Auto-refreshing Live Trading view. Re-runs every 15s; underlying
     Kalshi/DB calls are @st.cache_data ttl=15-30s so API rate stays low."""
-    # Refresh indicator (shows EST time so user can see it's updating)
     from zoneinfo import ZoneInfo
     now_local = datetime.now(ZoneInfo("America/New_York"))
     st.caption(f"⟳ Updated {now_local.strftime('%I:%M:%S %p %Z')} (auto-refreshes every 15s)")
 
-    halt_reason = _read_halt_reason()
-    if halt_reason:
-        st.error(f"🛑 **STRATEGY HALTED.** No new orders will be placed by the cron until "
-                 f"this file is removed: `~/.kalshi/halt`\n\n```\n{halt_reason}\n```")
-        st.markdown("To clear: investigate root cause, then `rm ~/.kalshi/halt` to re-enable trading.")
+    cfg = _live_trade_config()
+
+    # Multi-city halt banner — per-file
+    halts = _read_halts()
+    if halts:
+        for scope, path, reason in halts:
+            scope_label = "BOTH CITIES" if scope == "ALL" else cfg["CITY_CONFIG"].get(scope, {}).get("city_name", scope)
+            st.error(
+                f"🛑 **{scope_label} HALTED.** Cron will skip new orders for this scope "
+                f"until removed: `rm {path}`\n\n```\n{reason}\n```"
+            )
 
     # Pull state
     live = _live_account_state()
@@ -1334,52 +831,109 @@ def _live_trading_panel():
     is_demo = live.get("api_base") and "demo" in live["api_base"]
     env_label = "DEMO" if is_demo else "LIVE (real money)"
 
-    # === Top status row ===
+    # === Top status row — aggregate ===
+    bal = live.get("balance_cents")
+    from weather_markets.kalshi_api import parse_position
+    open_contracts = sum(abs(parse_position(p)) for p in live.get("positions", []))
+
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        bal = live.get("balance_cents")
         st.metric("Account balance", f"${bal/100:,.2f}" if bal is not None else "—", env_label)
     with m2:
-        st.metric("Cumulative live P&L", f"${int(db['cum_pnl_cents'])/100:+,.2f}",
-                  f"{db['n_settled']} settled trades")
+        st.metric("Cumulative P&L (all-time)", f"${db['agg']['cum_pnl_cents']/100:+,.2f}",
+                  f"{db['agg']['n_settled']} settled / {db['agg']['total_attempts']} total")
     with m3:
-        st.metric("Today's realized P&L", f"${int(db['today_pnl_cents'])/100:+,.2f}",
-                  f"{len(db['today_trades'])} orders placed today" if db['today_trades'] else "no orders today")
+        n_today = len(db['today_trades'])
+        st.metric("Today's realized P&L", f"${db['agg']['today_pnl_cents']/100:+,.2f}",
+                  f"{n_today} orders placed" if n_today else "no orders today")
     with m4:
-        from weather_markets.kalshi_api import parse_position
-        open_contracts = sum(abs(parse_position(p)) for p in live.get("positions", []))
-        st.metric("Open contracts (Kalshi)", open_contracts, f"{len(live.get('orders', []))} resting orders")
+        st.metric("Open positions", open_contracts, f"{len(live.get('orders', []))} resting orders")
+
+    # === Per-city breakdown row ===
+    st.markdown("**Per-city today + cumulative:**")
+    pc_cols = st.columns(len(cfg["CITY_CONFIG"]))
+    for i, (city, ccfg) in enumerate(cfg["CITY_CONFIG"].items()):
+        d = db["per_city"][city]
+        with pc_cols[i]:
+            st.metric(
+                f"{ccfg['city_name']} today",
+                f"${d['today_pnl_cents']/100:+,.2f}",
+                f"{d['n_today_orders']} orders, ${d['today_stake_cents']/100:.0f} / ${ccfg['daily_stake_budget_dollars']:.0f} budget",
+            )
+            st.metric(
+                f"{ccfg['city_name']} cumulative",
+                f"${d['cum_pnl_cents']/100:+,.2f}",
+                f"{d['n_settled']} settled / {d['n_filled']} filled",
+            )
 
     st.divider()
 
-    # === Risk envelope ===
+    # === Risk envelope — per-city + aggregate, sourced from live_trade.py constants ===
     st.subheader("Risk envelope")
-    st.caption("All four bars must stay green. A breached limit halts the strategy.")
-    r1, r2, r3, r4 = st.columns(4)
-    with r1:
-        cum_pct = max(0, min(100, abs(int(db['cum_pnl_cents'])/100) / 300 * 100)) if db['cum_pnl_cents'] < 0 else 0
-        st.metric("Cumulative drawdown", f"${int(db['cum_pnl_cents'])/100:+,.2f}", f"limit −$300", delta_color="inverse")
-        st.progress(min(1.0, cum_pct/100), text=f"{cum_pct:.0f}% of kill threshold")
-    with r2:
-        today_loss_pct = max(0, min(100, abs(int(db['today_pnl_cents'])/100) / 50 * 100)) if db['today_pnl_cents'] < 0 else 0
-        st.metric("Today's loss", f"${int(db['today_pnl_cents'])/100:+,.2f}", "limit −$50", delta_color="inverse")
-        st.progress(min(1.0, today_loss_pct/100), text=f"{today_loss_pct:.0f}% of daily limit")
-    with r3:
-        at_cap = open_contracts >= 200
-        delta = "AT CAP — new orders blocked" if at_cap else "limit 200"
-        st.metric("Open contracts", open_contracts, delta,
-                  delta_color="inverse" if at_cap else "normal")
-        st.progress(min(1.0, open_contracts/200), text=f"{open_contracts/200*100:.0f}% of cap")
-        if at_cap:
-            st.caption("⚠️ Live-trade cron will skip new signals until a position closes.")
-    with r4:
-        spr_val, spr_n = db['spread_4wk']
-        if spr_val is None:
-            st.metric("4wk avg spread", "—", "limit 5¢")
-            st.caption("Insufficient data")
-        else:
-            st.metric("4wk avg spread", f"{spr_val:.2f}¢", f"limit 5¢ (over {spr_n} trades)")
-            st.progress(min(1.0, spr_val/5), text=f"{spr_val/5*100:.0f}% of regime kill")
+    st.caption("Per-city + aggregate caps from live_trade.py CITY_CONFIG. "
+               "Bars red the closer they get to the kill threshold.")
+
+    # Aggregate row
+    a_cols = st.columns(3)
+    agg_cum = db['agg']['cum_pnl_cents'] / 100.0
+    agg_today = db['agg']['today_pnl_cents'] / 100.0
+    with a_cols[0]:
+        cum_pct = abs(agg_cum) / cfg["AGG_CUM_KILL"] if agg_cum < 0 else 0
+        st.metric("Aggregate cumulative drawdown",
+                  f"${agg_cum:+,.2f}",
+                  f"kill at −${cfg['AGG_CUM_KILL']:.0f}",
+                  delta_color="inverse")
+        st.progress(min(1.0, cum_pct), text=f"{cum_pct*100:.0f}% of kill threshold")
+    with a_cols[1]:
+        today_pct = abs(agg_today) / cfg["AGG_DAILY_LOSS"] if agg_today < 0 else 0
+        st.metric("Aggregate daily loss",
+                  f"${agg_today:+,.2f}",
+                  f"halt at −${cfg['AGG_DAILY_LOSS']:.0f}",
+                  delta_color="inverse")
+        st.progress(min(1.0, today_pct), text=f"{today_pct*100:.0f}% of daily limit")
+    with a_cols[2]:
+        st.metric("Open contracts (all cities)", open_contracts,
+                  f"sum of city caps: {sum(c['max_open_contracts'] for c in cfg['CITY_CONFIG'].values())}")
+
+    # Per-city row
+    pc_risk_cols = st.columns(len(cfg["CITY_CONFIG"]))
+    for i, (city, ccfg) in enumerate(cfg["CITY_CONFIG"].items()):
+        d = db["per_city"][city]
+        with pc_risk_cols[i]:
+            cum_d = d['cum_pnl_cents'] / 100.0
+            today_d = d['today_pnl_cents'] / 100.0
+            cum_pct = abs(cum_d) / ccfg["cumulative_kill_dollars"] if cum_d < 0 else 0
+            today_pct = abs(today_d) / ccfg["daily_loss_limit_dollars"] if today_d < 0 else 0
+            st.markdown(f"**{ccfg['city_name']}**")
+            st.metric("Cumulative", f"${cum_d:+,.2f}", f"kill at −${ccfg['cumulative_kill_dollars']:.0f}",
+                      delta_color="inverse")
+            st.progress(min(1.0, cum_pct), text=f"{cum_pct*100:.0f}%")
+            st.metric("Today's loss", f"${today_d:+,.2f}", f"halt at −${ccfg['daily_loss_limit_dollars']:.0f}",
+                      delta_color="inverse")
+            st.progress(min(1.0, today_pct), text=f"{today_pct*100:.0f}%")
+            spr = db["spread_4wk_per_city"].get(city)
+            if spr and spr[0] is not None:
+                spr_val, spr_n = spr
+                spr_pct = spr_val / cfg["SPREAD_MAX"]
+                st.metric("4wk spread", f"{spr_val:.2f}¢",
+                          f"halt > {cfg['SPREAD_MAX']:.0f}¢ ({spr_n} samples)",
+                          delta_color="inverse")
+                st.progress(min(1.0, spr_pct), text=f"{spr_pct*100:.0f}%")
+            else:
+                st.caption(f"4wk spread: insufficient data ({spr[1] if spr else 0} samples)")
+
+    st.divider()
+
+    # === Cron health summary ===
+    st.subheader("Cron health")
+    cron_status = _cron_health()
+    cron_cols = st.columns(len(cron_status))
+    for i, c in enumerate(cron_status):
+        with cron_cols[i]:
+            icon = {"ok": "✅", "stale": "⚠️", "error": "🛑", "missing": "❔"}[c["status"]]
+            last_seen = _to_local_time(c["last_seen"], "%m-%d %I:%M %p") if c["last_seen"] else "never"
+            st.markdown(f"{icon} **{c['name']}**")
+            st.caption(f"Last: {last_seen}  ·  Status: `{c['status']}`")
 
     st.divider()
 
@@ -1411,7 +965,7 @@ def _live_trading_panel():
                 if upnl is not None:
                     total_unrealized_cents += upnl
                 rows.append({
-                    "Contract": e["ticker"].replace("KXHIGHNY-", ""),
+                    "Contract": _strip_series(e["ticker"]),
                     "Range": e["range"],
                     "Side": e["side"].upper(),
                     "Qty": e["qty"],
@@ -1476,7 +1030,40 @@ def _live_trading_panel():
 
     st.divider()
 
-    # === Today's orders table ===
+    # === Today's signals → fills cross-reference ===
+    st.subheader("Today's signals vs fills")
+    st.caption("Every signal the paper-trade cron logged today + whether live trading "
+               "placed it + fill status. Lets you see at a glance: signals fired, orders "
+               "placed, fills completed.")
+    sigs = _todays_signals_vs_fills()
+    if sigs:
+        import pandas as pd
+        rows = []
+        for r in sigs:
+            (tk, sta, position, entry_c, edge_v, m_p, m_mid,
+             lt_count, lt_lim, lt_status, lt_fc, lt_fp, settle, pnl_c) = r
+            city = cfg["CITY_CONFIG"].get(sta, {}).get("city_name", sta)
+            placed_icon = "✅" if lt_count else "❌"
+            rows.append({
+                "City": city,
+                "Contract": _strip_series(tk),
+                "Side": position.upper() if position else "—",
+                "Edge (decision-time)": f"{float(edge_v):+.1%}" if edge_v is not None else "—",
+                "Paper entry": f"{entry_c}¢" if entry_c is not None else "—",
+                "Placed?": placed_icon + (f" ({lt_count} @ {lt_lim}¢)" if lt_count else " skipped"),
+                "Fill status": lt_status or "—",
+                "Fill count": lt_fc if lt_fc else "—",
+                "Fill price": f"{lt_fp}¢" if lt_fp else "—",
+                "Settled": settle or "—",
+                "Realized P&L": f"${int(pnl_c)/100:+,.2f}" if pnl_c is not None else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.caption("No paper-trade signals logged for today yet (cron fires at 14:45 UTC).")
+
+    st.divider()
+
+    # === Today's orders table (raw live_trades view) ===
     st.subheader("Today's live orders")
     if db['today_trades']:
         import pandas as pd
@@ -1488,7 +1075,7 @@ def _live_trading_panel():
             rows.append({
                 "placed_at (ET)": _to_local_time(placed, "%I:%M:%S %p") if placed else "",
                 "target_date": str(td),
-                "ticker": tk.replace("KXHIGHNY-", ""),
+                "ticker": _strip_series(tk),
                 "side": side.upper(),
                 "count": cnt,
                 "limit": f"{lim}¢",
@@ -1517,7 +1104,7 @@ def _live_trading_panel():
             for o in orders[:10]:
                 price_c = _pd(o, "yes_price_dollars") or _pd(o, "no_price_dollars")
                 order_rows.append({
-                    "ticker": o.get("ticker", "").replace("KXHIGHNY-", ""),
+                    "ticker": _strip_series(o.get("ticker", "")),
                     "side": o.get("side", "").upper(),
                     "remaining": _pc(o, "remaining_count_fp"),
                     "price": f"{price_c}¢" if price_c else "—",
@@ -1537,7 +1124,7 @@ def _live_trading_panel():
                 price_c = _pd(f, "yes_price_dollars") or _pd(f, "no_price_dollars")
                 fill_rows.append({
                     "time (ET)": _to_local_time(f.get("created_time", ""), "%m-%d %I:%M:%S %p"),
-                    "ticker": f.get("ticker", "").replace("KXHIGHNY-", ""),
+                    "ticker": _strip_series(f.get("ticker", "")),
                     "side": f.get("side", "").upper(),
                     "count": _pc(f, "count_fp"),
                     "price": f"{price_c}¢" if price_c else "—",
@@ -1586,24 +1173,24 @@ def _live_trading_panel():
 
     st.divider()
 
-    # === Strategy parameters (static reference) ===
-    with st.expander("Strategy parameters in effect"):
-        st.markdown("""
-- **Production filter:** |edge| ≥ 10%, entry ≥ 60¢
-- **Decision time:** 14:45 UTC daily
-- **Model:** EMOS combined GEFS+IFS 00Z, rolling 45-day fit
-- **Sizing:** Unit (75 contracts/trade), clipped if stake would exceed $50
-- **Execution:** post-only limit at 1¢ inside the spread
-- **Risk caps:**
-    - max stake per trade: $50 (5% of $1k bankroll)
-    - max open contracts: 200 (runaway-bug circuit breaker)
-- **Kill criteria (immutable):**
-    - cumulative drawdown < −$300 → halt
-    - daily loss > −$50 → block new orders for 24h
-    - 4-week avg spread > 5¢ → halt (regime kill)
-    - first-30-attempts fill rate < 40% → halt
-    - first-60-trade forward mean < −1¢/trade → halt
-""")
+    # === Strategy parameters (auto-rendered from live_trade.py so it can't drift) ===
+    with st.expander("Strategy parameters in effect (live from live_trade.py)"):
+        st.markdown(f"**Filter:** |edge| ≥ {cfg['EDGE_THRESHOLD']:.0%}, no entry-price floor")
+        st.markdown(f"**Sizing:** even-split across all signals (`stake = budget / n_signals`)")
+        st.markdown(f"**Execution mode:** `{cfg['EXECUTION_MODE']}`")
+        st.markdown(f"**Aggregate kills:** daily loss −${cfg['AGG_DAILY_LOSS']:.0f}, cumulative drawdown −${cfg['AGG_CUM_KILL']:.0f}, "
+                    f"4wk avg spread > {cfg['SPREAD_MAX']:.0f}¢")
+        st.markdown("**Per-city:**")
+        for city, ccfg in cfg["CITY_CONFIG"].items():
+            st.markdown(
+                f"- **{ccfg['city_name']}** ({city}, decision {ccfg['decision_hour']:02d}:{ccfg['decision_minute']:02d} UTC) — "
+                f"daily budget ${ccfg['daily_stake_budget_dollars']:.0f}, "
+                f"daily loss halt −${ccfg['daily_loss_limit_dollars']:.0f}, "
+                f"cumulative kill −${ccfg['cumulative_kill_dollars']:.0f}, "
+                f"max open contracts {ccfg['max_open_contracts']}"
+            )
+        st.markdown("**Halt files (touch to stop trading immediately):**")
+        st.code("touch halt/KORD   # Chicago only\ntouch halt/KMIA   # Miami only\ntouch halt/ALL    # both cities", language="bash")
 
 
 with tab_live:
