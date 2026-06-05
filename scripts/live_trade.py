@@ -64,9 +64,9 @@ MODELS_LIST = ["gefs", "ifs"]
 # unit sizing has bounded per-trade dollar exposure on cheap entries (where most
 # signals are) while $-sizing scales up risk on cheap entries.
 #
-# Per-city contract count chosen 50/50 weighting Miami/Chicago: KMIA 400, KORD 200.
-# User decision: NO per-trade $ cap (max single-trade loss bounded by
-# UNIT_CONTRACTS * 99c — KMIA max $396, KORD max $198).
+# Per-city contract count: KMIA 200, KORD 200 (revised 2026-06-05 from 400/200
+# down to 200/200). Equal-weight allocation. NO per-trade $ cap — max single-trade
+# loss bounded by UNIT_CONTRACTS * 99c = ~$198/trade each.
 CITY_CONFIG = {
     "KORD": {
         "city_name": "Chicago",
@@ -89,7 +89,7 @@ CITY_CONFIG = {
         "decision_hour": 15,
         "decision_minute": 30,
         "sizing_mode": "unit",
-        "unit_contracts": 400,
+        "unit_contracts": 200,
         "daily_loss_limit_dollars":    500.0,
         "cumulative_kill_dollars":    1000.0,
         "max_open_contracts":         5000,
