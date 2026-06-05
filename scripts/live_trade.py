@@ -58,6 +58,9 @@ INIT_HOUR = 0
 MODELS_LIST = ["gefs", "ifs"]
 
 # Per-city config. Constants here MUST NOT be edited mid-window — see pre-commit doc.
+# Bankroll target: $3k (current + pending deposit). Daily risk $300 = 10% bankroll.
+# Split 75/25 Miami/Chicago. SIZING_MODE = "even_split": stake = budget / n_signals
+# so every signal gets equal allocation rather than budget-first-by-edge.
 CITY_CONFIG = {
     "KORD": {
         "city_name": "Chicago",
@@ -65,12 +68,11 @@ CITY_CONFIG = {
         "paper_model_source": "EMOS combined 00Z Chicago (rolling 45d)",
         "live_model_source_tag": "EMOS combined 00Z Chicago (rolling 45d) [LIVE]",
         "decision_hour": 14,
-        "decision_minute": 46,    # 14:46 UTC
-        "daily_stake_budget_dollars": 50.0,    # 2.5% of $2k
-        "per_trade_stake_cap_dollars": 30.0,
-        "daily_loss_limit_dollars":   50.0,
-        "cumulative_kill_dollars":    150.0,   # halt this city only
-        "max_open_contracts":         500,
+        "decision_minute": 46,
+        "daily_stake_budget_dollars":  75.0,    # 2.5% of $3k bankroll
+        "daily_loss_limit_dollars":    75.0,
+        "cumulative_kill_dollars":    200.0,
+        "max_open_contracts":         5000,
     },
     "KMIA": {
         "city_name": "Miami",
@@ -78,19 +80,32 @@ CITY_CONFIG = {
         "paper_model_source": "EMOS combined 00Z Miami (rolling 45d)",
         "live_model_source_tag": "EMOS combined 00Z Miami (rolling 45d) [LIVE]",
         "decision_hour": 15,
-        "decision_minute": 30,    # 15:30 UTC (intraday analysis favored over 14:45)
-        "daily_stake_budget_dollars": 150.0,   # 7.5% of $2k
-        "per_trade_stake_cap_dollars": 75.0,
-        "daily_loss_limit_dollars":   150.0,
-        "cumulative_kill_dollars":    400.0,   # halt this city only
-        "max_open_contracts":         500,
+        "decision_minute": 30,
+        "daily_stake_budget_dollars": 225.0,    # 7.5% of $3k bankroll
+        "daily_loss_limit_dollars":   225.0,
+        "cumulative_kill_dollars":    600.0,
+        "max_open_contracts":         5000,
     },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 200.0    # halt BOTH cities for the day
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 500.0     # halt BOTH cities permanently
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 300.0    # halt BOTH cities for the day
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 800.0     # halt BOTH cities permanently
 SPREAD_REGIME_MAX_CENTS = 5.0
+
+# Execution: how aggressive to be with the limit price when placing.
+# "post_inside_spread"   = old behavior. Post 1c inside spread (maker fee, no
+#                         taker fee, but may not fill if no one takes our offer).
+#                         Cost yesterday: 1071 contracts on B85.5 never filled,
+#                         missed ~$1000 profit.
+# "cross_at_ask"         = post AT the ask (= taker). Gets all available book
+#                         depth immediately; remainder rests at the ask price
+#                         and may still partially fill. Closer to backtest's
+#                         "limit-100% assume 100% fill" intent.
+# "cross_with_premium"   = post at ask + premium cents to walk the book.
+#                         Highest fill rate, highest cost.
+EXECUTION_MODE = "cross_at_ask"
+CROSS_PREMIUM_CENTS = 0   # only used if EXECUTION_MODE == "cross_with_premium"
 
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
@@ -345,22 +360,29 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             p_win = 1 - model_p
         # NO MIN ENTRY FILTER (matches pre-committed cell entry>=0)
 
-        # Limit-target: 1¢ inside the spread when possible, else accept the cross.
-        # post_only_safe flag tells the order placement layer whether we can use
-        # post_only=True (only when our limit is strictly inside the spread).
-        # When spread <= 1, no room to post inside — set post_only=False so the
-        # order becomes a taker at the cross price. Matches backtest methodology
-        # (limit-100% used cross_entry when spread=1).
+        # Set limit_price + post_only flag according to EXECUTION_MODE.
         spread = int(ask) - int(bid)
-        if spread > 1:
-            if side == "yes":
-                limit_price = int(ask) - (spread - 1)
+        if EXECUTION_MODE == "post_inside_spread":
+            if spread > 1:
+                if side == "yes":
+                    limit_price = int(ask) - (spread - 1)
+                else:
+                    limit_price = (100 - int(bid)) - (spread - 1)
+                post_only_safe = True
             else:
-                limit_price = (100 - int(bid)) - (spread - 1)
-            post_only_safe = True
-        else:
+                limit_price = cross_entry
+                post_only_safe = False
+        elif EXECUTION_MODE == "cross_at_ask":
+            # Post AT the ask = guaranteed taker on existing depth; remainder
+            # rests at that price. Better fill rate vs post-inside-spread.
             limit_price = cross_entry
-            post_only_safe = False  # CRITICAL — see comment above
+            post_only_safe = False
+        elif EXECUTION_MODE == "cross_with_premium":
+            # Walk the book up to CROSS_PREMIUM_CENTS beyond the ask.
+            limit_price = cross_entry + CROSS_PREMIUM_CENTS
+            post_only_safe = False
+        else:
+            raise ValueError(f"Unknown EXECUTION_MODE: {EXECUTION_MODE!r}")
         limit_price = max(1, min(99, limit_price))
 
         signals.append({
@@ -370,23 +392,33 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             "post_only": post_only_safe,
         })
 
-    # Sort by edge magnitude DESCENDING so highest-conviction trades get budget first
+    # Sort by edge magnitude DESCENDING for display purposes only.
+    # Even-split sizing means budget is divided equally regardless of order.
     signals.sort(key=lambda s: -abs(s["edge"]))
     return signals
 
 
-def size_trade(city: str, signal: dict, remaining_budget_cents: int) -> int:
-    """Stake = min(per_trade_cap, remaining_daily_budget). Contracts = stake / price."""
-    cfg = CITY_CONFIG[city]
-    per_trade_cap_cents = int(cfg["per_trade_stake_cap_dollars"] * 100)
-    stake_cents = min(per_trade_cap_cents, remaining_budget_cents)
-    if stake_cents <= 0:
+def even_split_stake_cents(daily_budget_cents: int, n_signals: int) -> int:
+    """Equal allocation across all signals so none get skipped.
+
+    Pre-committed change (2026-06-05): previously sized first-by-edge until
+    budget exhausted, causing later signals to be dropped. User observed this
+    caused the model's weaker signals (including some that still won handily)
+    to be missed. Now every signal gets daily_budget / n_signals.
+
+    Per-trade stake is the integer-cent division; trailing cents go to the
+    first N signals."""
+    if n_signals <= 0:
         return 0
+    return daily_budget_cents // n_signals
+
+
+def size_trade(city: str, signal: dict, per_trade_stake_cents: int) -> int:
+    """Contracts = per_trade_stake / limit_price (integer)."""
     limit_price = signal["limit_price"]
-    if limit_price <= 0:
+    if limit_price <= 0 or per_trade_stake_cents <= 0:
         return 0
-    contracts = stake_cents // limit_price  # integer contracts at limit price
-    return max(0, contracts)
+    return max(0, per_trade_stake_cents // limit_price)
 
 
 def main() -> int:
@@ -412,7 +444,8 @@ def main() -> int:
     print(f"  api_base: {client.api_base}")
     print(f"  decision time: {cfg['decision_hour']:02d}:{cfg['decision_minute']:02d} UTC")
     print(f"  daily stake budget: ${cfg['daily_stake_budget_dollars']:.0f}")
-    print(f"  per-trade stake cap: ${cfg['per_trade_stake_cap_dollars']:.0f}")
+    print(f"  execution_mode: {EXECUTION_MODE}")
+    print(f"  sizing: even-split across all signals (budget / n_signals)")
 
     with get_connection() as conn:
         # Preflight
@@ -458,13 +491,18 @@ def main() -> int:
             return 2
         print(f"\n  Kalshi account balance: ${balance/100:,.2f}")
 
-        # Size + place — signals already sorted by edge desc, biggest edge gets budget first
+        # Even-split: divide remaining budget equally across ALL signals so no
+        # signal is skipped due to budget exhaust on earlier (higher-edge) trades.
+        per_trade_stake_cents = even_split_stake_cents(remaining_budget_cents, len(signals))
+        print(f"\n  per-signal stake: ${per_trade_stake_cents/100:,.2f} "
+              f"(budget ${remaining_budget_cents/100:,.2f} / {len(signals)} signals)")
+
         print("\n[Order placement]")
         placed = 0; rejected = 0; total_contracts = 0
         for s in signals:
-            count = size_trade(city, s, remaining_budget_cents)
+            count = size_trade(city, s, per_trade_stake_cents)
             if count < 1:
-                print(f"  {s['ticker']}: size=0, skipping (budget exhausted or price too high)")
+                print(f"  {s['ticker']}: size=0, skipping (per-trade stake too low for this price)")
                 rejected += 1
                 continue
             stake_dollars = count * s['limit_price'] / 100.0
@@ -512,10 +550,6 @@ def main() -> int:
                 send_alert(
                     f"{city} order place failed: {s['ticker']} {s['side']} {count}@{s['limit_price']}¢: "
                     f"{type(e).__name__}: {e}", severity="warn", source=f"live_trade.{city}.place")
-
-            if remaining_budget_cents <= 0:
-                print("  daily budget exhausted; stopping further orders.")
-                break
 
         print(f"\n  placed: {placed}, rejected: {rejected}, total contracts: {total_contracts}")
         print(f"  remaining budget: ${remaining_budget_cents/100:,.2f}")

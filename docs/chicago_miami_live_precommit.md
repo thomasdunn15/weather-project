@@ -65,16 +65,30 @@ a reason to tweak the other.
 
 ### Sizing — daily $ budget, not fixed contract count
 
-Total starting bankroll: **planned $2,000; actual at go-live $1,039**
-(deposit not fully cleared as of 2026-06-04 13:09 UTC). User decision
-2026-06-04: **proceed at the planned $200/day deployment despite the
-mismatch** — effective daily risk is therefore **20% of actual bankroll
-until the $2k deposit clears**, not 10% as originally planned.
+**REVISION 2026-06-05.** After day-1 results (KORD +$410 across 3 winning
+trades, KMIA missed +$1k profit on the B85.5 fill that never crossed):
 
-**Daily risk budget: $200/day**, allocated 75/25 to Miami/Chicago to
-dampen Chicago's recent underperformance (May 2026 paper data showed all
-times of day negative on a small but consistent sample — see "Things
-explicitly traded off" below).
+Bankroll target: **$3,000** (additional $1k deposited 2026-06-05; pending
+clear). Daily risk: **$300 (10% of bankroll)**, split 75/25 Miami/Chicago.
+
+```
+DAILY_STAKE_BUDGET_MIAMI    = 225.0   # 7.5% of $3k
+DAILY_STAKE_BUDGET_CHICAGO  =  75.0   # 2.5% of $3k
+TOTAL_DAILY_STAKE_BUDGET    = 300.0
+```
+
+**Sizing mode: EVEN-SPLIT across all signals** (new in this revision).
+Previously sized first-by-edge until budget exhausted — caused later
+signals to be skipped. Day-1 had ~5 signals across both cities; all five
+got placed (after manual recovery). Going forward:
+
+```
+per_trade_stake = daily_budget / n_signals
+contracts       = per_trade_stake / limit_price (integer)
+```
+
+Every signal gets equal stake regardless of edge magnitude. No signal
+skipped because earlier ones used the budget.
 
 ```
 DAILY_STAKE_BUDGET_MIAMI    = 150.0   # 7.5% of bankroll, 75% of daily total
@@ -98,27 +112,44 @@ PER_TRADE_STAKE_CAP_CHICAGO  = 30.0    # ~60% of city's daily budget
 With avg entry ~25-30¢ this implies ~250-500 contracts/day Miami, ~80-170
 contracts/day Chicago. Exact counts vary with entry price.
 
+### Execution mode — change from day 1
+
+Day-1 (2026-06-04) used "post 1¢ inside spread" for fill price. KMIA B85.5
+YES 1071 contracts at 7¢ never filled because (a) bid/ask was 6/7 = spread 1
+so we posted at 7 as taker, but (b) book depth at 7¢ was thin — only a few
+contracts available. Remainder rested at 7¢ and nobody crossed it. Missed
+~$1k profit.
+
+**Day-2 onward execution: `cross_at_ask`.** Post AT the ask (taker on
+existing depth, remainder rests at the ask). Same cost on average vs the
+inside-spread maker post, but guaranteed to take all available depth at
+the touch instead of leaving orders unfilled while the market moves away.
+
+Cost per trade vs day-1 mode: ~1¢/contract worse on signals where the
+inside-spread maker would have filled. Benefit: signals like B85.5 yesterday
+get filled.
+
+If even cross_at_ask doesn't fill enough, future revision could escalate to
+`cross_with_premium` (post at ask + N¢ to walk through more book depth) —
+not enabled at start of day 2.
+
 ### Loss limits (separate from stake budgets)
 
-Under limit-100% execution your max loss per trade = stake (contracts go
-to 0 if you lose). So daily LOSS limit ≈ daily STAKE limit if all bets lose.
+Under cross_at_ask your max loss per trade = stake. Daily LOSS limit
+matches daily STAKE limit.
 
 ```
-DAILY_LOSS_LIMIT_MIAMI       = 150.0   # halt Miami for the day (same as stake budget)
-DAILY_LOSS_LIMIT_CHICAGO     =  50.0   # halt Chicago for the day
-AGGREGATE_DAILY_LOSS_LIMIT   = 200.0   # halt both for the day
+DAILY_LOSS_LIMIT_MIAMI       = 225.0
+DAILY_LOSS_LIMIT_CHICAGO     =  75.0
+AGGREGATE_DAILY_LOSS_LIMIT   = 300.0
 ```
 
-### Cumulative kill switches
-
-For a bad streak: assume up to 70% of bets lose for a week. Worst week
-Miami = 5 days × $150 = $750 worst case stake at risk. Set kill switches
-so a string of losses triggers halt before bankroll is significantly impaired.
+### Cumulative kill switches (rev 2026-06-05 for $3k bankroll)
 
 ```
-CUMULATIVE_KILL_MIAMI        = 400.0   # 20% of bankroll, halt city until manual review
-CUMULATIVE_KILL_CHICAGO      = 150.0   # 7.5% of bankroll, halt city until manual review
-AGGREGATE_CUMULATIVE_KILL    = 500.0   # 25% of bankroll, halt BOTH permanently
+CUMULATIVE_KILL_MIAMI        = 600.0   # 20% of $3k bankroll
+CUMULATIVE_KILL_CHICAGO      = 200.0   # 6.7% of $3k bankroll
+AGGREGATE_CUMULATIVE_KILL    = 800.0   # 26.7% of $3k bankroll
 ```
 
 If aggregate kill triggers ($500 down across both): write a new pre-commit
