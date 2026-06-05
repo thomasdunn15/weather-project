@@ -579,10 +579,12 @@ def _enrich_positions(positions: list[dict]) -> list[dict]:
                         range_str = "?"
                         td = None
 
-                    # Today's model edge for this contract — derive paper source from ticker
+                    # Model edge for this contract — derive paper source from ticker
                     # series so KORD/KMIA positions resolve to their own paper data.
+                    # Look up regardless of date (held positions awaiting settlement
+                    # still need the original decision-time edge to display).
                     model_p = market_mid = edge = None
-                    if td == today:
+                    if td is not None:
                         series = ticker.split("-")[0]  # KXHIGHCHI, KXHIGHMIA, etc.
                         # Find the station for this series (registry-driven)
                         try:
@@ -831,39 +833,75 @@ def _live_trading_panel():
     is_demo = live.get("api_base") and "demo" in live["api_base"]
     env_label = "DEMO" if is_demo else "LIVE (real money)"
 
-    # === Top status row — aggregate ===
-    bal = live.get("balance_cents")
+    # === Compute enriched positions early so unrealized P&L flows into metrics ===
     from weather_markets.kalshi_api import parse_position
-    open_contracts = sum(abs(parse_position(p)) for p in live.get("positions", []))
+    positions_raw = live.get("positions", [])
+    open_contracts = sum(abs(parse_position(p)) for p in positions_raw)
+    try:
+        enriched_positions = _enrich_positions(positions_raw) if positions_raw else []
+    except Exception as e:
+        st.warning(f"Could not enrich positions: {type(e).__name__}: {e}")
+        enriched_positions = []
 
+    # Map ticker series → station_id → city for per-city unrealized totals.
+    try:
+        from weather_markets.stations import all_stations as _all_st
+        series_to_city = {s.kalshi_series: s.station_id for s in _all_st()}
+    except Exception:
+        series_to_city = {}
+
+    agg_unrealized_cents = 0
+    per_city_unrealized: dict[str, int] = {city: 0 for city in cfg["CITY_CONFIG"]}
+    for e in enriched_positions:
+        u = e.get("unrealized_cents")
+        if u is None:
+            continue
+        agg_unrealized_cents += u
+        series = e["ticker"].split("-")[0]
+        city = series_to_city.get(series)
+        if city in per_city_unrealized:
+            per_city_unrealized[city] += u
+
+    bal = live.get("balance_cents")
+    agg_realized = db['agg']['cum_pnl_cents'] / 100.0
+    agg_unrealized = agg_unrealized_cents / 100.0
+    agg_total = agg_realized + agg_unrealized
+
+    # === Top status row — account + total P&L ===
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric("Account balance", f"${bal/100:,.2f}" if bal is not None else "—", env_label)
     with m2:
-        st.metric("Cumulative P&L (all-time)", f"${db['agg']['cum_pnl_cents']/100:+,.2f}",
-                  f"{db['agg']['n_settled']} settled / {db['agg']['total_attempts']} total")
+        st.metric("Realized (settled) P&L",
+                  f"${agg_realized:+,.2f}",
+                  f"{db['agg']['n_settled']} settled trades")
     with m3:
-        n_today = len(db['today_trades'])
-        st.metric("Today's realized P&L", f"${db['agg']['today_pnl_cents']/100:+,.2f}",
-                  f"{n_today} orders placed" if n_today else "no orders today")
+        st.metric("Unrealized (open positions)",
+                  f"${agg_unrealized:+,.2f}",
+                  f"{len(enriched_positions)} open positions, {open_contracts} contracts")
     with m4:
-        st.metric("Open positions", open_contracts, f"{len(live.get('orders', []))} resting orders")
+        st.metric("Combined P&L (realized + unrealized)",
+                  f"${agg_total:+,.2f}",
+                  f"{len(live.get('orders', []))} resting orders")
 
-    # === Per-city breakdown row ===
-    st.markdown("**Per-city today + cumulative:**")
+    # === Per-city breakdown — realized + unrealized side by side ===
+    st.markdown("**Per-city realized + unrealized P&L:**")
     pc_cols = st.columns(len(cfg["CITY_CONFIG"]))
     for i, (city, ccfg) in enumerate(cfg["CITY_CONFIG"].items()):
         d = db["per_city"][city]
+        city_unrealized = per_city_unrealized.get(city, 0) / 100.0
+        city_realized = d['cum_pnl_cents'] / 100.0
+        city_total = city_realized + city_unrealized
         with pc_cols[i]:
             st.metric(
-                f"{ccfg['city_name']} today",
-                f"${d['today_pnl_cents']/100:+,.2f}",
-                f"{d['n_today_orders']} orders, ${d['today_stake_cents']/100:.0f} / ${ccfg['daily_stake_budget_dollars']:.0f} budget",
+                f"{ccfg['city_name']} — combined",
+                f"${city_total:+,.2f}",
+                f"realized ${city_realized:+,.2f} + unrealized ${city_unrealized:+,.2f}",
             )
             st.metric(
-                f"{ccfg['city_name']} cumulative",
-                f"${d['cum_pnl_cents']/100:+,.2f}",
-                f"{d['n_settled']} settled / {d['n_filled']} filled",
+                f"{ccfg['city_name']} — today's activity",
+                f"{d['n_today_orders']} orders",
+                f"${d['today_stake_cents']/100:.0f} / ${ccfg['daily_stake_budget_dollars']:.0f} budget deployed",
             )
 
     st.divider()
@@ -940,19 +978,14 @@ def _live_trading_panel():
     # === Current positions with live unrealized P&L ===
     st.subheader("Current positions")
     st.caption("Each row = one contract you hold. Mark = current bid/ask mid. "
-               "Unrealized P&L = (mark − avg cost) × qty. Refreshes every 15 seconds.")
+               "Unrealized P&L = (mark − avg cost) × qty. Refreshes every 15 seconds. "
+               "Model P / Edge are from the decision-time paper-trade row, regardless of how old the position is.")
 
-    positions_for_enrich = live.get("positions", [])
-    from weather_markets.kalshi_api import parse_position as _parse_pos
-    if not positions_for_enrich or all(_parse_pos(p) == 0 for p in positions_for_enrich):
+    # Reuse the enriched_positions computed at the top of the panel.
+    if not enriched_positions:
         st.info("No open positions right now.")
     else:
-        try:
-            enriched = _enrich_positions(positions_for_enrich)
-        except Exception as e:
-            st.warning(f"Could not enrich positions: {type(e).__name__}: {e}")
-            enriched = []
-
+        enriched = enriched_positions
         if not enriched:
             st.info("No open positions right now.")
         else:
