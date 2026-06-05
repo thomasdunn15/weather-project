@@ -518,13 +518,30 @@ def main() -> int:
             if not args.live:
                 continue
 
+            # Rate-limit cushion: Kalshi returns 429 if we burst orders.
+            # Today's KORD cron fired 3 orders in 0.3s; #2 and #3 got 429'd.
+            # Sleep 1s between orders + retry once on 429 with longer backoff.
+            import time as _time
+            if placed > 0 or rejected > 0:
+                _time.sleep(1.0)
+
+            def _place_with_retry(attempt: int = 0):
+                try:
+                    return client.place_limit_order(
+                        ticker=s['ticker'], side=s['side'], count=count,
+                        price_cents=s['limit_price'],
+                        post_only=s.get("post_only", True),
+                        client_order_id=client_order_id,
+                    )
+                except Exception as exc:
+                    is_429 = "429" in str(exc) or "Too Many Requests" in str(exc)
+                    if is_429 and attempt < 2:
+                        _time.sleep(2.0 + attempt * 2.0)
+                        return _place_with_retry(attempt + 1)
+                    raise
+
             try:
-                resp = client.place_limit_order(
-                    ticker=s['ticker'], side=s['side'], count=count,
-                    price_cents=s['limit_price'],
-                    post_only=s.get("post_only", True),
-                    client_order_id=client_order_id,
-                )
+                resp = _place_with_retry()
                 order = resp.get("order", resp)
                 kalshi_order_id = order.get("order_id")
                 with conn.cursor() as cur:
