@@ -1487,17 +1487,22 @@ with tab_backtest:
     # Edge table
     st.subheader("Edge by bracket")
 
-    # Pull stored snapshot values from paper_trades for this day so the Edge
-    # column reflects the edge AT DECISION TIME (when the cron fired), not the
-    # ever-moving current edge. Contracts with no paper_trades row (i.e. signal
-    # didn't pass |edge|>=10% at cron time) fall back to live-recomputed edge.
+    # Pull decision-time snapshot values from paper_trades AND live_trades for
+    # this day. Both are decision-time records but at different times:
+    #   - paper_trades: 14:45 UTC for all cities
+    #   - live_trades:  per-city decision time (KMIA 15:30 UTC, KORD 14:46 UTC)
+    # For Miami specifically, the paper-trade cron may have seen no signals at
+    # 14:45 UTC but the live cron at 15:30 UTC saw 2 — prefer the live source
+    # since it's what the actual order was placed against.
     paper_source_for_city = (
         "EMOS combined 00Z (rolling 45d)" if selected_station_id == "KNYC"
         else f"EMOS combined 00Z {selected_station.city} (rolling 45d)"
     )
+    live_source_for_city = paper_source_for_city + " [LIVE]"
     paper_snapshot: dict[str, dict] = {}
     with get_connection() as _pconn:
         with _pconn.cursor() as _pcur:
+            # 1. Pull paper_trades (14:45 UTC snapshot, all cities)
             _pcur.execute(
                 """SELECT ticker, edge, market_mid_prob, model_prob_yes,
                           market_yes_bid, market_yes_ask, position, entry_price_cents,
@@ -1516,6 +1521,27 @@ with tab_backtest:
                     "position": row[6],
                     "entry": row[7],
                     "snap_at": row[8],
+                    "source": "paper",
+                }
+            # 2. Pull live_trades (per-city decision time) — overwrites paper if both exist
+            _pcur.execute(
+                """SELECT ticker, edge, market_mid_prob, model_prob_yes,
+                          side, limit_price_cents, placed_at
+                   FROM live_trades
+                   WHERE target_date = %s AND model_source = %s""",
+                (trade_date, live_source_for_city),
+            )
+            for row in _pcur.fetchall():
+                paper_snapshot[row[0]] = {
+                    "edge": float(row[1]),
+                    "market_mid": float(row[2]),
+                    "model_p": float(row[3]),
+                    "yes_bid": None,
+                    "yes_ask": None,
+                    "position": ("BUY_YES" if row[4] == "yes" else "BUY_NO"),
+                    "entry": int(row[5]),
+                    "snap_at": row[6],
+                    "source": "live",
                 }
     n_frozen = len(paper_snapshot)
 
