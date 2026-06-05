@@ -1116,14 +1116,18 @@ def _live_trading_panel():
     st.subheader("Today's live orders")
     if db['today_trades']:
         import pandas as pd
-        cols = ["placed_at", "target_date", "ticker", "side", "count",
-                "limit", "cross", "edge", "status", "fill_price", "settled", "pnl"]
         rows = []
         for r in db['today_trades']:
-            (placed, td, tk, side, cnt, lim, cross, edge, status, fp, settle, pnl) = r
+            (placed, td, tk, side, cnt, lim, cross, edge,
+             status, fp, settle, pnl, model_source) = r
+            # Map model_source → city tag for display
+            city_tag = "?"
+            for _city, _ccfg in cfg["CITY_CONFIG"].items():
+                if _ccfg["live_model_source_tag"] == model_source:
+                    city_tag = _ccfg["city_name"]; break
             rows.append({
                 "placed_at (ET)": _to_local_time(placed, "%I:%M:%S %p") if placed else "",
-                "target_date": str(td),
+                "city": city_tag,
                 "ticker": _strip_series(tk),
                 "side": side.upper(),
                 "count": cnt,
