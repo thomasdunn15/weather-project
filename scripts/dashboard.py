@@ -292,6 +292,7 @@ def simulate_pnl(
     execution_mode: str = "cross",
     max_stake_pct: float | None = 0.05,
     max_stake_dollars: float | None = None,
+    max_contracts_per_trade: int | None = None,
     empirical_fills: dict | None = None,
 ) -> pd.DataFrame:
     """Walk resolved trades chronologically and compute cumulative balance.
@@ -442,6 +443,17 @@ def simulate_pnl(
             gross_pnl = stake * b if won else -stake
             trade_pnl = gross_pnl - total_fee
             stake_dollars = stake
+
+        # Apply max_contracts_per_trade depth cap if set. Models real-world
+        # Kalshi book depth — beyond ~1500 contracts at the touch you'd get
+        # partial fills, so cap the simulated position size to a realistic max.
+        # Recompute stake / fees / pnl from the capped contract count.
+        if max_contracts_per_trade is not None and num_contracts_actual > max_contracts_per_trade:
+            num_contracts_actual = int(max_contracts_per_trade)
+            stake_dollars = num_contracts_actual * entry / 100.0
+            total_fee_capped = num_contracts_actual * fee_per_contract
+            gross_pnl = num_contracts_actual * (100 - entry if won else -entry) / 100.0
+            trade_pnl = gross_pnl - total_fee_capped
 
         balance += trade_pnl
         history.append({
@@ -2038,6 +2050,29 @@ with tab_backtest:
                         cap_summary += f" OR ${max_stake_dollars:.0f}/trade (whichever lower)"
                     st.caption(cap_summary)
 
+            # Max contracts per trade — models real-world Kalshi book depth.
+            # Available for ALL sizing modes. 0 = no cap (default for backwards
+            # compat). Set to ~1500 to match what real Kalshi books actually absorb
+            # at the touch on low-priced contracts.
+            depth_c1, depth_c2 = st.columns([1, 3])
+            with depth_c1:
+                max_contracts_input = st.number_input(
+                    "Max contracts/trade (depth cap)",
+                    min_value=0, value=0, step=100,
+                    help="Per-trade cap on contract count, modeling Kalshi book depth at the touch. "
+                         "0 = no cap (backtest assumes infinite depth). "
+                         "Set to ~1500 for realistic ceiling: when Amount $ or Kelly would buy more "
+                         "than this many contracts (typically on cheap entries), clamp the order to this cap. "
+                         "Stake / fees / P&L recomputed from the capped count.",
+                )
+            max_contracts_per_trade = int(max_contracts_input) if max_contracts_input > 0 else None
+            with depth_c2:
+                if max_contracts_per_trade:
+                    st.caption(f"📐 Depth cap: max **{max_contracts_per_trade:,} contracts/trade**. "
+                               "Amount $ / Kelly / Scaling that would exceed this get clamped.")
+                else:
+                    st.caption("📐 No depth cap. Sim assumes infinite Kalshi book depth at every price.")
+
             # === Empirical comparison branch — runs simulator under 3 execution
             # modes side by side using actual price-history fill checks. ===
             if execution_mode == "empirical_compare":
@@ -2102,6 +2137,7 @@ with tab_backtest:
                         execution_mode=f"emp:{m}",
                         max_stake_pct=max_stake_pct,
                         max_stake_dollars=max_stake_dollars,
+                        max_contracts_per_trade=max_contracts_per_trade,
                         empirical_fills=fills_by_idx,
                     )
                     results[m] = sd
@@ -2169,6 +2205,7 @@ with tab_backtest:
                     execution_mode=execution_mode,
                     max_stake_pct=max_stake_pct,
                     max_stake_dollars=max_stake_dollars,
+                    max_contracts_per_trade=max_contracts_per_trade,
                 )
             final_balance = sim_df["balance"].iloc[-1]
             return_pct = (final_balance / starting_balance - 1) * 100
