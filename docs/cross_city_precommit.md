@@ -331,3 +331,57 @@ Open questions that the 4-city data raises but doesn't answer:
 5. **Continue NOT live-trading NYC + Austin.** Both failed the
    pre-committed test. No mechanism known that says they will pass
    later, so don't burn capital chasing them.
+
+### Denver + LA verdicts — recorded 2026-06-06
+
+After completing GEFS + IFS + Kalshi price backfills for Denver (KDEN)
+and Los Angeles (KLAX), ran the pre-committed test on all 6 cities:
+
+| City        | std°F | n   | limit mean (t)        | cross mean (t)        | Verdict             |
+|-------------|-------|-----|-----------------------|-----------------------|---------------------|
+| Los Angeles | 5.9   | 787 | **−1.72¢ (t=−1.30)**  | −2.99¢ (t=−2.26)      | **FAIL**            |
+| Miami       | 6.8   | 521 | +7.49¢ (t=+4.11)      | +4.43¢ (t=+2.45)      | INSUFFICIENT (effective PASS) |
+| Austin      | 12.8  | 634 | +0.52¢ (t=+0.33)      | −0.73¢ (t=−0.47)      | MIXED               |
+| Denver      | 16.6  | 680 | **−0.19¢ (t=−0.13)**  | −1.59¢ (t=−1.08)      | **FAIL**            |
+| New York    | 19.3  | 897 | −0.55¢ (t=−0.44)      | −1.88¢ (t=−1.52)      | FAIL                |
+| Chicago     | 21.7  | 868 | +3.83¢ (t=+2.72)      | +2.29¢ (t=+1.64)      | PASS                |
+
+**Final tally: 1 PASS / 1 effective PASS / 1 MIXED / 3 FAIL.**
+
+### Variance hypothesis: definitively FALSIFIED
+
+The earlier (already-falsified) "low-variance cities should pass" theory
+gets a final nail. LA has **the lowest variance** of any city tested
+(std 5.9°F, lower than Miami's 6.8°F). If the tropical/coastal
+predictability theory were right, LA should have been the strongest
+passer. Instead it **failed** with n=787 — that's not noise.
+
+Sorting all 6 cities by std and showing verdicts:
+
+| std (°F) | City        | Verdict             |
+|----------|-------------|---------------------|
+| 5.9      | Los Angeles | FAIL                |
+| 6.8      | Miami       | effective PASS      |
+| 12.8    | Austin      | MIXED               |
+| 16.6    | Denver      | FAIL                |
+| 19.3    | New York    | FAIL                |
+| 21.7    | Chicago     | PASS                |
+
+No structural variable (variance, market size, climate type, elevation,
+coast/inland) sorts the passers from the failers. **Chicago and Miami
+are genuine outliers, not the leading edge of a general pattern.**
+
+### Strategic implication
+
+The 6-city panel is the strongest version of the cross-city test we
+could realistically run. Result: only Chicago + Miami have edge worth
+trading. The other 4 either fail outright or are too marginal.
+
+**Bot configuration (2026-06-06):** continues to live-trade KORD + KMIA
+only, equal-weight (200/200) contracts. KDEN/KLAX/KAUS/KNYC remain
+paper-trade-only research data. No plans to add them to live trading
+based on this data.
+
+If Chicago or Miami's signal degrades over the next ~30 days of live
+forward data, halt that city. If both hold, the case for "real edge in
+those two specific cities" is the strongest it can be.
