@@ -193,6 +193,93 @@ def kalshi_fee_cents(entry_price_cents: int) -> int:
     return max(1, math.ceil(fee_dollars * 100))
 
 
+@st.cache_data(ttl=300)
+def compute_empirical_fills_for_trades(trade_keys: tuple, modes: tuple = ("post_inside_spread", "cross_at_ask", "cross_with_premium_1")) -> dict:
+    """For each trade key (ticker, target_date, side, decision_time_iso, cross_entry_cents),
+    compute fill outcome under each execution mode using the prices table.
+
+    Returns dict: {trade_key: {mode: {"filled": bool, "fill_price": int|None, "limit_price": int}}}
+
+    Caching keyed on (trade_keys, modes) — same tuple = same result.
+
+    Mode semantics:
+      - post_inside_spread: limit_price = cross - max(1, spread-1). Fills if yes/no_ask reaches
+        that price after decision_time (or before EOD).
+      - cross_at_ask: limit_price = cross. Assumed to fill at cross (top-of-book taker).
+        We can't verify depth from snapshots, so this is a "would fill at the touch" assumption.
+      - cross_with_premium_1: limit_price = cross + 1. Better fill than cross_at_ask;
+        same caveat re: depth.
+    """
+    from datetime import datetime, time as dtime, timezone
+    out = {}
+    if not trade_keys:
+        return out
+    with get_connection() as conn, conn.cursor() as cur:
+        for tk in trade_keys:
+            ticker, target_date, side, decision_time_iso, cross_entry = tk
+            decision_time = datetime.fromisoformat(decision_time_iso)
+            # End of trading day — use end of target_date in UTC as cutoff
+            eod = datetime.combine(target_date if isinstance(target_date, type(decision_time.date())) else decision_time.date(),
+                                   dtime(23, 59), tzinfo=timezone.utc)
+            # Pull all snapshots for this ticker between decision_time and EOD
+            cur.execute("""
+                SELECT yes_bid, yes_ask, no_bid, no_ask
+                FROM prices
+                WHERE ticker = %s AND snapshot_at > %s AND snapshot_at <= %s
+                  AND yes_bid IS NOT NULL AND yes_ask IS NOT NULL
+            """, (ticker, decision_time, eod))
+            snaps = cur.fetchall()
+
+            # Need bid/ask AT decision time to compute spread (best estimate from first snap)
+            cur.execute("""
+                SELECT yes_bid, yes_ask
+                FROM prices WHERE ticker = %s AND snapshot_at <= %s
+                  AND yes_bid IS NOT NULL AND yes_ask IS NOT NULL
+                ORDER BY snapshot_at DESC LIMIT 1
+            """, (ticker, decision_time))
+            at_decision = cur.fetchone()
+            if at_decision is None:
+                # No price data at decision time — can't compute any mode
+                out[tk] = {m: {"filled": False, "fill_price": None, "limit_price": 0} for m in modes}
+                continue
+            d_yes_bid, d_yes_ask = at_decision
+            spread = max(1, int(d_yes_ask) - int(d_yes_bid))
+
+            mode_out = {}
+            for mode in modes:
+                # Compute the limit price under this mode
+                if mode == "post_inside_spread":
+                    if spread > 1:
+                        if side == "BUY_YES":
+                            limit_price = max(1, int(d_yes_ask) - (spread - 1))
+                        else:  # BUY_NO
+                            limit_price = max(1, (100 - int(d_yes_bid)) - (spread - 1))
+                    else:
+                        # Falls back to cross since no room inside
+                        limit_price = cross_entry
+                elif mode == "cross_at_ask":
+                    limit_price = cross_entry
+                elif mode == "cross_with_premium_1":
+                    limit_price = min(99, cross_entry + 1)
+                else:
+                    limit_price = cross_entry
+
+                # Determine fill
+                if mode in ("cross_at_ask", "cross_with_premium_1"):
+                    # Taker — assume fills at the limit (depth-unverifiable)
+                    mode_out[mode] = {"filled": True, "fill_price": limit_price, "limit_price": limit_price}
+                else:  # post_inside_spread — empirically check
+                    filled = False
+                    for ybid, yask, nbid, nask in snaps:
+                        if side == "BUY_YES" and yask is not None and int(yask) <= limit_price:
+                            filled = True; break
+                        if side == "BUY_NO" and nask is not None and int(nask) <= limit_price:
+                            filled = True; break
+                    mode_out[mode] = {"filled": filled, "fill_price": limit_price if filled else None, "limit_price": limit_price}
+            out[tk] = mode_out
+    return out
+
+
 def simulate_pnl(
     df: pd.DataFrame,
     starting_balance: float,
@@ -205,6 +292,7 @@ def simulate_pnl(
     execution_mode: str = "cross",
     max_stake_pct: float | None = 0.05,
     max_stake_dollars: float | None = None,
+    empirical_fills: dict | None = None,
 ) -> pd.DataFrame:
     """Walk resolved trades chronologically and compute cumulative balance.
 
@@ -245,17 +333,34 @@ def simulate_pnl(
         .reset_index(drop=True)
     )
 
-    fill_rate = {"cross": 1.0, "limit_100": 1.0, "limit_70": 0.7, "limit_50": 0.5}[execution_mode]
+    # execution_mode names ending in "_emp_<mode>" use empirical fill lookup from
+    # the precomputed dict. Format: "emp:post_inside_spread" / "emp:cross_at_ask" /
+    # "emp:cross_with_premium_1". The fills dict is keyed by row index.
+    is_empirical = execution_mode.startswith("emp:")
+    emp_mode_key = execution_mode[4:] if is_empirical else None
+
+    fill_rate = ({"cross": 1.0, "limit_100": 1.0, "limit_70": 0.7, "limit_50": 0.5}
+                 .get(execution_mode, 1.0))
     rng = random.Random(42)
 
     history = [{"date": None, "balance": starting_balance, "trade_pnl": 0.0}]
     balance = starting_balance
 
-    for _, row in resolved.iterrows():
+    for idx, row in resolved.iterrows():
         cross_entry = int(row["entry_price_cents"])
         won = bool(row["won"])
 
-        if execution_mode == "cross":
+        if is_empirical:
+            # Empirical: limit_price + fill bool come from precomputed dict
+            emp = (empirical_fills or {}).get(idx, {}).get(emp_mode_key)
+            if emp is None:
+                # Missing data — skip with $0 P&L
+                entry = cross_entry
+                empirical_did_fill = False
+            else:
+                entry = int(emp["limit_price"])
+                empirical_did_fill = bool(emp["filled"])
+        elif execution_mode == "cross":
             entry = cross_entry
         else:
             bid, ask = row["market_yes_bid"], row["market_yes_ask"]
@@ -274,7 +379,10 @@ def simulate_pnl(
         else:
             bracket_str = f"{int(row['strike_low'])}-{int(row['strike_high'])}°"
 
-        filled = rng.random() < fill_rate
+        if is_empirical:
+            filled = empirical_did_fill
+        else:
+            filled = rng.random() < fill_rate
         if not filled:
             history.append({
                 "date": pd.Timestamp(row["target_date"]),
@@ -1836,12 +1944,15 @@ with tab_backtest:
             with c3:
                 execution_label = st.radio(
                     "Execution",
-                    ["Cross spread", "Limit (100% fill)", "Limit (70% fill)", "Limit (50% fill)"],
+                    ["Cross spread", "Limit (100% fill)", "Limit (70% fill)", "Limit (50% fill)",
+                     "Empirical comparison"],
                     index=0,
                     help=(
                         "Cross spread = pay the marketable price (paper-trade default). "
-                        "Limit = post 1¢ inside the spread, missed fills count as $0. "
-                        "Fill seed is fixed so the curve is deterministic."
+                        "Limit = post 1¢ inside the spread, missed fills count as $0 (% is a guess). "
+                        "Empirical comparison = compute actual fill outcomes from historical price "
+                        "snapshots and run 3 modes side-by-side (post-inside-spread / cross-at-ask / "
+                        "cross-with-premium+1)."
                     ),
                 )
                 execution_mode = {
@@ -1849,6 +1960,7 @@ with tab_backtest:
                     "Limit (100% fill)": "limit_100",
                     "Limit (70% fill)": "limit_70",
                     "Limit (50% fill)": "limit_50",
+                    "Empirical comparison": "empirical_compare",
                 }[execution_label]
             with c4:
                 # Defaults — only the active mode's value is used by the sim
@@ -1926,16 +2038,138 @@ with tab_backtest:
                         cap_summary += f" OR ${max_stake_dollars:.0f}/trade (whichever lower)"
                     st.caption(cap_summary)
 
-            sim_df = simulate_pnl(
-                pt_df, starting_balance, sim_mode,
-                contracts=int(contracts_per_trade),
-                kelly_fraction=kelly_fraction,
-                scaling_pct=scaling_pct,
-                amount_dollars=float(amount_dollars),
-                execution_mode=execution_mode,
-                max_stake_pct=max_stake_pct,
-                max_stake_dollars=max_stake_dollars,
-            )
+            # === Empirical comparison branch — runs simulator under 3 execution
+            # modes side by side using actual price-history fill checks. ===
+            if execution_mode == "empirical_compare":
+                from datetime import datetime as _dt, time as _t, timezone as _tz
+                # Build trade keys for the fill helper. decision time = 14:45 UTC for
+                # paper-trade dataset (or per-city paper-trade decision time).
+                resolved_df = pt_df[pt_df["won"].notna()].copy().reset_index(drop=True)
+                keys = []
+                idx_to_key = {}
+                # Snapshot density check — only trades from days with at least
+                # 50 prices/day for the ticker count as "empirical-eligible."
+                trade_keys: list[tuple] = []
+                for i, r in resolved_df.iterrows():
+                    target_date = r["target_date"]
+                    decision_time = _dt.combine(target_date, _t(14, 45), tzinfo=_tz.utc).isoformat()
+                    side = r["position"]
+                    cross_entry = int(r["entry_price_cents"])
+                    tk = (r["ticker"], target_date, side, decision_time, cross_entry)
+                    trade_keys.append(tk)
+                    idx_to_key[i] = tk
+
+                # Run the fill check
+                fills_by_key = compute_empirical_fills_for_trades(tuple(trade_keys))
+                # Map row idx -> mode -> {filled, fill_price, limit_price}
+                fills_by_idx: dict[int, dict] = {
+                    i: fills_by_key.get(tk, {}) for i, tk in idx_to_key.items()
+                }
+
+                # Coverage: how many trades have ANY snapshot data for the day
+                n_total_resolved = len(resolved_df)
+                n_with_coverage = sum(
+                    1 for i in fills_by_idx
+                    if fills_by_idx[i] and any(
+                        v.get("limit_price", 0) > 0 for v in fills_by_idx[i].values()
+                    )
+                )
+
+                st.markdown(f"### Empirical execution-mode comparison")
+                st.info(
+                    f"📊 **Coverage:** {n_with_coverage} of {n_total_resolved} resolved trades have "
+                    f"historical price snapshots for their target date. Modes shown below run only on "
+                    f"the eligible subset. Newer dates have richer snapshot data (5-min) than older "
+                    f"dates (hourly candles)."
+                )
+                st.caption(
+                    "**post_inside_spread**: empirical — post at ask−(spread−1), check if "
+                    "market price ever traded through our level. "
+                    "**cross_at_ask**: assumes 100% fill at the ask (top-of-book, depth not verifiable). "
+                    "**cross_with_premium+1**: assumes 100% fill at ask+1."
+                )
+
+                # Run sim for each mode
+                modes = ("post_inside_spread", "cross_at_ask", "cross_with_premium_1")
+                results = {}
+                for m in modes:
+                    sd = simulate_pnl(
+                        pt_df, starting_balance, sim_mode,
+                        contracts=int(contracts_per_trade),
+                        kelly_fraction=kelly_fraction,
+                        scaling_pct=scaling_pct,
+                        amount_dollars=float(amount_dollars),
+                        execution_mode=f"emp:{m}",
+                        max_stake_pct=max_stake_pct,
+                        max_stake_dollars=max_stake_dollars,
+                        empirical_fills=fills_by_idx,
+                    )
+                    results[m] = sd
+
+                # Comparison table
+                comp_rows = []
+                for m in modes:
+                    sd = results[m]
+                    n_filled = int(sd["filled"].sum()) if "filled" in sd.columns else 0
+                    n_attempts = max(1, int(sd["filled"].notna().sum()))
+                    fill_pct = 100.0 * n_filled / n_attempts
+                    final_bal = float(sd["balance"].iloc[-1])
+                    ret_pct = (final_bal / starting_balance - 1) * 100
+                    filled_pnl = sd.loc[sd["filled"] == True, "trade_pnl"] if "filled" in sd.columns else pd.Series([], dtype=float)
+                    mean_pnl_per_filled = float(filled_pnl.mean()) if len(filled_pnl) > 0 else 0.0
+                    # Max DD
+                    bals = sd["balance"].dropna().astype(float).values
+                    mdd_pct = 0.0
+                    if len(bals) > 1:
+                        peak = bals[0]
+                        for b in bals:
+                            if b > peak: peak = b
+                            if peak > 0 and (b - peak) / peak < mdd_pct:
+                                mdd_pct = (b - peak) / peak
+                    comp_rows.append({
+                        "Mode": {"post_inside_spread": "post_inside_spread (empirical)",
+                                 "cross_at_ask": "cross_at_ask (depth-blind)",
+                                 "cross_with_premium_1": "cross_with_premium=1 (depth-blind)"}[m],
+                        "Fill rate": f"{fill_pct:.1f}% ({n_filled}/{n_attempts})",
+                        "Mean $/filled trade": f"${mean_pnl_per_filled:+.2f}",
+                        "Final balance": f"${final_bal:,.2f} ({ret_pct:+.1f}%)",
+                        "Max drawdown": f"{mdd_pct*100:+.1f}%",
+                    })
+                st.dataframe(pd.DataFrame(comp_rows), width="stretch", hide_index=True)
+
+                # Overlay balance curves
+                import pandas as pd
+                chart_rows = []
+                for m in modes:
+                    sd = results[m].dropna(subset=["date"]).copy()
+                    sd["Mode"] = {"post_inside_spread": "post_inside_spread",
+                                  "cross_at_ask": "cross_at_ask",
+                                  "cross_with_premium_1": "cross_with_premium+1"}[m]
+                    chart_rows.append(sd[["date", "balance", "Mode"]])
+                chart_df = pd.concat(chart_rows, ignore_index=True)
+                line = alt.Chart(chart_df).mark_line().encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("balance:Q", title="Balance ($)"),
+                    color=alt.Color("Mode:N", scale=alt.Scale(scheme="category10")),
+                    tooltip=["date:T", "balance:Q", "Mode:N"],
+                )
+                baseline = alt.Chart(pd.DataFrame({"y": [starting_balance]})).mark_rule(
+                    strokeDash=[4, 4], color="gray").encode(y="y:Q")
+                st.altair_chart((line + baseline).properties(height=320), width="stretch")
+
+                # Use the post_inside_spread result as the "main" sim_df for downstream code
+                sim_df = results["post_inside_spread"]
+            else:
+                sim_df = simulate_pnl(
+                    pt_df, starting_balance, sim_mode,
+                    contracts=int(contracts_per_trade),
+                    kelly_fraction=kelly_fraction,
+                    scaling_pct=scaling_pct,
+                    amount_dollars=float(amount_dollars),
+                    execution_mode=execution_mode,
+                    max_stake_pct=max_stake_pct,
+                    max_stake_dollars=max_stake_dollars,
+                )
             final_balance = sim_df["balance"].iloc[-1]
             return_pct = (final_balance / starting_balance - 1) * 100
             n_won = int(pt_df["won"].sum())
