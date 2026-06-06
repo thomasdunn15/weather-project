@@ -115,12 +115,17 @@ SPREAD_REGIME_MAX_CENTS = 5.0
 #                         "limit-100% assume 100% fill" intent.
 # "cross_with_premium"   = post at ask + premium cents to walk the book.
 #                         Highest fill rate, highest cost.
-# Revised 2026-06-05 — switched from cross_at_ask to cross_with_premium=1.
-# Rationale: cross_at_ask leaves unfilled portions resting at the ask (e.g. KMIA
-# B85.5 1071 contracts on 2026-06-04 never filled). Posting at ask+1 walks one
-# level deeper into the book, fills more, costs ~1c/contract extra.
-EXECUTION_MODE = "cross_with_premium"
-CROSS_PREMIUM_CENTS = 1   # used if EXECUTION_MODE == "cross_with_premium"
+# Revised 2026-06-06 — switched back to post_inside_spread after empirical
+# backtest analysis. Dashboard's "Empirical comparison" mode showed that on
+# 332 resolved trades:
+#   post_inside_spread:    75% fill rate, +$35.19/filled, +291% final, -24% DD
+#   cross_at_ask:          99% fill rate, +$6.27/filled,  +69% final,  -66% DD
+#   cross_with_premium=1:  99% fill rate, +$3.24/filled,  +35% final,  -72% DD
+# The 80 trades that crossing catches but maker misses LOSE ~$80/trade — the
+# unfilled trades are adverse-selected losers. Missing them is net beneficial.
+# B85.5 miss was a sample-of-one; aggregate says it's worth tolerating.
+EXECUTION_MODE = "post_inside_spread"
+CROSS_PREMIUM_CENTS = 0   # n/a in this mode
 
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
