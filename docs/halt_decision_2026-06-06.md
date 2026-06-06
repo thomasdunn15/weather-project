@@ -1,0 +1,118 @@
+# Live trading halted — 2026-06-06
+
+**Decision:** Halt all live trading on both KORD and KMIA. Return both
+cities to paper-trade research only. Suspend the pending
+docs/miami_only_amount_precommit.md (NOT signed).
+
+**Trigger:** Per-contract paper edge has decayed substantially in the
+most recent 90 days across both cities. Going live now would deploy
+real capital into a strategy whose recent empirical performance is
+negative regardless of sizing choice.
+
+## The data
+
+Miami paper data, per-contract mean PnL (limit-100% execution, the
+honest unit measure that the pre-committed t=4.11 was computed on):
+
+| Window           | n    | Win rate | Mean per contract | Amount $75 per trade |
+|------------------|------|----------|-------------------|----------------------|
+| Full year        | 528  | 53%      | +7.68¢            | +$13.37              |
+| Last 180 days    | 277  | 48%      | +3.23¢            | +$1.44               |
+| **Last 90 days** | 120  | **37%**  | **−2.79¢**        | **−$11.58**          |
+| Last 60 days     | 80   | 36%      | −1.76¢            | −$5.12               |
+| Last 30 days     | 35   | 40%      | +3.03¢            | +$1.84               |
+
+Trend check:
+
+| Period             | n    | Win rate | Amount $75/trade |
+|--------------------|------|----------|------------------|
+| Oldest 90 days     | 130  | 57%      | +$32.58          |
+| **Newest 90 days** | 130  | **38%**  | **−$5.26**       |
+
+Monthly breakdown shows the regime change clearly:
+
+- 2025-07 through 2025-12: all months positive (+$159 to +$2,294/month)
+- 2026-01: marginal positive (+$159)
+- 2026-02 through 2026-05: **all negative**, cumulative −$1,408 paper
+
+The pre-committed test's t=4.11 was real for the full year but is
+dominated by July-December 2025 performance. It does not generalize
+to the current regime.
+
+## Why this matters
+
+The Sharpe 7.58 / +1850% Miami backtest I was about to commit live
+capital to is a lifetime average. The lifetime average masks a regime
+change starting around February 2026 where Miami's per-contract edge
+flipped from strongly positive to mildly negative. Sizing strategies
+amplify the underlying edge — they don't create one. If per-contract
+edge is negative, every sizing strategy (Unit, Amount $, Kelly,
+Scaling) loses money. Amount $75 just loses faster ($75/trade × −$11
+mean × 50 trades/month = −$28/trade or roughly $1,400 loss/month).
+
+The $600 Miami cumulative kill switch would have triggered in 2-3 weeks
+if I'd gone live with these recent dynamics.
+
+## Possible causes (uncertain)
+
+1. **Other algorithmic traders entered Miami's Kalshi market in 2026.**
+   The edge that existed in Q3-Q4 2025 may have been arbed away.
+2. **Weather pattern shift.** 2026 weather may be less forecastable
+   than 2025 weather for reasons we don't understand.
+3. **Forecast skill regressed.** GEFS or ECMWF model quality could have
+   shifted.
+
+None of these can be diagnosed quickly. They require time and forward
+data.
+
+## What's halted
+
+- KORD live trading cron — commented out in docs/crontab.txt
+- KMIA live trading cron — commented out in docs/crontab.txt
+- halt files touched at halt/KORD, halt/KMIA, halt/ALL as
+  belt-and-suspenders (live_trade.py checks these even if cron fires)
+
+## What continues
+
+- paper_trade_log cron (all cities) — accumulates forward research data
+- All forecast / observation / price snapshot ingestion crons
+- monitor_fills.py (handles any in-flight Kalshi orders from prior days)
+- reconcile_live_trades.py (settles previous live trades)
+
+## Re-evaluation criteria
+
+Resume live trading consideration when:
+
+1. **30 consecutive days of fresh forward paper data show positive
+   per-contract mean** on the candidate city (Miami or Chicago), AND
+2. **Win rate is back above 48%** on that city for the recent window, AND
+3. **Total paper P&L over the 30 days is positive at Amount $75 sizing**
+
+If those conditions are met for either city, write a new pre-commit doc.
+Until then, no live trading.
+
+If 60 days pass without recovery, the edge is likely gone permanently
+and we should investigate whether the underlying strategy needs a
+fundamental rewrite — different filter, different model, different
+markets, or shelving the project.
+
+## What the prior pre-commit docs say now
+
+- `docs/chicago_miami_live_precommit.md`: superseded by this halt; the
+  configuration described there is no longer active.
+- `docs/miami_only_amount_precommit.md`: was drafted but NEVER SIGNED.
+  Status: void. If we resume Miami later, write a fresh doc.
+
+## Honest reflection
+
+I had this data the whole time. The signs were there in the live trades
+this week: Day 2 KMIA had only 2 signals (vs 3-4 normal), Day 1 KORD
+made +$410 but was a single lucky day, recent intraday paper showed
+Chicago all-negative. I let the impressive lifetime-backtest numbers
+override the obvious "recent performance is bad" signal.
+
+Pre-commit discipline didn't fail us — the rolling t-stat I trusted DID
+fail us. The lesson: forward window analysis matters more than lifetime
+t-stats when the underlying market or model regime may have shifted.
+
+User's instinct ("I don't like this graph") was the right call. Honor it.

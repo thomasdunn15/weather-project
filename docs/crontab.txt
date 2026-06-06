@@ -81,8 +81,12 @@
 # CHICAGO + MIAMI live trading (approved 2026-06-04 per docs/chicago_miami_live_precommit.md).
 # Different decision times per city — Chicago 14:46 UTC (default), Miami 15:30 UTC
 # (per intraday-paper time-of-day analysis).
-46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
-30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
+# ALL LIVE TRADING HALTED 2026-06-06 — recent paper data shows edge degradation
+# Win rate dropped 57% -> 38% in last 90 days, per-contract mean went -2.79c
+# Halt files in halt/{KORD,KMIA,ALL} as belt-and-suspenders (live_trade respects them)
+# See docs/halt_decision_2026-06-06.md for full reasoning.
+# 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
+# 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.
