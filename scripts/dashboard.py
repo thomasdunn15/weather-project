@@ -1614,10 +1614,12 @@ with tab_backtest:
     # For Miami specifically, the paper-trade cron may have seen no signals at
     # 14:45 UTC but the live cron at 15:30 UTC saw 2 — prefer the live source
     # since it's what the actual order was placed against.
-    # Pull per-city model_source from CITY_CONFIG instead of hardcoding —
-    # otherwise per-city model overrides (e.g. KORD's combined_hrrr) wouldn't
-    # show up in Edge by bracket / live-trade matching.
-    _ccfg = cfg["CITY_CONFIG"].get(selected_station_id, {})
+    # Pull per-city model_source from live_trade.CITY_CONFIG instead of
+    # hardcoding — otherwise per-city model overrides (e.g. KORD's combined_hrrr)
+    # wouldn't show up in Edge by bracket / live-trade matching. The local `cfg`
+    # at this scope is a different dict, so call _live_trade_config() directly.
+    _ltcfg = _live_trade_config()
+    _ccfg = _ltcfg["CITY_CONFIG"].get(selected_station_id, {})
     paper_source_for_city = _ccfg.get("paper_model_source") or (
         "EMOS combined 00Z (rolling 45d)" if selected_station_id == "KNYC"
         else f"EMOS combined 00Z {selected_station.city} (rolling 45d)"
