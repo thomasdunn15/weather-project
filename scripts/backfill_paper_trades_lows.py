@@ -34,11 +34,10 @@ from weather_markets.db import get_connection
 from weather_markets.aggregation import (
     compute_combined_daily_lows,
     fetch_contracts_for_date,
+    DEFAULT_LOW_FORECAST_HOURS,
 )
 from weather_markets.emos import fit_emos_rolling_for_lows, gaussian_to_bracket_probs
-
-
-STATION_ID = "KNYC"
+from weather_markets.stations import get as get_station
 
 INSERT_SQL = """
     INSERT INTO paper_trades (
@@ -78,6 +77,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         models_list = [cfg.model]
 
     # 1. At least one underlying model must have data at the morning forecast hours
+    forecast_hours = tuple(cfg.forecast_hours)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -87,7 +87,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
               AND EXTRACT(EPOCH FROM (valid_time - init_time))/3600 = ANY(%s)
             LIMIT 1
             """,
-            (STATION_ID, models_list, init_time, [30, 33, 36]),
+            (cfg.station_id, models_list, init_time, list(forecast_hours)),
         )
         if cur.fetchone() is None:
             return 0, "no_forecast"
@@ -96,7 +96,8 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     try:
         ensemble_values = compute_combined_daily_lows(
             init_time, target_date, conn,
-            station_id=STATION_ID, models=models_list,
+            station_id=cfg.station_id, models=models_list,
+            forecast_hours=forecast_hours,
         )
     except Exception:
         return 0, "no_forecast"
@@ -110,7 +111,7 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
     # 3. Rolling EMOS calibrated on (predicted_low, observed_low) pairs
     emos = fit_emos_rolling_for_lows(
         target_date, conn,
-        window_days=cfg.window_days, station_id=STATION_ID,
+        window_days=cfg.window_days, station_id=cfg.station_id,
         model=cfg.model,
     )
     if emos is None:
@@ -121,9 +122,11 @@ def run_for_date(target_date: date, conn, logged_at: datetime, cfg) -> tuple[int
         return 0, "emos_none"
     emos_sigma = math.sqrt(emos_var)
 
-    # 4. KXLOWTNYC contracts for the target_date (explicit series override —
+    # 4. KXLOWT* contracts for the target_date (explicit series override —
     # fetch_contracts_for_date defaults to KXHIGHNY for the production highs flow).
-    contracts = fetch_contracts_for_date(target_date, conn, station_id=STATION_ID, series="KXLOWTNYC")
+    station = get_station(cfg.station_id)
+    contracts = fetch_contracts_for_date(target_date, conn, station_id=cfg.station_id,
+                                         series=station.kalshi_series_low)
     if not contracts:
         return 0, "no_contracts"
 
@@ -199,9 +202,19 @@ def main() -> None:
     parser.add_argument("--model-source", required=True,
                         help="Label written to paper_trades.model_source (PK component). "
                              "Use a distinct label from any KXHIGHNY backfill.")
+    parser.add_argument("--station-id", default="KNYC",
+                        help="Station to backfill (e.g. KORD, KMIA). Determines which "
+                             "KXLOWT* series to query. Default: KNYC.")
+    parser.add_argument("--forecast-hours", type=lambda s: tuple(int(x) for x in s.split(",")),
+                        default=DEFAULT_LOW_FORECAST_HOURS,
+                        help="Comma-separated forecast hours (from prior-day 00Z init) "
+                             "used for the MIN-based daily-low ensemble. "
+                             f"Default: {','.join(str(h) for h in DEFAULT_LOW_FORECAST_HOURS)}. "
+                             "Try '24,27,30,33,36,39' for wider overnight window.")
     args = parser.parse_args()
 
-    print(f"Backfilling KXLOWTNYC day-ahead paper trades for {args.start_date} → {args.end_date}")
+    print(f"Backfilling {get_station(args.station_id).kalshi_series_low} day-ahead paper trades "
+          f"for {args.start_date} → {args.end_date}")
     print(f"  model:        {args.model}")
     print(f"  decision:     prior-day {args.decision_hour:02d}:{args.decision_minute:02d} UTC")
     print(f"  window:       {args.window_days} days, edge ≥ {args.edge_threshold}")

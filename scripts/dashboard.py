@@ -1614,11 +1614,15 @@ with tab_backtest:
     # For Miami specifically, the paper-trade cron may have seen no signals at
     # 14:45 UTC but the live cron at 15:30 UTC saw 2 — prefer the live source
     # since it's what the actual order was placed against.
-    paper_source_for_city = (
+    # Pull per-city model_source from CITY_CONFIG instead of hardcoding —
+    # otherwise per-city model overrides (e.g. KORD's combined_hrrr) wouldn't
+    # show up in Edge by bracket / live-trade matching.
+    _ccfg = cfg["CITY_CONFIG"].get(selected_station_id, {})
+    paper_source_for_city = _ccfg.get("paper_model_source") or (
         "EMOS combined 00Z (rolling 45d)" if selected_station_id == "KNYC"
         else f"EMOS combined 00Z {selected_station.city} (rolling 45d)"
     )
-    live_source_for_city = paper_source_for_city + " [LIVE]"
+    live_source_for_city = _ccfg.get("live_model_source_tag") or (paper_source_for_city + " [LIVE]")
     paper_snapshot: dict[str, dict] = {}
     with get_connection() as _pconn:
         with _pconn.cursor() as _pcur:
