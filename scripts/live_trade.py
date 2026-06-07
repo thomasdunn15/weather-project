@@ -52,24 +52,21 @@ from weather_markets.stations import get as get_station
 # PRE-COMMITTED PARAMETERS — see docs/chicago_miami_live_precommit.md
 # ====================================================================
 
-EDGE_THRESHOLD = 0.10        # universal across both cities
+EDGE_THRESHOLD = 0.10        # DEFAULT — per-city cfg['edge_threshold'] overrides
 WINDOW_DAYS = 45
 INIT_HOUR = 0
 MODELS_LIST = ["gefs", "ifs"]
 
 # Per-city config. Constants here MUST NOT be edited mid-window — see pre-commit doc.
 #
-# REVISION 2026-06-05: switch from "even_split $ budget" to "unit contract count"
-# sizing. Backtest showed Sharpe 3.96 (Unit 150) vs 1.37 (Amount $150) because
-# unit sizing has bounded per-trade dollar exposure on cheap entries (where most
-# signals are) while $-sizing scales up risk on cheap entries.
-#
-# Per-city contract count: KMIA 300, KORD 200 (revised 2026-06-05 to 1.5x
-# Miami weighting). Matches the pre-committed 75/25 Miami/Chicago $-allocation
-# (~$225/day Miami vs ~$125/day Chicago at avg entry ~25c, ~3 trades/day).
-# Reflects Miami's stronger cross-city signal (t=4.11 vs Chicago's t=2.72)
-# without going to full 2x concentration. NO per-trade $ cap — max single-trade
-# loss bounded by UNIT_CONTRACTS * 99c = ~$297 Miami, ~$198 Chicago.
+# REVISION 2026-06-07: Chicago resumes after halt with tighter, smaller config.
+# Per docs/chicago_resume_2026-06-07_precommit.md:
+#   - filter: edge>=25% (up from 10% — only Bonferroni-surviving cell)
+#   - sizing: Amount $25/trade with 500 contract cap
+#   - cumulative kill: $200 (down from $500)
+#   - daily loss limit: $75
+# Per-trade max loss bounded by $25 (the amount stake).
+# Miami remains HALTED (halt/KMIA file present) — recent paper data t=-0.49.
 CITY_CONFIG = {
     "KORD": {
         "city_name": "Chicago",
@@ -78,10 +75,13 @@ CITY_CONFIG = {
         "live_model_source_tag": "EMOS combined 00Z Chicago (rolling 45d) [LIVE]",
         "decision_hour": 14,
         "decision_minute": 46,
-        "sizing_mode": "unit",                  # "unit" or "even_split"
-        "unit_contracts": 200,                  # contracts per trade (unit mode only)
-        "daily_loss_limit_dollars":    250.0,
-        "cumulative_kill_dollars":     500.0,
+        "edge_threshold": 0.25,                 # per-city — Chicago needs 25% (Bonferroni-passing)
+        "sizing_mode": "amount",                # "unit", "even_split", or "amount"
+        "amount_dollars": 25.0,                 # $/trade in amount mode
+        "max_contracts_per_trade": 500,         # depth cap for amount mode
+        "unit_contracts": 200,                  # used only if sizing_mode == "unit"
+        "daily_loss_limit_dollars":     75.0,
+        "cumulative_kill_dollars":     200.0,
         "max_open_contracts":         5000,
     },
     "KMIA": {
@@ -91,7 +91,10 @@ CITY_CONFIG = {
         "live_model_source_tag": "EMOS combined 00Z Miami (rolling 45d) [LIVE]",
         "decision_hour": 15,
         "decision_minute": 30,
+        "edge_threshold": 0.10,                 # left at old value (HALTED so unused)
         "sizing_mode": "unit",
+        "amount_dollars": 0.0,
+        "max_contracts_per_trade": 1500,
         "unit_contracts": 300,
         "daily_loss_limit_dollars":    500.0,
         "cumulative_kill_dollars":    1000.0,
@@ -100,8 +103,8 @@ CITY_CONFIG = {
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 700.0    # halt BOTH cities for the day
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1200.0    # halt BOTH cities permanently (40% of $3k)
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 75.0     # = Chicago daily; Miami halted
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 200.0     # = Chicago cumulative; Miami halted
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
@@ -218,7 +221,7 @@ def get_open_contract_count(client: KalshiClient, ticker_prefix: str | None = No
     return total
 
 
-def get_rolling_spread_cents(conn, paper_model_source: str) -> float | None:
+def get_rolling_spread_cents(conn, paper_model_source: str, edge_threshold: float = EDGE_THRESHOLD) -> float | None:
     """Mean spread on filtered paper-trades in the last 28 days. None if <10 trades."""
     with conn.cursor() as cur:
         cur.execute(
@@ -228,7 +231,7 @@ def get_rolling_spread_cents(conn, paper_model_source: str) -> float | None:
                  AND ABS(edge) >= %s
                  AND market_yes_bid IS NOT NULL AND market_yes_ask IS NOT NULL
                  AND model_source = %s""",
-            (EDGE_THRESHOLD, paper_model_source),
+            (edge_threshold, paper_model_source),
         )
         row = cur.fetchone()
     if row is None or row[1] < 10:
@@ -284,7 +287,8 @@ def preflight_checks(conn, client: KalshiClient, city: str, today: date) -> list
         failures.append(f"could not read open contracts: {e}")
 
     # Rolling 4wk spread (per-city paper data)
-    avg_spread = get_rolling_spread_cents(conn, cfg["paper_model_source"])
+    avg_spread = get_rolling_spread_cents(conn, cfg["paper_model_source"],
+                                          edge_threshold=cfg.get("edge_threshold", EDGE_THRESHOLD))
     if avg_spread is None:
         print(f"  {city} rolling 4wk avg spread: insufficient data (<10 trades)")
     else:
@@ -368,7 +372,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
         market_mid = (bid + ask) / 200.0
         model_p = model_probs[ticker]
         edge = model_p - market_mid
-        if abs(edge) < EDGE_THRESHOLD:
+        if abs(edge) < cfg.get("edge_threshold", EDGE_THRESHOLD):
             continue
         if edge > 0:
             side = "yes"
@@ -436,14 +440,28 @@ def even_split_stake_cents(daily_budget_cents: int, n_signals: int) -> int:
 def size_trade(city: str, signal: dict, per_trade_stake_cents: int) -> int:
     """Contracts to place for one signal.
 
-    Two sizing modes per CITY_CONFIG[city]['sizing_mode']:
+    Three sizing modes per CITY_CONFIG[city]['sizing_mode']:
       - "unit"        : fixed contract count (cfg['unit_contracts']) per trade.
                         per_trade_stake_cents is IGNORED.
+      - "amount"      : cfg['amount_dollars'] / limit_price, capped at
+                        cfg['max_contracts_per_trade']. Matches dashboard's
+                        post_inside_spread + Amount $ + cap simulation exactly.
       - "even_split"  : per_trade_stake / limit_price (integer).
     """
     cfg = CITY_CONFIG[city]
-    if cfg.get("sizing_mode") == "unit":
+    mode = cfg.get("sizing_mode", "even_split")
+    if mode == "unit":
         return int(cfg["unit_contracts"])
+    if mode == "amount":
+        limit_price = signal["limit_price"]
+        if limit_price <= 0:
+            return 0
+        amount_cents = int(round(cfg["amount_dollars"] * 100))
+        n_contracts = amount_cents // limit_price
+        cap = cfg.get("max_contracts_per_trade")
+        if cap is not None and n_contracts > cap:
+            n_contracts = cap
+        return int(n_contracts)
     # even_split (legacy)
     limit_price = signal["limit_price"]
     if limit_price <= 0 or per_trade_stake_cents <= 0:
@@ -476,8 +494,11 @@ def main() -> int:
     sizing_mode = cfg.get("sizing_mode", "even_split")
     if sizing_mode == "unit":
         print(f"  sizing: UNIT ({cfg['unit_contracts']} contracts/trade, no budget cap)")
+    elif sizing_mode == "amount":
+        print(f"  sizing: AMOUNT (${cfg['amount_dollars']:.0f}/trade, cap {cfg['max_contracts_per_trade']} contracts)")
     else:
         print(f"  sizing: even-split (${cfg.get('daily_stake_budget_dollars', 0):.0f} / n_signals)")
+    print(f"  edge_threshold: {cfg.get('edge_threshold', EDGE_THRESHOLD)*100:.0f}%")
     print(f"  execution_mode: {EXECUTION_MODE}")
 
     with get_connection() as conn:
