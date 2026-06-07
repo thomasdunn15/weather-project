@@ -63,9 +63,12 @@
 30 18 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py >> /var/log/weather/ecmwf.log 2>&1
 
 # HRRR 00Z run (all registered stations): try at 03:30 UTC (HRRR open data typically lands ~02-03 UTC).
-# Falls back to yesterday on failure. Required for live_trade KORD combined_hrrr model — without this,
-# tomorrow's 14:46 UTC cron has no fresh HRRR data and falls back to no_forecast.
+# Retry at 13:45 UTC — 1 hour before KORD live cron at 14:46 — to catch days where AWS publication is
+# delayed past 03:30. Script tries today's run first, falls back to yesterday on failure. Both calls
+# idempotent (ON CONFLICT DO NOTHING), so re-running after success is a no-op.
+# Required for live_trade KORD combined_hrrr model — without HRRR, KORD's 14:46 cron gets no_forecast.
 30 3 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr.log 2>&1
+45 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr.log 2>&1
 
 # Clean up ECMWF GRIB cache hourly (see GEFS/HRRR cleanup note above for why).
 0 * * * * find /home/tdunn/data/ifs -type f -mmin +60 -delete
