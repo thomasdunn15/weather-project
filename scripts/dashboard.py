@@ -1763,7 +1763,12 @@ with tab_backtest:
     )
 
     # P&L simulation (resolved paper trades, configurable sizing + filters) + log table
-    pt_df_all = paper_trades_with_outcomes(limit=10000)
+    # NOTE: limit raised from 10000 to 100000 — total paper_trades is ~17k
+    # since the 2025-05-27 cutoff and continues to grow. The old 10000 silently
+    # truncated the OLDEST ~6k trades, biasing the backtest toward the most
+    # recent period (which differs from earlier months). Use a high enough
+    # cap that we never truncate in practice.
+    pt_df_all = paper_trades_with_outcomes(limit=100000)
     n_total_all = len(pt_df_all)
 
     st.subheader("P&L simulation")
@@ -2079,7 +2084,18 @@ with tab_backtest:
                 from datetime import datetime as _dt, time as _t, timezone as _tz
                 # Build trade keys for the fill helper. decision time = 14:45 UTC for
                 # paper-trade dataset (or per-city paper-trade decision time).
-                resolved_df = pt_df[pt_df["won"].notna()].copy().reset_index(drop=True)
+                # CRITICAL: sort ASC by (target_date, logged_at) to match simulate_pnl's
+                # internal sort. Without this alignment the idx used to build
+                # empirical_fills points to DIFFERENT trades than simulate_pnl iterates
+                # — producing PnL computed with one trade's limit_price applied to a
+                # different trade's win/loss flag (catastrophic miscalc, especially for
+                # BUY_NO trades where limit_price differs hugely from cross_entry).
+                resolved_df = (
+                    pt_df[pt_df["won"].notna()]
+                    .copy()
+                    .sort_values(["target_date", "logged_at"])
+                    .reset_index(drop=True)
+                )
                 keys = []
                 idx_to_key = {}
                 # Snapshot density check — only trades from days with at least
