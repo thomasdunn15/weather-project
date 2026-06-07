@@ -62,6 +62,11 @@
 # ECMWF 12 UTC run (all registered stations): try today (open data publishes ~17 UTC), fall back to yesterday on failure
 30 18 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py >> /var/log/weather/ecmwf.log 2>&1
 
+# HRRR 00Z run (all registered stations): try at 03:30 UTC (HRRR open data typically lands ~02-03 UTC).
+# Falls back to yesterday on failure. Required for live_trade KORD combined_hrrr model — without this,
+# tomorrow's 14:46 UTC cron has no fresh HRRR data and falls back to no_forecast.
+30 3 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr.log 2>&1
+
 # Clean up ECMWF GRIB cache hourly (see GEFS/HRRR cleanup note above for why).
 0 * * * * find /home/tdunn/data/ifs -type f -mmin +60 -delete
 

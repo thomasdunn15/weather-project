@@ -1,9 +1,19 @@
 # Chicago resume — conservative parameters pre-commitment
 
-**Status:** ACTIVE as of 2026-06-07
+**Status:** ACTIVE as of 2026-06-07 (REVISED same day before first cron fire)
 **Replaces:** docs/halt_decision_2026-06-06.md (Chicago portion)
 **Duration:** 30 days minimum — no parameter changes until 2026-07-07.
 **Miami:** REMAINS HALTED. halt/KMIA file in place.
+
+**REVISION 2026-06-07 evening (before first KORD cron fire 2026-06-08 14:46 UTC):**
+Switched model from `combined` (GEFS+IFS) to `combined_hrrr` (GEFS+IFS+HRRR).
+Backtest analysis on Dec 13 2025 – Jun 5 2026 showed:
+- edge≥25% Amount $25 mean: $26.13 → **$37.25** (+$11.12, +43%)
+- Statistical significance: p=0.013 → **p=0.003**
+- Per-contract edge≥25%: +6.98¢ → **+9.61¢**
+HRRR is now ingested daily for all 6 cities via new cron (03:30 UTC). The
+revision keeps every other parameter unchanged. Live trading starts 2026-06-08
+under the revised model.
 
 This doc locks in **every parameter** for the next 30 days. Once signed, **no
 modifications** to filter, sizing, execution, or risk envelope.
@@ -61,7 +71,8 @@ edge_threshold:    25%        (changed from 10%)
 entry_price:       no floor (entry >= 0)
 execution:         post_inside_spread (unchanged)
 forecast init:     00 UTC same day
-model source:      EMOS combined 00Z Chicago (rolling 45d)
+model source:      EMOS combined_hrrr 00Z Chicago (rolling 45d)   [REVISED 2026-06-07pm]
+models used:       GEFS + ECMWF/IFS + HRRR
 decision time:     14:46 UTC daily
 ```
 

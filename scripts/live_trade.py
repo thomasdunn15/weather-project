@@ -55,7 +55,7 @@ from weather_markets.stations import get as get_station
 EDGE_THRESHOLD = 0.10        # DEFAULT — per-city cfg['edge_threshold'] overrides
 WINDOW_DAYS = 45
 INIT_HOUR = 0
-MODELS_LIST = ["gefs", "ifs"]
+MODELS_LIST_DEFAULT = ["gefs", "ifs"]  # DEFAULT — per-city cfg['models'] overrides
 
 # Per-city config. Constants here MUST NOT be edited mid-window — see pre-commit doc.
 #
@@ -70,9 +70,16 @@ MODELS_LIST = ["gefs", "ifs"]
 CITY_CONFIG = {
     "KORD": {
         "city_name": "Chicago",
-        "model_source": "EMOS combined 00Z Chicago (rolling 45d)",
-        "paper_model_source": "EMOS combined 00Z Chicago (rolling 45d)",
-        "live_model_source_tag": "EMOS combined 00Z Chicago (rolling 45d) [LIVE]",
+        # REVISION 2026-06-07 evening: switched from "combined" (GEFS+IFS) to
+        # "combined_hrrr" (GEFS+IFS+HRRR). Backtest comparison on Dec 13 2025
+        # – Jun 5 2026 showed +$11.12/trade improvement at edge>=25% Amount $25
+        # ($26.13 -> $37.25, +43%). Statistical significance improved from
+        # p=0.013 to p=0.003. HRRR is already ingested daily for Chicago.
+        "models": ["gefs", "ifs", "hrrr"],
+        "emos_model": "combined_hrrr",
+        "model_source": "EMOS combined_hrrr 00Z Chicago (rolling 45d)",
+        "paper_model_source": "EMOS combined_hrrr 00Z Chicago (rolling 45d)",
+        "live_model_source_tag": "EMOS combined_hrrr 00Z Chicago (rolling 45d) [LIVE]",
         "decision_hour": 14,
         "decision_minute": 46,
         "edge_threshold": 0.25,                 # per-city — Chicago needs 25% (Bonferroni-passing)
@@ -86,6 +93,8 @@ CITY_CONFIG = {
     },
     "KMIA": {
         "city_name": "Miami",
+        "models": ["gefs", "ifs"],
+        "emos_model": "combined",
         "model_source": "EMOS combined 00Z Miami (rolling 45d)",
         "paper_model_source": "EMOS combined 00Z Miami (rolling 45d)",
         "live_model_source_tag": "EMOS combined 00Z Miami (rolling 45d) [LIVE]",
@@ -310,10 +319,13 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
         today, dtime(cfg["decision_hour"], cfg["decision_minute"]), tzinfo=timezone.utc,
     )
 
+    models_list = cfg.get("models", MODELS_LIST_DEFAULT)
+    emos_model = cfg.get("emos_model", "combined")
+
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM forecasts WHERE station_id=%s AND model=ANY(%s) AND init_time=%s LIMIT 1",
-            (city, MODELS_LIST, init_time),
+            (city, models_list, init_time),
         )
         if cur.fetchone() is None:
             print(f"  no forecast for init {init_time.isoformat()}; skipping")
@@ -321,7 +333,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
 
     try:
         ensemble_values = compute_combined_daily_highs(
-            init_time, today, conn, station_id=city, models=MODELS_LIST,
+            init_time, today, conn, station_id=city, models=models_list,
         )
     except Exception as e:
         print(f"  ensemble computation failed: {e}")
@@ -333,7 +345,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
     ensemble_std = statistics.stdev(ensemble_values)
 
     emos = fit_emos_rolling(today, conn, window_days=WINDOW_DAYS, station_id=city,
-                            model="combined", init_hour=INIT_HOUR)
+                            model=emos_model, init_hour=INIT_HOUR)
     if emos is None:
         print(f"  EMOS unfittable; skipping")
         return []
