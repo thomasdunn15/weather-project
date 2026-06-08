@@ -46,6 +46,8 @@ def _load_asset(name: str) -> str:
 def _build_html(payload: dict) -> str:
     css = _load_asset("styles.css")
     components_js = _load_asset("components.jsx")
+    # backtest-tab.jsx references EdgeCell which lives in live-tab.jsx — must include both
+    live_tab_js = _load_asset("live-tab.jsx")
     backtest_js = _load_asset("backtest-tab.jsx")
     return f"""<!doctype html>
 <html><head>
@@ -79,16 +81,11 @@ window.DEFAULT_CITY = {json.dumps(payload.get('cities', ['KORD'])[0])};
 <script type="text/babel" data-presets="env,react">
 {components_js}
 
+{live_tab_js}
+
 {backtest_js}
 
-// Wrapper that respects the city the Python layer loaded
-function BacktestWithCity() {{
-  // Force the React BacktestTab's initial cityCode to match what Python loaded.
-  // BacktestTab uses useState("KORD") internally; instead we mount a copy that
-  // uses window.DEFAULT_CITY as the seed.
-  return <window.BacktestTab key={{window.DEFAULT_CITY}} />;
-}}
-ReactDOM.createRoot(document.getElementById("root")).render(<BacktestWithCity />);
+ReactDOM.createRoot(document.getElementById("root")).render(<window.BacktestTab />);
 </script>
 </body></html>
 """
