@@ -1460,33 +1460,11 @@ with tab_live:
 # ---------------------------------------------------------------------
 with tab_backtest:
     # Redesigned Backtest tab (matches design_handoff/backtest-tab.jsx).
+    # All controls live inside the React panel itself (Platform/City/Target date
+    # at top, plus sizing/edge/exec/depth in the P&L sim section). Streamlit
+    # just renders the embed with sensible defaults from Python.
     from backtest_dashboard_renderer import render_backtest_tab as _render_redesigned_backtest
-
-    # A small Streamlit control row at the top picks which city's data we
-    # load into the React panel. The React side has its OWN sim controls
-    # (sizing/exec/depth/edge) but those don't re-trigger Python — they
-    # toggle the precomputed-per-sizing sim variants.
-    _bt_stations = all_stations()
-    _bt_kalshi = [s for s in _bt_stations if s.kalshi_series]
-    _bt_city_labels = {f"{s.city} ({s.station_id})": s.station_id for s in _bt_kalshi}
-    _bt_default = "Chicago (KORD)" if "Chicago (KORD)" in _bt_city_labels else next(iter(_bt_city_labels))
-    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns([2, 2, 1, 1])
-    with bt_col1:
-        _bt_chosen_label = st.selectbox(
-            "Backtest city",
-            options=list(_bt_city_labels.keys()),
-            index=list(_bt_city_labels.keys()).index(_bt_default),
-            key="backtest_city_select",
-        )
-    _bt_city = _bt_city_labels[_bt_chosen_label]
-    with bt_col2:
-        _bt_date = st.date_input("Target date", value=date.today(), key="backtest_date_select")
-    with bt_col3:
-        _bt_sizing = st.selectbox("Sizing", options=["amount", "unit", "kelly", "scaling"], key="backtest_sizing_select")
-    with bt_col4:
-        _bt_edge = st.selectbox("Edge filter", options=[0.10, 0.15, 0.20, 0.25, 0.30],
-                                index=3, format_func=lambda v: f"≥{int(v*100)}%", key="backtest_edge_select")
-    _render_redesigned_backtest(_bt_city, _bt_date, _bt_sizing, 50.0, 500, _bt_edge, height=2200)
+    _render_redesigned_backtest("KORD", date.today(), "amount", 50.0, 500, 0.10, height=2200)
 
     # Keep the legacy panel under an expander for diff/fallback
     with st.expander("Show legacy Backtest panel", expanded=False):
