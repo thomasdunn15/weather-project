@@ -1459,12 +1459,46 @@ with tab_live:
 # the Live Trading tab now.
 # ---------------------------------------------------------------------
 with tab_backtest:
-    # Redesigned Backtest tab (matches design_handoff/backtest-tab.jsx).
-    # All controls live inside the React panel itself (Platform/City/Target date
-    # at top, plus sizing/edge/exec/depth in the P&L sim section). Streamlit
-    # just renders the embed with sensible defaults from Python.
+    # Redesigned Backtest tab — bidirectional declare_component. The React
+    # panel's controls (Platform/City/Target date/Edge/sizing/exec/depth)
+    # round-trip through Streamlit so Python recomputes when params change.
     from backtest_dashboard_renderer import render_backtest_tab as _render_redesigned_backtest
-    _render_redesigned_backtest("KORD", date.today(), "amount", 50.0, 500, 0.10, height=2200)
+
+    # session_state keeps the current backtest selections across reruns so
+    # changing one control doesn't reset the others.
+    if "bt_state" not in st.session_state:
+        st.session_state.bt_state = {
+            "cityCode": "KORD",
+            "date": date.today().isoformat(),
+            "sizing": "amount",
+            "amount": 50.0,
+            "depth": 500,
+            "edge": 0.25,
+            "minEntry": 0,
+            "exec": "post_inside_spread",
+            "platform": "Kalshi",
+        }
+    s = st.session_state.bt_state
+    # Parse date back to a date object
+    try:
+        _bt_date = date.fromisoformat(s["date"]) if isinstance(s["date"], str) else s["date"]
+    except (TypeError, ValueError):
+        _bt_date = date.today()
+
+    result = _render_redesigned_backtest(
+        s["cityCode"], _bt_date, s["sizing"],
+        float(s["amount"]), int(s["depth"]), float(s["edge"]),
+        height=2400,
+    )
+    # Only round-trip Python when params that AFFECT the data payload change.
+    # Sim params (sizing/amount/depth/edge/exec/minEntry/bankroll) are recomputed
+    # in JS instantly — no Python rerun needed.
+    if isinstance(result, dict):
+        changed = any(s.get(k) != result.get(k) for k in ("cityCode", "date", "platform"))
+        if changed:
+            s.update({k: result.get(k, s.get(k)) for k in
+                      ("cityCode", "date", "platform")})
+            st.rerun()
 
     # Keep the legacy panel under an expander for diff/fallback
     with st.expander("Show legacy Backtest panel", expanded=False):

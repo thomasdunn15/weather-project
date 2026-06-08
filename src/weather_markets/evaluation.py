@@ -7,18 +7,21 @@ def contract_resolved_yes(observed_high: int, contract: dict) -> bool:
 
     """
     bracket_type = contract["bracket_type"]
-    
-    # Kalshi convention (verified empirically against fills):
-    #   - between [low, high) — INCLUSIVE low, EXCLUSIVE high
-    #     E.g., B85.5 = [85, 86): high=85→YES, high=86→NO
-    #   - greater_than > low  (i.e., low is exclusive: >low means at least low+1)
-    #   - less_than < high  (i.e., high is exclusive: <high means at most high-1)
+
+    # Kalshi convention (verified from raw_metadata.rules_primary on 2026-06-08):
+    #   - between [low, high] — INCLUSIVE on BOTH ends. The contract is named
+    #     B{(low+high)/2}, e.g., B78.5 covers strikes 78–79 inclusive, so a
+    #     reported high of 78 OR 79 resolves YES.
+    #   - greater_than > low   (low is exclusive: >low means at least low+1)
+    #   - less_than    < high  (high is exclusive: <high means at most high-1)
+    # The earlier exclusive-upper convention was a misread and produced false
+    # NO resolutions when high == strike_high (e.g., B78.5 with high=79).
     if bracket_type == "greater_than":
         return observed_high > contract["strike_low"]
     elif bracket_type == "less_than":
         return observed_high < contract["strike_high"]
     elif bracket_type == "between":
-        return contract["strike_low"] <= observed_high < contract["strike_high"]
+        return contract["strike_low"] <= observed_high <= contract["strike_high"]
     else:
         raise ValueError(f"Unknown bracket_type: {bracket_type!r}")
 

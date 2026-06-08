@@ -24,6 +24,7 @@ import statistics
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
+import streamlit as st
 import streamlit.components.v1 as st_components
 
 from weather_markets.db import get_connection
@@ -33,64 +34,27 @@ from weather_markets.aggregation import (
 )
 from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
 from weather_markets.evaluation import contract_resolved_yes
-from weather_markets.stations import get as get_station
+from weather_markets.stations import get as get_station, all_stations
 
 
-ASSETS_DIR = Path(__file__).parent / "assets" / "live_dashboard"
+COMPONENT_DIR = Path(__file__).parent / "assets" / "backtest_component"
+
+# Lazy-create the declared component (only on first use; module-level call
+# would run at import time even when the Backtest tab isn't open).
+_backtest_component = None
 
 
-def _load_asset(name: str) -> str:
-    return (ASSETS_DIR / name).read_text(encoding="utf-8")
+def _component():
+    global _backtest_component
+    if _backtest_component is None:
+        _backtest_component = st_components.declare_component(
+            "backtest_panel",
+            path=str(COMPONENT_DIR),
+        )
+    return _backtest_component
 
 
-def _build_html(payload: dict) -> str:
-    css = _load_asset("styles.css")
-    components_js = _load_asset("components.jsx")
-    # backtest-tab.jsx references EdgeCell which lives in live-tab.jsx — must include both
-    live_tab_js = _load_asset("live-tab.jsx")
-    backtest_js = _load_asset("backtest-tab.jsx")
-    return f"""<!doctype html>
-<html><head>
-<meta charset="utf-8" />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-{css}
-html, body {{ overflow-x: hidden; min-height: 100vh; }}
-#root:empty::before {{
-  content: "Loading backtest…";
-  display: block;
-  padding: 40px;
-  color: var(--text-lo);
-  font-family: var(--ui);
-  font-size: 12px;
-  text-align: center;
-}}
-</style>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body>
-<div id="root"></div>
-<script>
-window.BTDATA = {json.dumps(payload, default=str)};
-window.DEFAULT_CITY = {json.dumps(payload.get('cities', ['KORD'])[0])};
-</script>
-<script type="text/babel" data-presets="env,react">
-{components_js}
-
-{live_tab_js}
-
-{backtest_js}
-
-ReactDOM.createRoot(document.getElementById("root")).render(<window.BacktestTab />);
-</script>
-</body></html>
-"""
-
-
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_city_payload(
     city_code: str,
     selected_date: date,
@@ -99,7 +63,12 @@ def _fetch_city_payload(
     selected_depth: int = 500,
     selected_edge: float = 0.10,
 ) -> dict:
-    """Build BTDATA[city] from real sources. Falls back gracefully when data missing."""
+    """Build BTDATA[city] from real sources. Falls back gracefully when data missing.
+
+    @st.cache_data: 5-min TTL. Repeat (city, date, ...) is instant — only hits
+    DB on first call per cache key. Live prices update every 5 min anyway, so
+    this matches the natural data cadence.
+    """
     try:
         station = get_station(city_code)
         city_name = station.city
@@ -148,20 +117,58 @@ def _fetch_city_payload(
 
             # Contracts + paper-trade snapshot for this date
             contracts = fetch_contracts_for_date(selected_date, conn, station_id=city_code, series=station.kalshi_series)
+            ms_for_city = (f"EMOS combined 00Z {city_name} (rolling 45d)"
+                           if city_code != "KNYC" else "EMOS combined 00Z (rolling 45d)")
             with conn.cursor() as cur:
-                # Market mid per bracket (most recent snapshot)
+                # FROZEN market mid: if a paper_trade row exists, the cron has
+                # fired — use the snapshot at decision time so Edge by bracket
+                # doesn't keep moving with post-decision market drift.
+                frozen_market: dict = {}
+                cron_time = None
                 if contracts:
                     tickers = [c["ticker"] for c in contracts]
                     cur.execute(
-                        """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                           FROM prices WHERE ticker = ANY(%s) ORDER BY ticker, snapshot_at DESC""",
-                        (tickers,),
+                        """SELECT ticker, market_yes_bid, market_yes_ask, logged_at
+                           FROM paper_trades
+                           WHERE target_date=%s AND model_source=%s AND ticker = ANY(%s)""",
+                        (selected_date, ms_for_city, tickers),
                     )
-                    for tk, yb, ya in cur.fetchall():
+                    for tk, yb, ya, lt in cur.fetchall():
                         if yb is not None and ya is not None:
-                            bracket_market[tk] = (float(yb) + float(ya)) / 200.0
+                            frozen_market[tk] = (int(yb) + int(ya)) / 200.0
+                        if cron_time is None or (lt is not None and lt < cron_time):
+                            cron_time = lt
+                # For tickers not in paper_trades, pin to the snapshot AT cron
+                # time (NOT the latest). If cron hasn't fired today, use latest.
+                if contracts:
+                    missing = [c["ticker"] for c in contracts if c["ticker"] not in frozen_market]
+                    if missing:
+                        if cron_time is not None:
+                            cur.execute(
+                                """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                                   FROM prices
+                                   WHERE ticker = ANY(%s) AND snapshot_at <= %s
+                                   ORDER BY ticker, snapshot_at DESC""",
+                                (missing, cron_time),
+                            )
+                        else:
+                            cur.execute(
+                                """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                                   FROM prices WHERE ticker = ANY(%s)
+                                   ORDER BY ticker, snapshot_at DESC""",
+                                (missing,),
+                            )
+                        for tk, yb, ya in cur.fetchall():
+                            if yb is not None and ya is not None:
+                                bracket_market[tk] = (float(yb) + float(ya)) / 200.0
+                # Frozen prices win where present
+                bracket_market.update(frozen_market)
 
-                # Settled paper trades for the trade log + sim
+                # Settled paper trades for the trade log + sim.
+                # ASCENDING by date — required so the balance chart's x-axis
+                # walks chronologically left→right (oldest to newest). The
+                # React trade-by-trade table reverses this for display so
+                # the user sees newest-on-top.
                 cur.execute("""
                     SELECT pt.target_date, pt.ticker, pt.position, pt.entry_price_cents, pt.edge,
                            pt.model_prob_yes, pt.market_mid_prob,
@@ -174,7 +181,7 @@ def _fetch_city_payload(
                     WHERE pt.model_source = %s
                       AND pt.target_date <= %s
                       AND pt.target_date >= %s
-                    ORDER BY pt.target_date DESC
+                    ORDER BY pt.target_date ASC, pt.logged_at ASC
                 """, (
                     f"EMOS combined 00Z {city_name} (rolling 45d)" if city_code != "KNYC" else "EMOS combined 00Z (rolling 45d)",
                     selected_date,
@@ -194,6 +201,8 @@ def _fetch_city_payload(
         for c in sorted(contracts, key=lambda x: (x.get("strike_low") if x.get("strike_low") is not None else (x.get("strike_high") or 0) - 1000)):
             tk = c["ticker"]
             bt = c.get("bracket_type")
+            # Kalshi convention: between [low, high] inclusive (e.g., B78.5 covers 78–79).
+            # greater_than: > low → low+1 and above. less_than: < high → high-1 and below.
             if bt == "greater_than":
                 label = f"≥{int(c['strike_low']) + 1}°F"
                 lo, hi = int(c["strike_low"]), 99
@@ -201,8 +210,12 @@ def _fetch_city_payload(
                 label = f"≤{int(c['strike_high']) - 1}°F"
                 lo, hi = -99, int(c["strike_high"])
             else:
-                label = f"{int(c['strike_low'])}–{int(c['strike_high']) - 1}°F"
-                lo, hi = int(c["strike_low"]), int(c["strike_high"]) - 1
+                # Both strikes inclusive — show full range
+                if int(c["strike_low"]) == int(c["strike_high"]):
+                    label = f"{int(c['strike_low'])}°F"
+                else:
+                    label = f"{int(c['strike_low'])}–{int(c['strike_high'])}°F"
+                lo, hi = int(c["strike_low"]), int(c["strike_high"])
             mp = float(model_probs.get(tk, 0))
             mkt = float(bracket_market.get(tk, 0))
             if observed is not None:
@@ -217,8 +230,10 @@ def _fetch_city_payload(
     trades_payload: list[dict] = []
     sim_results: dict = {"unit": _empty_sim(), "amount": _empty_sim(), "kelly": _empty_sim(), "scaling": _empty_sim()}
     if settled_trades:
-        # Build trade history (most recent 200 for log display)
-        for r in settled_trades[:200]:
+        # Full trade history — passed to JS sim, so include EVERY field needed
+        # for re-running the sim client-side. JS recomputes when user changes
+        # sizing / edge / depth / amount / bankroll without a Python round-trip.
+        for r in settled_trades:
             (td, ticker, pos, entry, edge, mp, mkt, bid, ask, bt, sl, sh, high) = r
             bracket_label = _bracket_short(bt, sl, sh)
             if high is None:
@@ -229,24 +244,24 @@ def _fetch_city_payload(
                 yes_won = contract_resolved_yes(int(high), {"bracket_type": bt, "strike_low": sl, "strike_high": sh})
                 won = bool(yes_won) if pos == "BUY_YES" else not bool(yes_won)
                 pnl_per = (100 - int(entry)) if won else -int(entry)
-                pnl = round(pnl_per / 100, 2)  # 1 contract base; user can think in $ per contract
+                pnl = round(pnl_per / 100, 2)
                 fill_status = "filled"
             trades_payload.append({
-                "date": td.strftime("%m-%d"),
+                "date": td.strftime("%Y-%m-%d"),
                 "bracket": bracket_label,
                 "side": "YES" if pos == "BUY_YES" else "NO",
-                "modelP": round(float(mp), 3),
-                "mktP": round(float(mkt), 3),
-                "edge": round(float(edge), 3),
+                "pos": pos,                                  # raw position string for JS Kelly calc
+                "modelP": round(float(mp), 4),
+                "mktP": round(float(mkt), 4),
+                "edge": round(float(edge), 4),
                 "entry": int(entry),
+                "marketYesBid": int(bid) if bid is not None else None,
+                "marketYesAsk": int(ask) if ask is not None else None,
                 "qty": 1,
                 "fill": fill_status,
                 "won": won,
                 "pnl": pnl,
             })
-
-        # Approximate sim per sizing — minimal cost: just sum cumulative for each
-        # See backtest-data.js for the exact field expectations.
         sim_results = _compute_sims(settled_trades, selected_edge, selected_amount, selected_depth)
 
     # Strategy comparison (current single-variant only; multi-variant requires more data)
@@ -285,11 +300,14 @@ def _empty_sim() -> dict:
 
 
 def _bracket_short(bt, sl, sh) -> str:
+    """Inclusive-inclusive convention: between [low, high] = both bounds win."""
     if bt == "greater_than":
         return f"≥{int(sl) + 1}°F"
     if bt == "less_than":
         return f"≤{int(sh) - 1}°F"
-    return f"{int(sl)}–{int(sh) - 1}°F"
+    if int(sl) == int(sh):
+        return f"{int(sl)}°F"
+    return f"{int(sl)}–{int(sh)}°F"
 
 
 def _compute_sims(rows: list, edge_filter: float, amount_dollars: float, depth_cap: int) -> dict:
@@ -369,9 +387,71 @@ def _compute_sims(rows: list, edge_filter: float, amount_dollars: float, depth_c
     return out
 
 
-def render_backtest_tab(selected_city: str, selected_date: date, sizing: str, amount: float, depth: int, edge_filter: float, height: int = 2400):
-    """Render the redesigned Backtest tab into a Streamlit container."""
-    city_payload = _fetch_city_payload(selected_city, selected_date, sizing, amount, depth, edge_filter)
-    payload = {selected_city: city_payload, "cities": [selected_city]}
-    html = _build_html(payload)
-    st_components.html(html, height=height, scrolling=True)
+def render_backtest_tab(
+    selected_city: str,
+    selected_date: date,
+    sizing: str,
+    amount: float,
+    depth: int,
+    edge_filter: float,
+    height: int = 2400,
+    available_cities: list[str] | None = None,
+    key: str = "backtest_panel",
+):
+    """Render the redesigned Backtest tab via a bidirectional Streamlit component.
+
+    Returns a dict with the user's current selections from the React panel:
+      {platform, cityCode, date, sizing, edge, exec, depth, minEntry, amount}
+    or None on first render before the component reports back. The dashboard
+    layer should compare this dict to the previous render's selections; when
+    they differ, set session_state + st.rerun() so Python recomputes the
+    payload with the new params.
+    """
+    # Build the payload for ALL kalshi cities so the React city dropdown can
+    # switch instantly without a round-trip. Each city is cheap (~1-2 sec)
+    # because Streamlit caches the @cache_data wrapper.
+    if available_cities is None:
+        available_cities = [s.station_id for s in all_stations() if s.kalshi_series]
+    payload: dict = {"cities": available_cities}
+    for code in available_cities:
+        # Only deep-compute the selected city's data; placeholders for others.
+        # The React side hits the selected city's data first; if user switches,
+        # the onChange callback round-trips back to Python which computes that
+        # city in turn.
+        if code == selected_city:
+            payload[code] = _fetch_city_payload(code, selected_date, sizing, amount, depth, edge_filter)
+        else:
+            payload[code] = {
+                "code": code,
+                "city": get_station(code).city if code in [s.station_id for s in all_stations()] else code,
+                "date": selected_date.isoformat(),
+                "members": [], "nMembers": 0, "ensMean": 0, "ensSpread": 0,
+                "emosMu": 0, "emosSigma": 0, "observed": 0,
+                "brackets": [],
+                "sim": {"unit": _empty_sim(), "amount": _empty_sim(),
+                        "kelly": _empty_sim(), "scaling": _empty_sim()},
+                "trades": [], "strat": [],
+            }
+
+    # payloadKey forces React to remount the BacktestTab when Python pushes
+    # a fresh payload, so the new data flows through the initial-state hooks.
+    payload_key = f"{selected_city}_{selected_date.isoformat()}_{sizing}_{int(edge_filter*100)}_{int(amount)}_{int(depth)}"
+    initial_state = {
+        "platform": "Kalshi",
+        "cityCode": selected_city,
+        "date": selected_date.isoformat(),
+        "sizing": sizing,
+        "edge": edge_filter,
+        "amount": amount,
+        "depth": depth,
+        "exec": "post_inside_spread",
+        "minEntry": 0,
+    }
+    return _component()(
+        payload=payload,
+        payloadKey=payload_key,
+        initialState=initial_state,
+        key=key,
+        default=None,
+        height=height,
+    )
