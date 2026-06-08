@@ -119,6 +119,8 @@ function BalanceChart({ curve, height = 210 }) {
 
 /* ---------- forecast context bar (top) ---------- */
 function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date }) {
+  // Cities come from whatever BTDATA was loaded (data-driven, not hardcoded).
+  const availableCities = (window.BTDATA && window.BTDATA.cities) || [cityCode];
   return (
     <div className="panel">
       <div className="controls">
@@ -131,8 +133,11 @@ function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date }) {
         <div className="ctrl">
           <span className="cl">City</span>
           <select value={cityCode} onChange={e => setCityCode(e.target.value)}>
-            <option value="KORD">Chicago · KORD</option>
-            <option value="KMIA">Miami · KMIA</option>
+            {availableCities.map(code => {
+              const cdata = window.BTDATA[code] || {};
+              const label = (cdata.city || code) + " · " + code;
+              return <option key={code} value={code}>{label}</option>;
+            })}
           </select>
         </div>
         <div className="ctrl">
@@ -183,15 +188,19 @@ function BTMetric({ label, value, sub, tone }) {
 }
 
 function BacktestTab() {
+  const defaultCity = (window.BTDATA && window.BTDATA.cities && window.BTDATA.cities[0]) || "KORD";
   const [platform, setPlatform] = useStateB("Kalshi");
-  const [cityCode, setCityCode] = useStateB("KORD");
+  const [cityCode, setCityCode] = useStateB(defaultCity);
   const [sizing, setSizing] = useStateB("amount");
   const [exec, setExec] = useStateB("post_inside_spread");
   const [depth, setDepth] = useStateB(500);
   const [edge, setEdge] = useStateB(0.10);
   const [minEntry, setMinEntry] = useStateB(0);
   const [amount, setAmount] = useStateB(50);
-  const d = window.BTDATA[cityCode];
+  const d = window.BTDATA[cityCode] || window.BTDATA[defaultCity];
+  if (!d) {
+    return <div style={{ padding: 24, color: "var(--text-lo)" }}>No data for {cityCode}.</div>;
+  }
   const sim = d.sim[sizing];
 
   return (

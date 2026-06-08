@@ -250,16 +250,20 @@ def _get_live_data(cfg: dict) -> dict:
                 city_realized += cum_
                 city_today += td_
                 city_today_orders += int(tdo)
-        # Halt status
+        # Halt status — three layers: explicit is_active=False in config,
+        # halt file present, or aggregate halt
         halt_file = halt_dir / city_code
         agg_halt = halt_dir / "ALL"
-        is_halted = halt_file.exists() or agg_halt.exists()
+        is_config_halted = ccfg.get("is_active", True) is False
+        is_halted = is_config_halted or halt_file.exists() or agg_halt.exists()
         halt_note = None
         if is_halted:
             if agg_halt.exists():
                 halt_note = f"HALTED — halt/ALL present"
-            else:
+            elif halt_file.exists():
                 halt_note = f"HALTED — halt/{city_code} present"
+            elif is_config_halted:
+                halt_note = f"HALTED — cron disabled in live_trade.py CITY_CONFIG"
 
         sizing_label = "amount" if ccfg.get("sizing_mode") == "amount" else f"{ccfg.get('unit_contracts', '?')}u"
         stake_str = f"${ccfg['amount_dollars']:.0f}/trade" if ccfg.get("sizing_mode") == "amount" else sizing_label

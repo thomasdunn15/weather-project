@@ -55,15 +55,26 @@ st.markdown("""
     /* Remove iframe borders (the box around components.html embeds) */
     iframe { border: none !important; }
     [data-testid="stIFrame"] { border: none !important; padding: 0 !important; }
-    /* Tighten tab bar */
+    /* Tighten tab bar — give Live Trading + Backtest proper gap */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 0;
+        gap: 18px !important;
         padding-left: 18px;
+        background-color: transparent !important;
     }
-    /* Hide default Streamlit footer + hamburger so the design has the whole page */
+    .stTabs [data-baseweb="tab"] {
+        padding: 8px 4px !important;
+        background-color: transparent !important;
+    }
+    /* Streamlit's top header bar (where Deploy lives) — match dashboard bg */
+    [data-testid="stHeader"], header[data-testid="stHeader"] {
+        background-color: #14130e !important;
+    }
+    [data-testid="stToolbar"] { background-color: transparent !important; }
+    /* Hide default Streamlit footer */
     footer { display: none !important; }
-    /* Make the body background match the dark theme so any margins blend in */
-    [data-testid="stAppViewContainer"], .main, .stApp {
+    /* Make every Streamlit container surface match the dashboard bg */
+    [data-testid="stAppViewContainer"], .main, .stApp,
+    [data-testid="stMainBlockContainer"] {
         background-color: #14130e !important;
     }
     /* Reduce vertical gap between Streamlit elements */
@@ -1448,13 +1459,44 @@ with tab_live:
 # the Live Trading tab now.
 # ---------------------------------------------------------------------
 with tab_backtest:
-    st.title("Backtest / Forecast View")
-    st.markdown(
-        "Today's combined GEFS+ECMWF forecast vs current Kalshi prices. "
-        "Edge = model probability minus market mid. Large positive edge means "
-        "the model thinks YES is underpriced. **This is a diagnostic view — "
-        "actual live trading is in the Live Trading tab.**"
-    )
+    # Redesigned Backtest tab (matches design_handoff/backtest-tab.jsx).
+    from backtest_dashboard_renderer import render_backtest_tab as _render_redesigned_backtest
+
+    # A small Streamlit control row at the top picks which city's data we
+    # load into the React panel. The React side has its OWN sim controls
+    # (sizing/exec/depth/edge) but those don't re-trigger Python — they
+    # toggle the precomputed-per-sizing sim variants.
+    _bt_stations = all_stations()
+    _bt_kalshi = [s for s in _bt_stations if s.kalshi_series]
+    _bt_city_labels = {f"{s.city} ({s.station_id})": s.station_id for s in _bt_kalshi}
+    _bt_default = "Chicago (KORD)" if "Chicago (KORD)" in _bt_city_labels else next(iter(_bt_city_labels))
+    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns([2, 2, 1, 1])
+    with bt_col1:
+        _bt_chosen_label = st.selectbox(
+            "Backtest city",
+            options=list(_bt_city_labels.keys()),
+            index=list(_bt_city_labels.keys()).index(_bt_default),
+            key="backtest_city_select",
+        )
+    _bt_city = _bt_city_labels[_bt_chosen_label]
+    with bt_col2:
+        _bt_date = st.date_input("Target date", value=date.today(), key="backtest_date_select")
+    with bt_col3:
+        _bt_sizing = st.selectbox("Sizing", options=["amount", "unit", "kelly", "scaling"], key="backtest_sizing_select")
+    with bt_col4:
+        _bt_edge = st.selectbox("Edge filter", options=[0.10, 0.15, 0.20, 0.25, 0.30],
+                                index=3, format_func=lambda v: f"≥{int(v*100)}%", key="backtest_edge_select")
+    _render_redesigned_backtest(_bt_city, _bt_date, _bt_sizing, 50.0, 500, _bt_edge, height=2200)
+
+    # Keep the legacy panel under an expander for diff/fallback
+    with st.expander("Show legacy Backtest panel", expanded=False):
+        st.title("Backtest / Forecast View (legacy)")
+        st.markdown(
+            "Today's combined GEFS+ECMWF forecast vs current Kalshi prices. "
+            "Edge = model probability minus market mid. Large positive edge means "
+            "the model thinks YES is underpriced. **This is a diagnostic view — "
+            "actual live trading is in the Live Trading tab.**"
+        )
 
     # Platform + City selectors drive station/series for the WHOLE tab.
     # Platform first: Kalshi vs Polymarket. Each platform has different cities

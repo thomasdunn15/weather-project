@@ -90,6 +90,7 @@ CITY_CONFIG = {
         "daily_loss_limit_dollars":    150.0,   # UP from $75 (matches 3 × $50)
         "cumulative_kill_dollars":     500.0,   # UP from $200 (more runway at higher sizing)
         "max_open_contracts":         5000,
+        "is_active": True,                      # dashboard status indicator
     },
     "KMIA": {
         "city_name": "Miami",
@@ -108,6 +109,7 @@ CITY_CONFIG = {
         "daily_loss_limit_dollars":    500.0,
         "cumulative_kill_dollars":    1000.0,
         "max_open_contracts":         5000,
+        "is_active": False,                     # HALTED — cron commented out, recent paper edge -0.49 t-stat
     },
 }
 
