@@ -1682,6 +1682,26 @@ with tab_backtest:
                 }
     n_frozen = len(paper_snapshot)
 
+    # Fallback for contracts WITHOUT a frozen snapshot yet: pull latest live
+    # prices so Market P / Edge / Signal update in real time before the cron
+    # fires at 14:45 UTC. After cron, the paper_snapshot above takes over and
+    # the values are LOCKED at decision time (so the user sees what was true
+    # when the trade was entered, not chasing post-decision price movement).
+    live_prices: dict[str, dict] = {}
+    if contracts:
+        with get_connection() as _lconn, _lconn.cursor() as _lcur:
+            _lcur.execute(
+                """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
+                   FROM prices
+                   WHERE ticker = ANY(%s)
+                   ORDER BY ticker, snapshot_at DESC""",
+                ([c["ticker"] for c in contracts],),
+            )
+            for tk, yb, ya, sa in _lcur.fetchall():
+                if yb is not None and ya is not None:
+                    mid = (yb + ya) / 200.0
+                    live_prices[tk] = {"market_mid": mid, "yes_bid": yb, "yes_ask": ya, "snap_at": sa}
+
     def range_label(c):
         if c["bracket_type"] == "greater_than":
             return f">{c['strike_low']}°"
@@ -1705,13 +1725,23 @@ with tab_backtest:
         # whole point is to show what was true AT TRADE ENTRY.
         snap = paper_snapshot.get(ticker)
         if snap is not None:
+            # FROZEN at decision time (paper_trades / live_trades snapshot)
             m_prob = snap["model_p"]
             mkt = snap["market_mid"]
             edge = snap["edge"]
+            is_live_pre_decision = False
+        elif live_prices.get(ticker) and (emos_probs.get(ticker) or raw_probs.get(ticker)):
+            # LIVE pre-decision: market prices update in real time, edge computed
+            # against current EMOS (or raw) model probability
+            m_prob = emos_probs.get(ticker) or raw_probs.get(ticker)
+            mkt = live_prices[ticker]["market_mid"]
+            edge = m_prob - mkt
+            is_live_pre_decision = True
         else:
             m_prob = None
             mkt = None
             edge = None
+            is_live_pre_decision = False
 
         if edge is None:
             signal = "—"
@@ -1761,17 +1791,24 @@ with tab_backtest:
     )
     st.dataframe(styled, width='stretch', hide_index=True)
 
+    n_live = sum(1 for c in contracts if c["ticker"] in live_prices and c["ticker"] not in paper_snapshot)
     if n_frozen > 0:
         edge_basis = (
             f"Market P / Edge / Signal are frozen at the 14:45 UTC paper-trade snapshot "
             f"({n_frozen} of {len(contracts)} brackets had a logged signal). "
-            "Brackets without a logged signal show '—' (|edge| was < 10% at decision time, "
-            "or cron hasn't fired yet today)."
+            "Brackets without a logged signal show live current prices "
+            "(updating every ~5min) until cron locks them at 14:45 UTC."
+        )
+    elif n_live > 0:
+        edge_basis = (
+            f"LIVE pre-decision view ({n_live} brackets have live prices). "
+            "Market P / Edge update every ~5min until 14:45 UTC cron fires; "
+            "then values lock at the decision snapshot."
         )
     else:
         edge_basis = (
-            "No paper-trade signals logged for this day yet (cron fires at 14:45 UTC). "
-            "Market P / Edge / Signal columns will populate after the cron run."
+            "No price snapshots yet today. Market P / Edge / Signal will populate "
+            "as soon as Kalshi prices come in (every 5min cron)."
         )
     st.caption(
         f"Signal source: {model_choice}. Flagging when |edge| ≥ {edge_threshold:.0%}. "
