@@ -40,6 +40,37 @@ st.set_page_config(
     layout="wide",
 )
 
+# Strip Streamlit's default chrome so the redesigned dashboard fills the viewport
+# edge-to-edge with no visible iframe border or container padding.
+st.markdown("""
+<style>
+    /* Kill all padding/margin in main container, go truly full-width */
+    .main .block-container {
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+        max-width: 100% !important;
+    }
+    /* Remove iframe borders (the box around components.html embeds) */
+    iframe { border: none !important; }
+    [data-testid="stIFrame"] { border: none !important; padding: 0 !important; }
+    /* Tighten tab bar */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        padding-left: 18px;
+    }
+    /* Hide default Streamlit footer + hamburger so the design has the whole page */
+    footer { display: none !important; }
+    /* Make the body background match the dark theme so any margins blend in */
+    [data-testid="stAppViewContainer"], .main, .stApp {
+        background-color: #14130e !important;
+    }
+    /* Reduce vertical gap between Streamlit elements */
+    div[data-testid="stVerticalBlock"] > div { gap: 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # =====================================================================
 # SHARED DATA LAYER (cached) — defined above the tabs so both can use it
