@@ -50,12 +50,27 @@ def reconcile_one(conn, row) -> dict:
     settlement = "yes" if resolved_yes else "no"
     won = (side == settlement)
 
-    # P&L per contract: payoff - fill_price (already paid)
-    # If won: payoff is 100¢ per contract, we paid fill_price, profit = 100 - fill_price
-    # If lost: payoff is 0¢, profit = -fill_price
-    per_contract_pnl = (100 - int(fill_price_cents)) if won else -int(fill_price_cents)
-    fee_per_contract = kalshi_fee_cents(int(fill_price_cents))
-    realized_pnl_cents = (per_contract_pnl - fee_per_contract) * int(count)
+    # Kalshi stores fill_price in YES-side cents (VWAP after monitor_fills fix).
+    # What we actually paid depends on which side we bought:
+    #   - BUY_YES at fill X:  paid X per contract
+    #   - BUY_NO at fill X:   paid (100 - X) per contract (the NO-side equiv)
+    # P&L per contract: payoff - paid. Won = $1 payoff, lost = $0.
+    if side == "yes":
+        paid_per_contract = int(fill_price_cents)
+    else:  # "no"
+        paid_per_contract = 100 - int(fill_price_cents)
+    per_contract_pnl = (100 - paid_per_contract) if won else -paid_per_contract
+
+    # Prefer kalshi_fee_cents already stored (actual fees from Kalshi fills).
+    # Fall back to formula only if monitor_fills hasn't populated it yet.
+    with conn.cursor() as cur:
+        cur.execute("SELECT kalshi_fee_cents FROM live_trades WHERE id=%s", (id_,))
+        stored_fee = cur.fetchone()[0]
+    if stored_fee is not None:
+        total_fee_cents = int(stored_fee)
+    else:
+        total_fee_cents = kalshi_fee_cents(paid_per_contract) * int(count)
+    realized_pnl_cents = per_contract_pnl * int(count) - total_fee_cents
 
     with conn.cursor() as cur:
         cur.execute(
@@ -64,10 +79,10 @@ def reconcile_one(conn, row) -> dict:
             SET settlement = %s,
                 settlement_time = NOW(),
                 realized_pnl_cents = %s,
-                kalshi_fee_cents = %s
+                kalshi_fee_cents = COALESCE(kalshi_fee_cents, %s)
             WHERE id = %s AND settlement IS NULL
             """,
-            (settlement, realized_pnl_cents, fee_per_contract * int(count), id_),
+            (settlement, realized_pnl_cents, total_fee_cents, id_),
         )
     return {"id": id_, "status": "settled",
             "settlement": settlement, "won": won,
@@ -147,7 +162,7 @@ def main() -> int:
                        c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
                 FROM live_trades lt
                 JOIN contracts c ON c.ticker = lt.ticker
-                LEFT JOIN observations o ON o.date = lt.target_date AND o.station_id = 'KNYC'
+                LEFT JOIN observations o ON o.date = lt.target_date AND o.station_id = c.station_id
                 WHERE lt.fill_status IN ('filled','partial')
                   AND lt.settlement IS NULL
                   AND lt.target_date < CURRENT_DATE

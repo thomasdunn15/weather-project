@@ -129,17 +129,27 @@ def main() -> None:
                         help="Candlestick interval in minutes (default 60).")
     parser.add_argument("--window-days", type=int, default=7,
                         help="How many days before close_time to start fetching (default 7).")
+    parser.add_argument("--series", default=None,
+                        help="Optional series filter (e.g. KXLOWTCHI). Default: all series.")
     args = parser.parse_args()
 
-    # Get contracts in date range
+    # Get contracts in date range, optionally filtered to a series.
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT ticker, series, expiration_time, last_trading_time
-                FROM contracts
-                WHERE target_date BETWEEN %s AND %s
-                ORDER BY target_date, ticker
-            """, (args.start_date, args.end_date))
+            if args.series:
+                cur.execute("""
+                    SELECT ticker, series, expiration_time, last_trading_time
+                    FROM contracts
+                    WHERE target_date BETWEEN %s AND %s AND series = %s
+                    ORDER BY target_date, ticker
+                """, (args.start_date, args.end_date, args.series))
+            else:
+                cur.execute("""
+                    SELECT ticker, series, expiration_time, last_trading_time
+                    FROM contracts
+                    WHERE target_date BETWEEN %s AND %s
+                    ORDER BY target_date, ticker
+                """, (args.start_date, args.end_date))
             contracts = cur.fetchall()
 
     print(f"Backfilling prices for {len(contracts)} contracts ({args.start_date} → {args.end_date})")

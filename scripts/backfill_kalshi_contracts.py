@@ -139,9 +139,14 @@ def main() -> None:
     args = parser.parse_args()
 
     # Look up the station_id that corresponds to this series (from the registry).
-    # Falls back to KNYC if the series isn't in the registry yet.
+    # Falls back to KNYC if the series isn't in the registry yet. Checks both
+    # the daily-HIGH and daily-LOW series for each station.
     from weather_markets.stations import all_stations
-    series_to_station = {s.kalshi_series: s.station_id for s in all_stations()}
+    series_to_station = {}
+    for s in all_stations():
+        series_to_station[s.kalshi_series] = s.station_id
+        if hasattr(s, "kalshi_series_low"):
+            series_to_station[s.kalshi_series_low] = s.station_id
     station_id_for_series = series_to_station.get(args.series, "KNYC")
 
     print(f"Discovering {args.series} contracts with target_date in [{args.start_date}, {args.end_date}]")

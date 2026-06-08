@@ -608,10 +608,21 @@ def _live_db_state() -> dict:
             "today_pnl_cents": int(agg_today),
         }
 
-        # Per-city
+        # Per-city — use a wildcard pattern by city name so a model-source
+        # change (e.g., combined -> combined_hrrr) doesn't orphan prior trades
+        # from the per-city tile. Pattern matches any live source containing
+        # the city name with [LIVE] suffix.
         for city in cfg["CITY_CONFIG"]:
-            tag = cfg["CITY_CONFIG"][city]["live_model_source_tag"]
-            out["per_city"][city] = _city_query(cur, tag)
+            city_name = cfg["CITY_CONFIG"][city]["city_name"]
+            # Special case for NYC: legacy tag doesn't have city in the string
+            if city == "KNYC":
+                pattern = "%NYC%[LIVE]%"
+                # Fallback if old tags don't have "NYC" — also try the legacy "EMOS combined 00Z (rolling 45d) [LIVE]"
+                # which has no city name
+                out["per_city"][city] = _city_query(cur, "EMOS combined 00Z (rolling 45d) [LIVE]")
+            else:
+                pattern = f"%{city_name}%[LIVE]%"
+                out["per_city"][city] = _city_query(cur, pattern)
 
         # Daily P&L for chart
         cur.execute("""

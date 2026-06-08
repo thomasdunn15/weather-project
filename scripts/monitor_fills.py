@@ -34,6 +34,43 @@ KALSHI_STATUS_MAP = {
 }
 
 
+def fetch_vwap_and_fees(client: KalshiClient, ticker: str, kalshi_order_id: str, side: str) -> tuple[int | None, int | None, int]:
+    """Pull fills for this order, compute VWAP in YES-equivalent cents + total fees in cents.
+
+    Returns (vwap_yes_cents, total_fees_cents, filled_count). All None/0 if no fills found.
+
+    Why: the order endpoint returns the LIMIT price, not the actual avg fill price.
+    Kalshi often fills at better prices than our limit (especially with partial
+    crosses through the book). Storing the limit price systematically overstates
+    cost on profitable fills.
+    """
+    try:
+        fills_resp = client.get_fills(ticker=ticker, limit=200)
+    except Exception:
+        return None, None, 0
+    all_fills = fills_resp.get("fills", [])
+    # Filter to fills for this specific order
+    my_fills = [f for f in all_fills if f.get("order_id") == kalshi_order_id and f.get("side") == side]
+    if not my_fills:
+        return None, None, 0
+    total_count = 0.0
+    total_cost = 0.0
+    total_fees = 0.0
+    for f in my_fills:
+        cnt = float(f.get("count_fp", 0))
+        price_key = "yes_price_dollars" if side == "yes" else "no_price_dollars"
+        price = float(f.get(price_key, 0))
+        total_count += cnt
+        total_cost += cnt * price
+        total_fees += float(f.get("fee_cost", 0))
+    if total_count < 1:
+        return None, None, 0
+    vwap = (total_cost / total_count) * 100  # cents on the side we bought
+    # Convert NO-side VWAP to YES-equivalent for consistency in storage
+    vwap_yes_cents = int(round(vwap if side == "yes" else 100 - vwap))
+    return vwap_yes_cents, int(round(total_fees * 100)), int(total_count)
+
+
 def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -> str:
     """Update one pending row. Returns 'filled', 'cancelled', 'still_pending', or 'error:<msg>'."""
     id_, kalshi_order_id, ticker, original_count = row
@@ -51,13 +88,21 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
     order = resp.get("order", resp)
     kstatus = order.get("status", "").lower()
 
-    # Determine our mapped status + extract fill info
-    # Kalshi orders endpoint returns _fp counts and _dollars prices.
-    fill_price_cents = parse_dollars_to_cents(order, "yes_price_dollars") or \
-                       parse_dollars_to_cents(order, "no_price_dollars")
-    initial = parse_count(order, "initial_count_fp")
-    remaining = parse_count(order, "remaining_count_fp")
-    filled_qty = max(0, initial - remaining)
+    # Look up our side from the live_trades row so we can VWAP correctly.
+    with conn.cursor() as cur:
+        cur.execute("SELECT side FROM live_trades WHERE id=%s", (id_,))
+        side = cur.fetchone()[0]
+
+    # Get VWAP from actual fills (limit price would overstate cost when filled
+    # at better than limit, distorting downstream P&L reconciliation).
+    vwap_yes_cents, fees_cents, filled_qty = fetch_vwap_and_fees(client, ticker, kalshi_order_id, side)
+    # Fall back to order limit price if no fills found (shouldn't happen for executed)
+    if vwap_yes_cents is None:
+        vwap_yes_cents = parse_dollars_to_cents(order, "yes_price_dollars") or \
+                         parse_dollars_to_cents(order, "no_price_dollars")
+        initial = parse_count(order, "initial_count_fp")
+        remaining = parse_count(order, "remaining_count_fp")
+        filled_qty = max(0, initial - remaining)
 
     if kstatus == "executed":
         with conn.cursor() as cur:
@@ -66,10 +111,11 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
                 SET fill_status = 'filled',
                     fill_price_cents = %s,
                     fill_count = %s,
+                    kalshi_fee_cents = %s,
                     fill_time = NOW()
                 WHERE id = %s
-            """, (fill_price_cents or None, filled_qty, id_))
-        return f"filled ({filled_qty} @ {fill_price_cents}¢)"
+            """, (vwap_yes_cents or None, filled_qty, fees_cents, id_))
+        return f"filled ({filled_qty} @ {vwap_yes_cents}¢ YES-eq, fees ${(fees_cents or 0)/100:.2f})"
 
     if kstatus == "canceled":
         if filled_qty > 0:
@@ -79,10 +125,11 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
                     SET fill_status = 'partial',
                         fill_price_cents = %s,
                         fill_count = %s,
+                        kalshi_fee_cents = %s,
                         fill_time = NOW()
                     WHERE id = %s
-                """, (fill_price_cents or None, filled_qty, id_))
-            return f"partial ({filled_qty} @ {fill_price_cents}¢)"
+                """, (vwap_yes_cents or None, filled_qty, fees_cents, id_))
+            return f"partial ({filled_qty} @ {vwap_yes_cents}¢ YES-eq, fees ${(fees_cents or 0)/100:.2f})"
         else:
             with conn.cursor() as cur:
                 cur.execute("UPDATE live_trades SET fill_status='cancelled' WHERE id=%s", (id_,))
