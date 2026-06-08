@@ -6,6 +6,8 @@ from weather_markets.stations import all_stations
 
 def main() -> None:
     for station in all_stations():
+        if not station.kalshi_series:
+            continue  # KMDW, KSFO — Polymarket-only stations have no Kalshi market
         print(f"--- {station.station_id} / {station.kalshi_series} ({station.city}) ---")
         try:
             result = discover_kalshi_contracts(

@@ -59,12 +59,19 @@ INIT_HOUR = 0          # use 00Z runs — published before market open
 MODEL = "combined"     # GEFS + IFS at 00Z
 
 
-def model_source_for(station: Station) -> str:
-    """The model_source string for this station, matching the backfill naming."""
+def model_source_for(station: Station, platform: str = "kalshi") -> str:
+    """The model_source string for this station, matching the backfill naming.
+    platform='polymarket' adds a 'POLYMARKET' tag so dashboard filter can find it.
+    """
     if station.station_id == "KNYC":
-        # NYC was the original, so its source string has no city tag.
-        return "EMOS combined 00Z (rolling 45d)"
-    return f"EMOS combined 00Z {station.city} (rolling 45d)"
+        base = "EMOS combined 00Z (rolling 45d)"
+    else:
+        base = f"EMOS combined 00Z {station.city} (rolling 45d)"
+    if platform == "polymarket":
+        # Insert POLYMARKET tag before the closing paren so the dashboard regex
+        # can find it. Format: "EMOS combined 00Z {city} POLYMARKET (rolling 45d)"
+        return base.replace(" (rolling", " POLYMARKET (rolling")
+    return base
 
 
 def min_entry_price_for(station: Station) -> int:
@@ -106,13 +113,30 @@ def log_for_station(
     snapshot_cutoff: datetime,
     as_of: datetime | None,
     conn,
+    platform: str = "kalshi",
+    series: str | None = None,
 ) -> None:
     """Run paper-trade logic for one station. Prints a per-station summary.
 
+    platform: 'kalshi' (default) or 'polymarket' — selects which contracts to evaluate.
+    series:   optional override for the contract series (defaults to station's kalshi_series
+              for kalshi, or polymarket series for polymarket).
+
     Any "skip" condition (missing forecast, no contracts, EMOS fit fails) is
     logged and returns without raising — other stations continue uninterrupted."""
-    model_source = model_source_for(station)
+    model_source = model_source_for(station, platform=platform)
     min_entry = min_entry_price_for(station)
+    # Default series per platform if not overridden
+    if series is None:
+        if platform == "polymarket":
+            POLY_SERIES = {
+                "KMDW": "tc-temp-mdwhigh", "KNYC": "tc-temp-nychigh",
+                "KMIA": "tc-temp-miahigh", "KLAX": "tc-temp-laxhigh",
+                "KSFO": "tc-temp-sfohigh",
+            }
+            series = POLY_SERIES.get(station.station_id, "")
+        else:
+            series = station.kalshi_series
 
     print(f"\n--- {station.station_id} ({station.city}) -> {model_source!r}, entry>={min_entry}c ---")
 
@@ -162,7 +186,8 @@ def log_for_station(
     emos_sigma = math.sqrt(emos_var)
 
     contracts = fetch_contracts_for_date(
-        today, conn, station_id=station.station_id, series=station.kalshi_series,
+        today, conn, station_id=station.station_id, series=series,
+        platform=platform,
     )
     if not contracts:
         print(f"  no contracts found for {today}. Skipping.")
@@ -250,6 +275,17 @@ def main() -> None:
         help="ISO timestamp to use as the price-snapshot cutoff (e.g., '2026-05-27T14:45:00+00:00'). "
              "Used for recovering missed cron runs. Defaults to current time.",
     )
+    parser.add_argument(
+        "--platform",
+        choices=["kalshi", "polymarket", "both"],
+        default="kalshi",
+        help="Which platform's contracts to log paper trades against. 'both' iterates both.",
+    )
+    parser.add_argument(
+        "--station",
+        default=None,
+        help="Limit to a single station_id (e.g., KMDW). Defaults to all stations.",
+    )
     args = parser.parse_args()
 
     logged_at = datetime.now(tz=timezone.utc)
@@ -257,19 +293,29 @@ def main() -> None:
     today = snapshot_cutoff.date()
     init_time = datetime(today.year, today.month, today.day, INIT_HOUR, 0, tzinfo=timezone.utc)
 
-    print(f"Paper-trade log for {today} (logged_at={logged_at.isoformat()})")
+    print(f"Paper-trade log for {today} (logged_at={logged_at.isoformat()}, platform={args.platform})")
     if args.as_of is not None:
         print(f"  as-of recovery: prices and trade-decision moment set to {snapshot_cutoff.isoformat()}")
 
+    platforms = ["kalshi", "polymarket"] if args.platform == "both" else [args.platform]
+    stations = [s for s in all_stations() if args.station is None or s.station_id == args.station]
+
     with get_connection() as conn:
-        for station in all_stations():
-            try:
-                log_for_station(
-                    station, today, init_time, logged_at, snapshot_cutoff, args.as_of, conn,
-                )
-            except Exception as e:
-                # One station's failure must not abort the others.
-                print(f"  {station.station_id} raised: {type(e).__name__}: {e}")
+        for platform in platforms:
+            for station in stations:
+                # Skip stations that don't have a market on this platform
+                if platform == "kalshi" and not station.kalshi_series:
+                    continue
+                if platform == "polymarket" and station.station_id not in {"KMDW","KNYC","KMIA","KLAX","KSFO"}:
+                    continue
+                try:
+                    log_for_station(
+                        station, today, init_time, logged_at, snapshot_cutoff, args.as_of, conn,
+                        platform=platform,
+                    )
+                except Exception as e:
+                    # One station's failure must not abort the others.
+                    print(f"  {station.station_id} [{platform}] raised: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
