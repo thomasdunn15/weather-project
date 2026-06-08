@@ -1394,8 +1394,21 @@ def _live_trading_panel():
 
 
 with tab_live:
-    st.title("Live Trading")
-    _live_trading_panel()
+    # Redesigned Live Trading tab (Bloomberg-terminal aesthetic).
+    # Renders the React prototype via components.html with live data from DB+Kalshi.
+    from live_dashboard_renderer import render_live_tab as _render_redesigned_live
+
+    @st.fragment(run_every=15)
+    def _live_trading_fragment():
+        cfg = _live_trade_config()
+        _render_redesigned_live(cfg, height=2600)
+
+    _live_trading_fragment()
+
+    # Legacy panel kept as a fallback under an expander in case the
+    # redesigned view has data issues — easy to diff against the old one.
+    with st.expander("Show legacy Live Trading panel", expanded=False):
+        _live_trading_panel()
 
 
 # ---------------------------------------------------------------------
