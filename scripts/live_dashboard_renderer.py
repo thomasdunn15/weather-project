@@ -46,6 +46,10 @@ def _build_html(dash_payload: dict) -> str:
     live_tab_js = _load_asset("live-tab.jsx")
     # The countdown is computed in-browser per second. We pass nextCron.inMin
     # and let the React clock tick from there.
+    # CRITICAL: all 3 babel scripts must be ONE script tag, because babel
+    # transpiles each <script type="text/babel"> async and ordering isn't
+    # guaranteed. Inlining sequentially in a single block guarantees the
+    # components-then-live-tab-then-app order React needs.
     return f"""<!doctype html>
 <html><head>
 <meta charset="utf-8" />
@@ -56,7 +60,17 @@ def _build_html(dash_payload: dict) -> str:
 {css}
 /* Streamlit embed tweak: kill the scroll on the outer body since
    components.html scrolls itself. */
-html, body {{ overflow-x: hidden; }}
+html, body {{ overflow-x: hidden; min-height: 100vh; }}
+/* Faint visible message while React loads, so we don't show a blank box */
+#root:empty::before {{
+  content: "Loading dashboard…";
+  display: block;
+  padding: 40px;
+  color: var(--text-lo);
+  font-family: var(--ui);
+  font-size: 12px;
+  text-align: center;
+}}
 </style>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -67,23 +81,22 @@ html, body {{ overflow-x: hidden; }}
 <script>
 window.DASH_DATA = {json.dumps(dash_payload, default=str)};
 </script>
-<script type="text/babel" data-presets="env,react" data-type="module">
-{components_js}
-</script>
-<script type="text/babel" data-presets="env,react" data-type="module">
-{live_tab_js}
-</script>
 <script type="text/babel" data-presets="env,react">
-// Tiny shell that ticks every second so countdown / "Ns ago" stay live.
-const {{ useState, useEffect }} = React;
+// ===== components.jsx =====
+{components_js}
+
+// ===== live-tab.jsx =====
+{live_tab_js}
+
+// ===== App shell =====
+const {{ useState: __useState, useEffect: __useEffect }} = React;
 function App() {{
   const d = window.DASH_DATA;
-  const [tick, setTick] = useState(0);
-  useEffect(() => {{
+  const [tick, setTick] = __useState(0);
+  __useEffect(() => {{
     const t = setInterval(() => setTick(x => x + 1), 1000);
     return () => clearInterval(t);
   }}, []);
-  // Build a "X min Y sec" countdown string from inMin (decremented by tick).
   function fmt() {{
     if (d.nextCron.inMin === null || d.nextCron.inMin === undefined) return "—";
     const totalSec = Math.max(0, d.nextCron.inMin * 60 - tick);
