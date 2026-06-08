@@ -41,6 +41,12 @@
 # Kalshi price snapshots: every 5 minutes
 */5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_kalshi_prices.py >> /var/log/weather/snapshot.log 2>&1
 
+# Polymarket US price snapshots: every 5 minutes (offset by 2 min to spread API load)
+# Polymarket has NO historical price endpoint, so forward-snapshotting is the only way
+# to build price history for these markets. Pulls all active climate markets + recently
+# closed (last 7 days) for settlement_px on resolved contracts.
+2-59/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_polymarket_prices.py >> /var/log/weather/polymarket_snapshot.log 2>&1
+
 # Clean up Herbie GRIB caches every hour — purge anything older than 60 min.
 # Hourly cadence (vs old daily) and short retention (vs old +3 days) are
 # required because backfills can churn through >50 GB/day per worker, faster

@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     kalshi_key_path: Path | None = None
     kalshi_api_base: str = "https://demo-api.kalshi.co/trade-api/v2"
 
+    # Polymarket US API (polymarket.us, operated by QCX LLC, CFTC-regulated).
+    # Auth: Ed25519 signing per docs.polymarket.us/api-reference/authentication.
+    polymarket_key_id: str | None = None
+    polymarket_secret: str | None = None  # base64-encoded Ed25519 private key
+
     model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

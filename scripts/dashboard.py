@@ -1412,21 +1412,57 @@ with tab_backtest:
         "actual live trading is in the Live Trading tab.**"
     )
 
-    # City selector drives station/series for the WHOLE tab: forecast view,
-    # edge by bracket, AND the downstream P&L simulation.
+    # Platform + City selectors drive station/series for the WHOLE tab.
+    # Platform first: Kalshi vs Polymarket. Each platform has different cities
+    # (Polymarket uses KMDW for Chicago, KSFO for SF; Kalshi uses KORD, no SF).
     _stations = all_stations()
-    _city_labels = {f"{s.city} ({s.station_id})": s.station_id for s in _stations}
-    _default_city = next(iter(_city_labels))  # KNYC sorts first
-    chosen_city_label = st.selectbox(
-        "City",
-        options=list(_city_labels.keys()),
-        index=0,
-        help="Switches the entire backtest tab — forecast, edge table, and P&L sim — "
-             "to the selected city's contracts, station, and EMOS calibration.",
-    )
+    KALSHI_STATIONS = [s for s in _stations if s.kalshi_series]  # has Kalshi market
+    POLYMARKET_STATIONS = [
+        # Polymarket US weather city codes verified in contracts table:
+        # mdwhigh=KMDW, nychigh=KNYC, miahigh=KMIA, laxhigh=KLAX, sfohigh=KSFO
+        get_station(sid) for sid in ["KMDW", "KNYC", "KMIA", "KLAX", "KSFO"]
+        if sid in {s.station_id for s in _stations}
+    ]
+
+    plat_col, city_col = st.columns([1, 2])
+    with plat_col:
+        selected_platform = st.radio(
+            "Platform",
+            options=["Kalshi", "Polymarket"],
+            index=0,
+            horizontal=True,
+            help="Kalshi: KORD/KMIA/etc. Polymarket: KMDW/KNYC/etc. "
+                 "Each platform has different settlement stations (e.g., Chicago = KORD on "
+                 "Kalshi vs KMDW on Polymarket — contracts are NOT fungible across platforms).",
+        )
+    platform_stations = KALSHI_STATIONS if selected_platform == "Kalshi" else POLYMARKET_STATIONS
+    with city_col:
+        _city_labels = {f"{s.city} ({s.station_id})": s.station_id for s in platform_stations}
+        if not _city_labels:
+            st.error(f"No cities configured for {selected_platform}.")
+            st.stop()
+        chosen_city_label = st.selectbox(
+            "City",
+            options=list(_city_labels.keys()),
+            index=0,
+            help="Switches the entire backtest tab — forecast, edge table, and P&L sim — "
+                 "to the selected city's contracts, station, and EMOS calibration.",
+        )
     selected_station_id = _city_labels[chosen_city_label]
     selected_station = get_station(selected_station_id)
-    selected_series = selected_station.kalshi_series
+    # For Kalshi we use station.kalshi_series. For Polymarket we use the
+    # tc-temp-{city}high series naming convention.
+    POLYMARKET_SERIES_MAP = {
+        "KMDW": "tc-temp-mdwhigh", "KNYC": "tc-temp-nychigh",
+        "KMIA": "tc-temp-miahigh", "KLAX": "tc-temp-laxhigh",
+        "KSFO": "tc-temp-sfohigh",
+    }
+    if selected_platform == "Kalshi":
+        selected_series = selected_station.kalshi_series
+        selected_platform_db = "kalshi"
+    else:
+        selected_series = POLYMARKET_SERIES_MAP.get(selected_station_id, "")
+        selected_platform_db = "polymarket"
 
     # Controls
     ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
@@ -1515,6 +1551,7 @@ with tab_backtest:
 
         contracts = fetch_contracts_for_date(
             trade_date, conn, station_id=selected_station_id, series=selected_series,
+            platform=selected_platform_db,
         )
         observed_high = fetch_observed_high(trade_date, conn, station_id=selected_station_id)
 
@@ -1833,20 +1870,26 @@ with tab_backtest:
         st.info(f"{n_total_all} paper trade(s) logged, none resolved yet. Simulation appears once observations land.")
     else:
         # --- Scope paper_trades to the city chosen at the top of the tab ----
-        # Filter model_sources to those belonging to the selected city. NYC's
-        # sources don't have a city tag in their name (legacy); everywhere else
-        # tags the city name in the source string ("Chicago", "Miami", etc.).
+        # Filter model_sources to those belonging to the selected city + platform.
+        # Platform tag convention: model_source contains 'POLYMARKET' for Polymarket-
+        # backfilled sources. Otherwise Kalshi (default).
         other_city_tags = [s.city for s in all_stations() if s.station_id != "KNYC"]
         all_sources = sorted(pt_df_all["model_source"].unique().tolist())
         if selected_station_id == "KNYC":
             city_sources = [s for s in all_sources if not any(t in s for t in other_city_tags)]
         else:
             city_sources = [s for s in all_sources if selected_station.city in s]
+        # Apply platform filter
+        if selected_platform == "Polymarket":
+            city_sources = [s for s in city_sources if "POLYMARKET" in s.upper()]
+        else:
+            city_sources = [s for s in city_sources if "POLYMARKET" not in s.upper()]
 
         if not city_sources:
             st.info(
-                f"No paper trades for {selected_station.city} yet — "
-                "backfill or daily cron hasn't populated trades for this city."
+                f"No {selected_platform} paper trades for {selected_station.city} yet — "
+                f"backfill needed. (Run: backfill_paper_trades.py --station {selected_station_id} "
+                f"--platform polymarket once forecasts + observations are ingested.)"
             )
             st.stop()
 

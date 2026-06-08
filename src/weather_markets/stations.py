@@ -55,6 +55,32 @@ STATIONS: dict[str, Station] = {
         timezone="America/Chicago",
         tz_abbr="CT",
     ),
+    # KMDW = Chicago Midway. Polymarket US settles Chicago weather on KMDW
+    # (not KORD/O'Hare). Added 2026-06-08 to support Polymarket trading
+    # alongside Kalshi (which uses KORD). Same forecast cell for GEFS/ECMWF
+    # at this resolution but DIFFERENT observed daily high (typical 1-3°F
+    # difference vs O'Hare due to lake effect / urban heat island).
+    "KMDW": Station(
+        station_id="KMDW",
+        city="Chicago Midway",
+        latitude=41.79,
+        longitude=-87.75,
+        kalshi_series="",                  # no Kalshi market for KMDW (KORD covers Chicago there)
+        kalshi_series_low="",
+        timezone="America/Chicago",
+        tz_abbr="CT",
+    ),
+    # KSFO = San Francisco — Polymarket has weather markets here, Kalshi doesn't (yet)
+    "KSFO": Station(
+        station_id="KSFO",
+        city="San Francisco",
+        latitude=37.62,
+        longitude=-122.37,
+        kalshi_series="",
+        kalshi_series_low="",
+        timezone="America/Los_Angeles",
+        tz_abbr="PT",
+    ),
     "KMIA": Station(
         station_id="KMIA",
         city="Miami",

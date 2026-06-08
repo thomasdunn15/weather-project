@@ -107,14 +107,16 @@ def fetch_contracts_for_date(
     conn,
     station_id: str = "KNYC",
     series: str | None = "KXHIGHNY",
+    platform: str | None = None,
 ) -> list[dict]:
     """
-    Fetch Kalshi contracts whose target_date matches the given date.
+    Fetch contracts whose target_date matches the given date.
 
     Defaults to KXHIGHNY only — the production daily-highs strategy. Pass
     series=None to disable the series filter (returns all series for the date),
     or pass another series ticker (e.g. "KXLOWTNYC") to scope to a different
-    contract family.
+    contract family. platform='polymarket' filters to Polymarket-side contracts
+    only (Kalshi default if omitted).
 
     Returns:
         List of contract dicts with keys: ticker, bracket_type, strike_low, strike_high.
@@ -127,9 +129,13 @@ def fetch_contracts_for_date(
             FROM contracts
             WHERE target_date = %s
               AND station_id = %s
-            ORDER BY bracket_type, strike_low
         """
-        params = (target_date, station_id)
+        params = [target_date, station_id]
+        if platform is not None:
+            sql += " AND platform = %s"
+            params.append(platform)
+        sql += " ORDER BY bracket_type, strike_low"
+        params = tuple(params)
     else:
         sql = """
             SELECT ticker, bracket_type, strike_low, strike_high
@@ -137,9 +143,13 @@ def fetch_contracts_for_date(
             WHERE target_date = %s
               AND station_id = %s
               AND series = %s
-            ORDER BY bracket_type, strike_low
         """
-        params = (target_date, station_id, series)
+        params = [target_date, station_id, series]
+        if platform is not None:
+            sql += " AND platform = %s"
+            params.append(platform)
+        sql += " ORDER BY bracket_type, strike_low"
+        params = tuple(params)
 
     with conn.cursor() as cur:
         cur.execute(sql, params)
