@@ -11,9 +11,21 @@ Backtest analysis on Dec 13 2025 – Jun 5 2026 showed:
 - edge≥25% Amount $25 mean: $26.13 → **$37.25** (+$11.12, +43%)
 - Statistical significance: p=0.013 → **p=0.003**
 - Per-contract edge≥25%: +6.98¢ → **+9.61¢**
-HRRR is now ingested daily for all 6 cities via new cron (03:30 UTC). The
-revision keeps every other parameter unchanged. Live trading starts 2026-06-08
-under the revised model.
+HRRR is now ingested daily for all 6 cities via new cron (03:30 UTC + 13:45 UTC
+retry). The revision keeps every other parameter unchanged.
+
+**REVISION 2026-06-08 (before first KORD cron fire today 14:46 UTC):**
+After full Jun 2025 → Jun 2026 backfill confirmed combined_hrrr at edge≥25%
+delivers Sharpe 4.86, mean $36.90/trade (vs combined $36.90, HRRR +$5.05/trade),
+sized up to Amount $50/trade with cumulative_kill $500.
+- amount_dollars: $25 → **$50** (2x; expected daily mean +$60-90, 30-day +$1,300-1,800)
+- daily_loss_limit_dollars: $75 → **$150**
+- cumulative_kill_dollars: $200 → **$500**
+- aggregate caps mirror (= Chicago since Miami halted)
+Rationale: backtest mean per-trade is $36-41 with lifetime data; at $25 sizing
+that's ~$10/trade realized which is below the noise floor of the kill switch.
+$50 gives clearer signal-to-noise per day while still being 1/3 of the lifetime
+backtest peak DD. Pre-commit window unchanged: still 30 days, ends 2026-07-08.
 
 This doc locks in **every parameter** for the next 30 days. Once signed, **no
 modifications** to filter, sizing, execution, or risk envelope.

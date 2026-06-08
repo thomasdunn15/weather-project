@@ -84,11 +84,11 @@ CITY_CONFIG = {
         "decision_minute": 46,
         "edge_threshold": 0.25,                 # per-city — Chicago needs 25% (Bonferroni-passing)
         "sizing_mode": "amount",                # "unit", "even_split", or "amount"
-        "amount_dollars": 25.0,                 # $/trade in amount mode
+        "amount_dollars": 50.0,                 # $/trade — UP from $25 (2026-06-08 revision)
         "max_contracts_per_trade": 500,         # depth cap for amount mode
         "unit_contracts": 200,                  # used only if sizing_mode == "unit"
-        "daily_loss_limit_dollars":     75.0,
-        "cumulative_kill_dollars":     200.0,
+        "daily_loss_limit_dollars":    150.0,   # UP from $75 (matches 3 × $50)
+        "cumulative_kill_dollars":     500.0,   # UP from $200 (more runway at higher sizing)
         "max_open_contracts":         5000,
     },
     "KMIA": {
@@ -112,8 +112,8 @@ CITY_CONFIG = {
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 75.0     # = Chicago daily; Miami halted
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 200.0     # = Chicago cumulative; Miami halted
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 150.0    # = Chicago daily; Miami halted
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 500.0     # = Chicago cumulative; Miami halted
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
