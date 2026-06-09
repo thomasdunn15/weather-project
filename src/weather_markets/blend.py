@@ -1,0 +1,191 @@
+"""Market-blend logistic regression module (Benter-style).
+
+Fits `logit(P_blend) = α + β_model · logit(P_model) + β_market · logit(P_market)`
+on historical settled paper_trades per city, and applies it to fresh predictions.
+
+The blend captures information present in the Kalshi market price that our
+EMOS model alone misses (consensus from other traders, microstructure, listing
+biases). Empirically validated 2026-06-09: blend beats raw model on test-set
+Brier by 11-43% across all 6 active cities; market carries 56-95% of weight
+depending on city.
+
+Usage:
+    from weather_markets.blend import get_blend, apply_blend
+
+    fit = get_blend("KORD", "Chicago")      # cached; fits once per process
+    p_final = apply_blend(fit, p_model=0.42, p_market=0.27)
+
+The fit is process-cached via lru_cache so paper_trade_log / live_trade /
+dashboard each pay the cost once. Pass `max_target_date` to fit on data up
+to a specific date (useful for backtest, to avoid lookahead bias).
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from datetime import date
+from functools import lru_cache
+from typing import Optional
+
+import numpy as np
+from scipy.optimize import minimize
+
+from weather_markets.db import get_connection
+from weather_markets.evaluation import contract_resolved_yes
+
+
+# Probability clipping for logit numerical stability
+EPS = 1e-3
+MIN_N_FIT = 100   # require at least this many settled paper_trades to fit
+
+
+# ---------- math primitives ----------
+def _clip(p):
+    return np.clip(p, EPS, 1.0 - EPS)
+
+def _logit(p):
+    p = _clip(p)
+    return np.log(p / (1.0 - p))
+
+def _sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+@dataclass(frozen=True)
+class BlendFit:
+    """A fitted logistic blend for one city.
+
+    Apply with `apply_blend(fit, p_model, p_market) -> p_blend` or directly
+    via `fit.predict(p_model, p_market)`.
+    """
+    city_code: str
+    alpha: float
+    beta_model: float
+    beta_market: float
+    n_train: int
+    fit_through_date: Optional[str] = None    # last paper_trade target_date included
+
+    def predict(self, p_model, p_market):
+        """Returns blended P(YES). Inputs may be scalars or numpy arrays."""
+        p_model = np.asarray(p_model, dtype=float)
+        p_market = np.asarray(p_market, dtype=float)
+        z = self.alpha + self.beta_model * _logit(p_model) + self.beta_market * _logit(p_market)
+        out = _sigmoid(z)
+        # If both inputs were scalars, return scalar
+        return float(out) if out.ndim == 0 else out
+
+    def market_share(self) -> float:
+        """Rough fraction of the blend weight given to market vs model."""
+        denom = abs(self.beta_model) + abs(self.beta_market) + 1e-9
+        return abs(self.beta_market) / denom
+
+
+def apply_blend(fit: BlendFit, p_model, p_market):
+    """Convenience function — same as fit.predict(p_model, p_market)."""
+    return fit.predict(p_model, p_market)
+
+
+# ---------- fitting ----------
+def _fit_logistic(p_model: np.ndarray, p_market: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """Minimizes BCE log-loss for logit(P) = α + β1·logit(p_model) + β2·logit(p_market).
+
+    Returns (α, β_model, β_market). Uses scipy.optimize L-BFGS-B with analytic
+    gradient — converges in <100 iterations even for n>10k.
+    """
+    X = np.column_stack([np.ones_like(p_model), _logit(p_model), _logit(p_market)])
+
+    def nll(theta):
+        z = X @ theta
+        # log(1 + exp(z)) — log1p version is numerically stable for large |z|
+        return -float(np.mean(y * z - np.logaddexp(0.0, z)))
+
+    def grad(theta):
+        z = X @ theta
+        p = _sigmoid(z)
+        return -X.T @ (y - p) / len(y)
+
+    res = minimize(nll, np.zeros(3), jac=grad, method="L-BFGS-B")
+    return float(res.x[0]), float(res.x[1]), float(res.x[2])
+
+
+def _city_model_source(city_code: str, city_name: str) -> str:
+    """The paper_trades model_source string for this city's combined-EMOS source."""
+    if city_code == "KNYC":
+        # NYC is legacy: no city tag in the source string.
+        return "EMOS combined 00Z (rolling 45d)"
+    return f"EMOS combined 00Z {city_name} (rolling 45d)"
+
+
+def fit_blend(
+    city_code: str,
+    city_name: str,
+    max_target_date: Optional[date] = None,
+) -> Optional[BlendFit]:
+    """Fits a blend for one city from settled paper_trades.
+
+    max_target_date: only train on paper_trades whose target_date is <= this.
+      Used in backtests to avoid lookahead bias (fit on data up to T, evaluate
+      on T+1 onward).  None = use all available data.
+
+    Returns None if fewer than MIN_N_FIT settled trades available.
+    """
+    ms = _city_model_source(city_code, city_name)
+    rows = []
+    with get_connection() as conn, conn.cursor() as cur:
+        if max_target_date is not None:
+            cur.execute(
+                """SELECT pt.target_date, pt.model_prob_yes, pt.market_yes_bid, pt.market_yes_ask,
+                          c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
+                   FROM paper_trades pt
+                   JOIN contracts c ON c.ticker = pt.ticker
+                   LEFT JOIN LATERAL (SELECT high_temp_f FROM observations
+                     WHERE date = pt.target_date AND station_id = c.station_id LIMIT 1) o ON TRUE
+                   WHERE pt.model_source = %s
+                     AND pt.target_date <= %s
+                     AND pt.market_yes_bid IS NOT NULL AND pt.market_yes_ask IS NOT NULL
+                     AND pt.model_prob_yes IS NOT NULL
+                   ORDER BY pt.target_date""",
+                (ms, max_target_date),
+            )
+        else:
+            cur.execute(
+                """SELECT pt.target_date, pt.model_prob_yes, pt.market_yes_bid, pt.market_yes_ask,
+                          c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
+                   FROM paper_trades pt
+                   JOIN contracts c ON c.ticker = pt.ticker
+                   LEFT JOIN LATERAL (SELECT high_temp_f FROM observations
+                     WHERE date = pt.target_date AND station_id = c.station_id LIMIT 1) o ON TRUE
+                   WHERE pt.model_source = %s
+                     AND pt.market_yes_bid IS NOT NULL AND pt.market_yes_ask IS NOT NULL
+                     AND pt.model_prob_yes IS NOT NULL
+                   ORDER BY pt.target_date""",
+                (ms,),
+            )
+        for td, mp, bid, ask, bt, sl, sh, high in cur.fetchall():
+            if high is None:
+                continue
+            mkt_p = (int(bid) + int(ask)) / 200.0
+            yes_won = contract_resolved_yes(int(high), {"bracket_type": bt, "strike_low": sl, "strike_high": sh})
+            rows.append((td, float(mp), mkt_p, 1.0 if yes_won else 0.0))
+    if len(rows) < MIN_N_FIT:
+        return None
+    arr = np.array([(mp, mk, y) for _, mp, mk, y in rows])
+    alpha, beta_model, beta_market = _fit_logistic(arr[:, 0], arr[:, 1], arr[:, 2])
+    return BlendFit(
+        city_code=city_code,
+        alpha=alpha,
+        beta_model=beta_model,
+        beta_market=beta_market,
+        n_train=len(rows),
+        fit_through_date=str(rows[-1][0]),
+    )
+
+
+# Process-level cache so paper_trade_log / live_trade / dashboard each fit once.
+@lru_cache(maxsize=32)
+def get_blend(city_code: str, city_name: str) -> Optional[BlendFit]:
+    """Cached version of fit_blend with no max_target_date. Use this in
+    production (paper_trade_log, live_trade, dashboard). For backtests
+    that need date-aware fits, call fit_blend(..., max_target_date=) directly.
+    """
+    return fit_blend(city_code, city_name)

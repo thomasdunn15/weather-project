@@ -59,19 +59,39 @@ INIT_HOUR = 0          # use 00Z runs — published before market open
 MODEL = "combined"     # GEFS + IFS at 00Z
 
 
-def model_source_for(station: Station, platform: str = "kalshi") -> str:
+def model_source_for(station: Station, platform: str = "kalshi", blend: bool = False) -> str:
     """The model_source string for this station, matching the backfill naming.
     platform='polymarket' adds a 'POLYMARKET' tag so dashboard filter can find it.
+    blend=True adds a '+blend' suffix to mark Benter-style market-blended signals
+    (logs alongside raw-model rows for A/B comparison).
     """
     if station.station_id == "KNYC":
         base = "EMOS combined 00Z (rolling 45d)"
     else:
         base = f"EMOS combined 00Z {station.city} (rolling 45d)"
+    if blend:
+        # Insert +blend right after the 'combined' token so the dashboard
+        # variant selector can distinguish raw from blended sources.
+        base = base.replace("EMOS combined ", "EMOS combined+blend ")
     if platform == "polymarket":
         # Insert POLYMARKET tag before the closing paren so the dashboard regex
         # can find it. Format: "EMOS combined 00Z {city} POLYMARKET (rolling 45d)"
         return base.replace(" (rolling", " POLYMARKET (rolling")
     return base
+
+
+# Per-city blend edge thresholds (from backtest analysis 2026-06-09).
+# Blends pull strongly toward market so blended edges are much smaller in
+# magnitude than raw-model edges; these thresholds preserve roughly the same
+# trade frequency or are tuned for Sharpe on held-out test set.
+BLEND_EDGE_THRESHOLD_BY_CITY = {
+    "KORD": 0.10,   # backtest best Sharpe 4.95 at 15%, conservative 10%
+    "KMIA": 0.10,
+    "KAUS": 0.03,   # model anti-informative; blend is mostly market
+    "KDEN": 0.03,
+    "KLAX": 0.02,
+    "KNYC": 0.05,
+}
 
 
 def min_entry_price_for(station: Station) -> int:
@@ -207,6 +227,17 @@ def log_for_station(
 
     model_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
 
+    # Blend setup — fit once per station per run. Logs a parallel
+    # +blend variant alongside the raw model signals for A/B comparison.
+    # Skips if insufficient training data.
+    from weather_markets.blend import get_blend
+    blend_fit = get_blend(station.station_id, station.city) if platform == "kalshi" else None
+    blend_source = model_source_for(station, platform=platform, blend=True) if blend_fit else None
+    blend_threshold = BLEND_EDGE_THRESHOLD_BY_CITY.get(station.station_id, 0.10)
+    if blend_fit:
+        print(f"  blend fit:     α={blend_fit.alpha:+.3f} β_m={blend_fit.beta_model:+.3f} β_mkt={blend_fit.beta_market:+.3f} "
+              f"(mkt {blend_fit.market_share()*100:.0f}%, n_train={blend_fit.n_train}); blend edge ≥ {blend_threshold:.0%}")
+
     notes = f"ensemble_members={n_members}"
     if as_of is not None:
         notes += f"; as-of-recovery={snapshot_cutoff.isoformat()}"
@@ -218,6 +249,7 @@ def log_for_station(
 
     n_checked = 0
     trades_logged = []
+    blend_trades_logged = []
     with conn.cursor() as cur:
         for contract in contracts:
             ticker = contract["ticker"]
@@ -233,37 +265,63 @@ def log_for_station(
             model_p = model_probs[ticker]
             edge = model_p - market_mid
 
-            if abs(edge) < EDGE_THRESHOLD:
-                continue
+            # ---- Raw-model signal (unchanged) ----
+            if abs(edge) >= EDGE_THRESHOLD:
+                if edge > 0:
+                    position = "BUY_YES"
+                    entry_price = ask
+                else:
+                    position = "BUY_NO"
+                    entry_price = 100 - bid
 
-            if edge > 0:
-                position = "BUY_YES"
-                entry_price = ask
-            else:
-                position = "BUY_NO"
-                entry_price = 100 - bid
+                if entry_price >= min_entry:
+                    cur.execute(
+                        INSERT_SQL,
+                        (
+                            logged_at, today, ticker, model_source,
+                            init_time, ensemble_mean, ensemble_std,
+                            emos_mu, emos_sigma, model_p,
+                            bid, ask, market_mid, snap,
+                            edge, EDGE_THRESHOLD, position, entry_price, notes,
+                        ),
+                    )
+                    spread = ask - bid
+                    limit_target = entry_price - max(0, spread - 1)
+                    trades_logged.append((ticker, position, edge, entry_price, limit_target, model_p, market_mid))
 
-            if entry_price < min_entry:
-                continue
-
-            cur.execute(
-                INSERT_SQL,
-                (
-                    logged_at, today, ticker, model_source,
-                    init_time, ensemble_mean, ensemble_std,
-                    emos_mu, emos_sigma, model_p,
-                    bid, ask, market_mid, snap,
-                    edge, EDGE_THRESHOLD, position, entry_price, notes,
-                ),
-            )
-            spread = ask - bid
-            limit_target = entry_price - max(0, spread - 1)
-            trades_logged.append((ticker, position, edge, entry_price, limit_target, model_p, market_mid))
+            # ---- Blended-signal variant (logged alongside raw, separate model_source) ----
+            if blend_fit:
+                p_blend = blend_fit.predict(model_p, market_mid)
+                blend_edge = p_blend - market_mid
+                if abs(blend_edge) >= blend_threshold:
+                    if blend_edge > 0:
+                        b_position = "BUY_YES"
+                        b_entry = ask
+                    else:
+                        b_position = "BUY_NO"
+                        b_entry = 100 - bid
+                    if b_entry >= min_entry:
+                        cur.execute(
+                            INSERT_SQL,
+                            (
+                                logged_at, today, ticker, blend_source,
+                                init_time, ensemble_mean, ensemble_std,
+                                emos_mu, emos_sigma, p_blend,
+                                bid, ask, market_mid, snap,
+                                blend_edge, blend_threshold, b_position, b_entry,
+                                notes + f"; raw_model_p={model_p:.3f}; blend_α={blend_fit.alpha:.3f}",
+                            ),
+                        )
+                        blend_trades_logged.append((ticker, b_position, blend_edge, b_entry, p_blend, market_mid))
 
     print(f"  contracts with prices: {n_checked}")
-    print(f"  trades logged: {len(trades_logged)}")
+    print(f"  RAW trades logged:    {len(trades_logged)}")
     for ticker, pos, e, entry, lim, mp, mm in trades_logged:
         print(f"    {ticker:30s} {pos:8s}  model={mp:.3f}  market={mm:.3f}  edge={e:+.3f}  entry(cross)={entry}¢ limit(post)={lim}¢")
+    if blend_fit:
+        print(f"  BLEND trades logged:  {len(blend_trades_logged)}  (source: {blend_source!r})")
+        for ticker, pos, e, entry, pb, mm in blend_trades_logged:
+            print(f"    {ticker:30s} {pos:8s}  blend={pb:.3f}  market={mm:.3f}  edge={e:+.3f}  entry(cross)={entry}¢")
 
 
 def main() -> None:

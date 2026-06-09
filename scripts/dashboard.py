@@ -2018,8 +2018,10 @@ with tab_backtest:
                         best = (et, ed, {"mean": m, "n": len(cell), "win": float(cell["won"].mean())})
             return best
 
-        # --- Model-variant selector (gefs / ifs / combined) within the chosen city.
+        # --- Model-variant selector (gefs / ifs / combined / combined+blend) within the chosen city.
         def _variant_label(s: str) -> str:
+            if "combined+blend" in s: return "Combined + Market Blend (Benter)"
+            if "combined_hrrr" in s: return "Combined + HRRR"
             if "GEFS" in s and "combined" not in s: return "GEFS only"
             if "ECMWF" in s or ("IFS" in s and "combined" not in s): return "ECMWF only"
             if "combined" in s: return "Combined (GEFS + ECMWF)"

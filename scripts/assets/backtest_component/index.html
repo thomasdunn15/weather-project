@@ -362,7 +362,7 @@ function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDa
         <div className="ctrl">
           <span className="cl">Edge filter</span>
           <select value={edge} onChange={e => setEdge(+e.target.value)}>
-            {[0.05, 0.10, 0.15, 0.20, 0.25, 0.30].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
+            {[0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
           </select>
         </div>
       </div>
@@ -378,12 +378,12 @@ function SimControls({ edge, setEdge, minEntry, setMinEntry, sizing, setSizing, 
       </div>
       <div className="ctrl"><span className="cl">Edge filter</span>
         <select value={edge} onChange={e => setEdge(+e.target.value)}>
-          {[0.05, 0.10, 0.15, 0.20, 0.25, 0.30].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
+          {[0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
         </select>
       </div>
       <div className="ctrl"><span className="cl">Min entry</span>
         <select value={minEntry} onChange={e => setMinEntry(+e.target.value)}>
-          {[0, 5, 10, 20, 30].map(v => <option key={v} value={v}>{v === 0 ? "any" : "≥ " + v + "¢"}</option>)}
+          {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80].map(v => <option key={v} value={v}>{v === 0 ? "any" : "≥ " + v + "¢"}</option>)}
         </select>
       </div>
       <div className="ctrl"><span className="cl">Sizing</span>
