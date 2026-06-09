@@ -334,8 +334,9 @@ function BalanceChart({ curve, filledTrades, height = 300 }) {
 // ====================================================================
 // CONTROLS BAR + SIM CONTROLS
 // ====================================================================
-function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDate, edge, setEdge }) {
+function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDate, edge, setEdge, strategy, setStrategy, blendInfo }) {
   const availableCities = (window.BTDATA && window.BTDATA.cities) || [cityCode];
+  const blendAvailable = !!blendInfo;
   return (
     <div className="panel">
       <div className="controls">
@@ -360,9 +361,23 @@ function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDa
           <input type="date" value={date} onChange={e => setDate(e.target.value)} />
         </div>
         <div className="ctrl">
+          <span className="cl">Strategy</span>
+          <div className="seg">
+            <button className={strategy === "raw" ? "on" : ""} onClick={() => setStrategy("raw")}>Raw Model</button>
+            <button className={strategy === "blend" ? "on" : ""}
+                    disabled={!blendAvailable}
+                    onClick={() => blendAvailable && setStrategy("blend")}
+                    title={blendAvailable
+                      ? `Blend: ${blendInfo.marketShare * 100}% market, ${(100 - blendInfo.marketShare * 100).toFixed(0)}% model (n_train=${blendInfo.nTrain})`
+                      : "Need ≥100 settled paper_trades to fit blend"}>
+              Blend (Benter)
+            </button>
+          </div>
+        </div>
+        <div className="ctrl">
           <span className="cl">Edge filter</span>
           <select value={edge} onChange={e => setEdge(+e.target.value)}>
-            {[0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
+            {[0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => <option key={v} value={v}>≥ {(v * 100).toFixed(0)}%</option>)}
           </select>
         </div>
       </div>
@@ -427,7 +442,9 @@ function applyStakeCap(rawStake, balance, maxPct, maxDollars) {
 }
 function jsComputeSim(trades, params) {
   const { sizing, edgeFilter, minEntry, amountDollars, depthCap, execution,
-          startingBankroll, kellyFraction: kf = 0.5, scalingPct = 0.05 } = params;
+          startingBankroll, kellyFraction: kf = 0.5, scalingPct = 0.05,
+          strategy = "raw" } = params;
+  const useBlend = strategy === "blend";
   let balance = startingBankroll;
   let peak = startingBankroll;
   let maxDD = 0;          // worst peak-to-trough as % of peak
@@ -440,18 +457,28 @@ function jsComputeSim(trades, params) {
   const tradeRecords = [];
   for (const t of trades) {
     nTotal++;
-    if (Math.abs(t.edge) < edgeFilter) {
-      tradeRecords.push({ ...t, fill: "filtered", computedQty: 0, computedPnl: 0 });
+    // STRATEGY: edge + side derived from chosen probability (model vs blend).
+    // In blend mode, fall back to model if blendP is missing for this trade.
+    const pSel = (useBlend && t.blendP != null) ? t.blendP : t.modelP;
+    const edgeSel = pSel - t.mktP;
+    if (Math.abs(edgeSel) < edgeFilter) {
+      tradeRecords.push({ ...t, fill: "filtered", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
       continue;
     }
+    // For blend mode, recompute the side from sign of blend edge — the
+    // recorded t.pos was the raw model's decision and may flip in blend.
+    const stratSide = edgeSel > 0 ? "BUY_YES" : "BUY_NO";
     const crossEntry = t.entry;
     if (crossEntry < minEntry) {
-      tradeRecords.push({ ...t, fill: "below-min", computedQty: 0, computedPnl: 0 });
+      tradeRecords.push({ ...t, fill: "below-min", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
       continue;
     }
     if (t.won === null || t.won === undefined) {
       nPending++;
-      tradeRecords.push({ ...t, fill: "pending", computedQty: 0, computedPnl: 0 });
+      tradeRecords.push({ ...t, fill: "pending", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
       continue;
     }
     nFiltered++;
@@ -464,10 +491,16 @@ function jsComputeSim(trades, params) {
       }
     }
     if (entry <= 0 || entry >= 100) {
-      tradeRecords.push({ ...t, fill: "skipped", computedQty: 0, computedPnl: 0 });
+      tradeRecords.push({ ...t, fill: "skipped", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
       continue;
     }
-    const won = !!t.won;
+    // Re-derive whether this trade WON given the strategy-determined side.
+    // t.won was set against t.pos (raw model side); in blend mode the side
+    // may flip, in which case the win/loss flips with it.
+    const recordedSide = t.pos;   // "BUY_YES" or "BUY_NO"
+    const sideFlipped = stratSide !== recordedSide;
+    const won = sideFlipped ? !t.won : !!t.won;
     const feePer = kalshiFeeCents(entry) / 100;
     let contracts, stakeDollars;
     if (sizing === "unit") {
@@ -480,8 +513,8 @@ function jsComputeSim(trades, params) {
       const raw = balance * scalingPct;
       stakeDollars = applyStakeCap(raw, balance, null, null);
       contracts = Math.floor(stakeDollars / (entry / 100));
-    } else { // kelly
-      const pWin = t.pos === "BUY_YES" ? t.modelP : (1 - t.modelP);
+    } else { // kelly — uses STRATEGY-chosen probability
+      const pWin = stratSide === "BUY_YES" ? pSel : (1 - pSel);
       const f = kellyFraction(pWin, entry) * kf;
       const raw = balance * f;
       stakeDollars = applyStakeCap(raw, balance, null, null);
@@ -489,7 +522,8 @@ function jsComputeSim(trades, params) {
     }
     if (depthCap && contracts > depthCap) contracts = depthCap;
     if (contracts < 1) {
-      tradeRecords.push({ ...t, fill: "skipped", computedQty: 0, computedPnl: 0 });
+      tradeRecords.push({ ...t, fill: "skipped", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
       continue;
     }
     const totalFee = contracts * feePer;
@@ -509,6 +543,10 @@ function jsComputeSim(trades, params) {
       computedQty: contracts,
       computedPnl: Math.round(tradePnl * 100) / 100,
       fill: "filled",
+      stratEdge: edgeSel,
+      stratP: pSel,
+      stratSide,
+      stratWon: won,
     });
   }
   const ret = ((balance - startingBankroll) / startingBankroll) * 100;
@@ -554,6 +592,10 @@ function BacktestTab({ initialState }) {
   const [amount, setAmount] = useState(init.amount ?? 50);                 // LOCAL only
   const [bankroll, setBankroll_] = useState(3000);                         // LOCAL only — matches real Kalshi balance
   const [dateStr, setDateStr_] = useState(init.date || (window.BTDATA[defaultCity] || {}).date);
+  // Strategy: "raw" = use modelP; "blend" = use blendP (Benter-style logistic blend).
+  // Auto-default to blend if available, else raw.
+  const _cityData = window.BTDATA[defaultCity] || {};
+  const [strategy, setStrategy] = useState(init.strategy || (_cityData.blend ? "blend" : "raw"));
 
   // ONLY city/date/platform round-trip Python (they need fresh data).
   // Sim params (sizing/edge/minEntry/amount/depth/exec/bankroll) recompute
@@ -580,14 +622,18 @@ function BacktestTab({ initialState }) {
   const sim = jsComputeSim(d.trades || [], {
     sizing, edgeFilter: edge, minEntry, amountDollars: Number(amount) || 0,
     depthCap: Number(depth) || 0, execution: exec, startingBankroll: bankroll,
+    strategy,    // "raw" or "blend"
   });
   const brackets = d.brackets || [];
+  // For the Edge by bracket display, pick which P to compare to market.
+  const probField = strategy === "blend" ? "blendP" : "modelP";
   const trades = d.trades || [];
   const strat = d.strat || [];
 
   return (
     <div className="wrap">
-      <ControlsBar {...{ platform, setPlatform, cityCode, setCityCode, date: dateStr, setDate, edge, setEdge }} />
+      <ControlsBar {...{ platform, setPlatform, cityCode, setCityCode, date: dateStr, setDate, edge, setEdge,
+                          strategy, setStrategy, blendInfo: d.blend }} />
 
       <div className="section-label">Forecast — combined GEFS + ECMWF ensemble · {d.city} · {dateStr}</div>
       <div className="grid" style={{ gridTemplateColumns: "1.5fr 1fr" }}>
@@ -621,21 +667,29 @@ function BacktestTab({ initialState }) {
         </div>
       </div>
 
-      <PanelBare title="Edge by bracket" meta={`signal fires when |edge| ≥ ${(edge * 100).toFixed(0)}% · set above`}>
+      <PanelBare title="Edge by bracket" meta={`${strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(edge * 100).toFixed(0)}% · set above`}>
         <table className="dt">
           <thead><tr>
-            <th className="l">Bracket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Resolved</th>
+            <th className="l">Bracket</th>
+            <th>{strategy === "blend" ? "Blend P" : "Model P"}</th>
+            <th>Market P</th>
+            <th>Edge</th>
+            <th>Signal</th>
+            <th>Resolved</th>
           </tr></thead>
           <tbody>
             {brackets.length === 0 && <tr><td className="l muted" colSpan="6" style={{ padding: "16px 12px" }}>No brackets for {dateStr}.</td></tr>}
             {brackets.map((b, i) => {
-              const e = b.modelP - b.mktP;
+              // When blend selected, fall back to model P if blend is missing
+              // (e.g., market price is 0 → blend undefined).
+              const probSel = strategy === "blend" && b.blendP != null ? b.blendP : b.modelP;
+              const e = probSel - b.mktP;
               const fires = Math.abs(e) >= edge;
               const side = e > 0 ? "YES" : "NO";
               return (
                 <tr key={i}>
                   <td className="l hi">{b.label}</td>
-                  <td>{(b.modelP * 100).toFixed(0)}%</td>
+                  <td>{(probSel * 100).toFixed(0)}%</td>
                   <td>{(b.mktP * 100).toFixed(0)}%</td>
                   <td><EdgeCell edge={e} /></td>
                   <td>{fires ? <span className={"side " + (side === "YES" ? "yes" : "no")}>BUY {side}</span> : <span className="muted">—</span>}</td>
@@ -671,29 +725,36 @@ function BacktestTab({ initialState }) {
         </div>
       </PanelBare>
 
-      <PanelBare title="Trade-by-trade detail" meta={`every paper trade · qty & P&L reflect current sim params (${sizing}, $${Number(amount).toLocaleString()}/trade, cap ${depth})`}>
+      <PanelBare title="Trade-by-trade detail" meta={`every paper trade · ${strategy === "blend" ? "BLEND" : "RAW"} signal · qty/P&L reflect (${sizing}, $${Number(amount).toLocaleString()}/trade, cap ${depth})`}>
         <div className="tbl-scroll" style={{ maxHeight: 280 }}>
           <table className="dt">
             <thead><tr>
-              <th className="l">Date</th><th className="l">Bracket</th><th>Side</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Entry</th><th>Qty</th><th>Fill</th><th>Result</th><th>P&amp;L</th>
+              <th className="l">Date</th><th className="l">Bracket</th><th>Side</th>
+              <th>{strategy === "blend" ? "Blend P" : "Model P"}</th>
+              <th>Market P</th><th>Edge</th><th>Entry</th><th>Qty</th><th>Fill</th><th>Result</th><th>P&amp;L</th>
             </tr></thead>
             <tbody>
               {(sim.tradeRecords || []).length === 0 && <tr><td className="l muted" colSpan="11" style={{ padding: "16px 12px" }}>No trade history.</td></tr>}
               {[...(sim.tradeRecords || [])].reverse().map((t, i) => {
                 const skipped = t.fill === "filtered" || t.fill === "below-min" || t.fill === "skipped";
                 const isFilled = t.fill === "filled";
+                // Strategy-aware fields: side / edge / P depend on raw vs blend selection.
+                const showP = t.stratP != null ? t.stratP : t.modelP;
+                const showEdge = t.stratEdge != null ? t.stratEdge : t.edge;
+                const showSide = t.stratSide ? (t.stratSide === "BUY_YES" ? "YES" : "NO") : t.side;
+                const wonShown = t.stratWon != null ? t.stratWon : t.won;
                 return (
                   <tr key={i}>
                     <td className="l">{t.date}</td>
                     <td className="l hi">{t.bracket}</td>
-                    <td><span className={"side " + (t.side === "YES" ? "yes" : "no")}>{t.side}</span></td>
-                    <td>{(t.modelP * 100).toFixed(0)}%</td>
+                    <td><span className={"side " + (showSide === "YES" ? "yes" : "no")}>{showSide}</span></td>
+                    <td>{(showP * 100).toFixed(0)}%</td>
                     <td>{(t.mktP * 100).toFixed(0)}%</td>
-                    <td><EdgeCell edge={t.edge} /></td>
+                    <td><EdgeCell edge={showEdge} /></td>
                     <td>{t.entry}¢</td>
                     <td className={isFilled ? "hi" : "muted"}>{isFilled ? t.computedQty : "—"}</td>
                     <td><span className={"pill-status " + t.fill}>{t.fill}</span></td>
-                    <td>{t.won === null || skipped ? <span className="muted">—</span> : <span className={"outcome " + (t.won ? "yes" : "no")}>{t.won ? "WIN" : "LOSS"}</span>}</td>
+                    <td>{t.won === null || skipped ? <span className="muted">—</span> : <span className={"outcome " + (wonShown ? "yes" : "no")}>{wonShown ? "WIN" : "LOSS"}</span>}</td>
                     <td className={!isFilled ? "muted" : cls(t.computedPnl)}>{!isFilled ? "—" : money(t.computedPnl)}</td>
                   </tr>
                 );

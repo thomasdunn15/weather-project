@@ -183,6 +183,11 @@ def _fetch_city_payload(
     except Exception:
         pass
 
+    # Fit blend for this city once — used for both bracket display AND per-trade
+    # blend probabilities so the React side can toggle Raw ↔ Blend.
+    from weather_markets.blend import fit_blend as _fit_blend
+    blend_fit = _fit_blend(city_code, city_name) if station.kalshi_series else None
+
     # Build bracket table for the Edge by bracket display
     brackets_payload: list[dict] = []
     if emos_sigma > 0 and contracts:
@@ -214,8 +219,11 @@ def _fetch_city_payload(
                 resolved = "YES" if contract_resolved_yes(observed, c) else "NO"
             else:
                 resolved = "PEND"
+            bp = blend_fit.predict(mp, mkt) if (blend_fit and mkt > 0) else None
             brackets_payload.append({"label": label, "lo": lo, "hi": hi,
-                                     "modelP": round(mp, 3), "mktP": round(mkt, 3),
+                                     "modelP": round(mp, 3),
+                                     "blendP": round(float(bp), 3) if bp is not None else None,
+                                     "mktP": round(mkt, 3),
                                      "resolved": resolved})
 
     # Build trade log + run quick per-sizing sims
@@ -238,12 +246,18 @@ def _fetch_city_payload(
                 pnl_per = (100 - int(entry)) if won else -int(entry)
                 pnl = round(pnl_per / 100, 2)
                 fill_status = "filled"
+            # Blend probability for the YES side (always compute from market mid +
+            # raw model P, regardless of which side the bot took). The React-side
+            # JS sim flips it for BUY_NO via 1 - blendP when needed.
+            blend_p_yes = (float(blend_fit.predict(float(mp), float(mkt)))
+                           if blend_fit and mkt > 0 else None)
             trades_payload.append({
                 "date": td.strftime("%Y-%m-%d"),
                 "bracket": bracket_label,
                 "side": "YES" if pos == "BUY_YES" else "NO",
                 "pos": pos,                                  # raw position string for JS Kelly calc
                 "modelP": round(float(mp), 4),
+                "blendP": round(blend_p_yes, 4) if blend_p_yes is not None else None,
                 "mktP": round(float(mkt), 4),
                 "edge": round(float(edge), 4),
                 "entry": int(entry),
@@ -283,6 +297,13 @@ def _fetch_city_payload(
         "sim": sim_results,
         "trades": trades_payload,
         "strat": strat_payload,
+        "blend": ({
+            "alpha": round(blend_fit.alpha, 3),
+            "betaModel": round(blend_fit.beta_model, 3),
+            "betaMarket": round(blend_fit.beta_market, 3),
+            "marketShare": round(blend_fit.market_share(), 2),
+            "nTrain": blend_fit.n_train,
+        } if blend_fit else None),
     }
 
 
