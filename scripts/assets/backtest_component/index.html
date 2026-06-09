@@ -411,7 +411,10 @@ function SimControls({ edge, setEdge, minEntry, setMinEntry, sizing, setSizing, 
       </div>
       <div className="ctrl"><span className="cl">Execution</span>
         <select value={exec} onChange={e => setExec(e.target.value)}>
-          <option>post_inside_spread</option><option>cross_at_ask</option><option>cross_with_premium</option>
+          <option value="post_inside_spread">post_inside_spread — post limit 1¢ inside spread (saves $)</option>
+          <option value="market">market — buy at the ask (cross the spread)</option>
+          <option value="market_plus_1">market_plus_1 — pay ask + 1¢ (aggressive, ensures fill)</option>
+          <option value="market_plus_2">market_plus_2 — pay ask + 2¢ (very aggressive)</option>
         </select>
       </div>
       <div className="ctrl"><span className="cl">Depth cap</span>
@@ -482,14 +485,27 @@ function jsComputeSim(trades, params) {
       continue;
     }
     nFiltered++;
-    // Execution: pick entry price
+    // Execution: pick entry price.
+    //   crossEntry = t.entry which is already the cross price (ask for BUY_YES,
+    //   100−bid for BUY_NO) from paper_trades.
+    //   - post_inside_spread: post a limit order 1¢ inside the bid-ask spread.
+    //     Saves up to spread−1 cents; assumes 100% fill (optimistic).
+    //   - market: just buy at the ask (cross the spread). No improvement.
+    //   - market_plus_1: pay ask + 1¢. Slippage model for aggressive market
+    //     orders that eat through thin top-of-book depth.
+    //   - market_plus_2: ask + 2¢. Very aggressive.
     let entry = crossEntry;
     if (execution === "post_inside_spread") {
       const bid = t.marketYesBid, ask = t.marketYesAsk;
       if (bid != null && ask != null && ask > bid + 1) {
         entry = Math.max(1, crossEntry - (ask - bid - 1));
       }
+    } else if (execution === "market_plus_1") {
+      entry = Math.min(99, crossEntry + 1);
+    } else if (execution === "market_plus_2") {
+      entry = Math.min(99, crossEntry + 2);
     }
+    // "market" mode is the default: entry = crossEntry already
     if (entry <= 0 || entry >= 100) {
       tradeRecords.push({ ...t, fill: "skipped", computedQty: 0, computedPnl: 0,
                           stratEdge: edgeSel, stratP: pSel });
@@ -585,9 +601,22 @@ function BacktestTab({ initialState }) {
   const [platform, setPlatform_] = useState(init.platform || "Kalshi");
   const [cityCode, setCityCode_] = useState(defaultCity);
   const [sizing, setSizing] = useState(init.sizing || "amount");           // LOCAL only — JS sim
-  const [exec, setExec] = useState(init.exec || "post_inside_spread");     // LOCAL only
+  // Migrate any legacy 'cross_at_ask' / 'cross_with_premium' values from old
+  // saved state to the new explicit names.
+  const _execInit = (() => {
+    const v = init.exec || "post_inside_spread";
+    if (v === "cross_at_ask") return "market";
+    if (v === "cross_with_premium") return "market_plus_1";
+    return v;
+  })();
+  const [exec, setExec] = useState(_execInit);                              // LOCAL only
   const [depth, setDepth] = useState(init.depth ?? 500);                   // LOCAL only
-  const [edge, setEdge] = useState(init.edge ?? 0.10);                     // LOCAL (also drives bracket Signal)
+  // Two separate edge filters:
+  //   bracketEdge — controls the "Edge by bracket" Signal column at TOP
+  //   simEdge     — controls trade selection in the P&L SIMULATION at BOTTOM
+  // Decoupled per user request 2026-06-09 — previously a single shared `edge`.
+  const [bracketEdge, setBracketEdge] = useState(init.edge ?? 0.10);
+  const [simEdge, setSimEdge] = useState(init.edge ?? 0.10);
   const [minEntry, setMinEntry] = useState(init.minEntry ?? 0);            // LOCAL only
   const [amount, setAmount] = useState(init.amount ?? 50);                 // LOCAL only
   const [bankroll, setBankroll_] = useState(3000);                         // LOCAL only — matches real Kalshi balance
@@ -603,7 +632,10 @@ function BacktestTab({ initialState }) {
   const notify = (partial) => {
     if (typeof window.BT_ON_CHANGE === "function") {
       window.BT_ON_CHANGE({
-        platform, cityCode, sizing, exec, depth, edge, minEntry, amount, date: dateStr,
+        platform, cityCode, sizing, exec, depth,
+        edge: simEdge,                  // backwards-compat: send simEdge under legacy key
+        bracketEdge, simEdge,           // explicit for new code
+        minEntry, amount, date: dateStr,
         ...partial,
       });
     }
@@ -619,8 +651,9 @@ function BacktestTab({ initialState }) {
   }
   // Recompute sim every render using current params + trade history. Cheap
   // (<5ms for ~1k trades) so it's fine to redo every render.
+  // Sim uses simEdge (the bottom filter), NOT bracketEdge.
   const sim = jsComputeSim(d.trades || [], {
-    sizing, edgeFilter: edge, minEntry, amountDollars: Number(amount) || 0,
+    sizing, edgeFilter: simEdge, minEntry, amountDollars: Number(amount) || 0,
     depthCap: Number(depth) || 0, execution: exec, startingBankroll: bankroll,
     strategy,    // "raw" or "blend"
   });
@@ -632,7 +665,8 @@ function BacktestTab({ initialState }) {
 
   return (
     <div className="wrap">
-      <ControlsBar {...{ platform, setPlatform, cityCode, setCityCode, date: dateStr, setDate, edge, setEdge,
+      <ControlsBar {...{ platform, setPlatform, cityCode, setCityCode, date: dateStr, setDate,
+                          edge: bracketEdge, setEdge: setBracketEdge,
                           strategy, setStrategy, blendInfo: d.blend }} />
 
       <div className="section-label">Forecast — combined GEFS + ECMWF ensemble · {d.city} · {dateStr}</div>
@@ -667,7 +701,7 @@ function BacktestTab({ initialState }) {
         </div>
       </div>
 
-      <PanelBare title="Edge by bracket" meta={`${strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(edge * 100).toFixed(0)}% · set above`}>
+      <PanelBare title="Edge by bracket" meta={`${strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(bracketEdge * 100).toFixed(0)}% · set in top bar (independent of P&L sim)`}>
         <table className="dt">
           <thead><tr>
             <th className="l">Bracket</th>
@@ -684,7 +718,7 @@ function BacktestTab({ initialState }) {
               // (e.g., market price is 0 → blend undefined).
               const probSel = strategy === "blend" && b.blendP != null ? b.blendP : b.modelP;
               const e = probSel - b.mktP;
-              const fires = Math.abs(e) >= edge;
+              const fires = Math.abs(e) >= bracketEdge;
               const side = e > 0 ? "YES" : "NO";
               return (
                 <tr key={i}>
@@ -702,10 +736,10 @@ function BacktestTab({ initialState }) {
       </PanelBare>
 
       <div className="section-label">P&amp;L simulation — tweak the run parameters below</div>
-      <PanelBare title="Simulation results" meta={`${d.city} · ${sizing} · |edge| ≥ ${(edge * 100).toFixed(0)}%${minEntry ? " · entry ≥ " + minEntry + "¢" : ""}`}>
-        <SimControls {...{ edge, setEdge, minEntry, setMinEntry, sizing, setSizing,
-                           exec, setExec, depth, setDepth, amount, setAmount,
-                           bankroll, setBankroll }} />
+      <PanelBare title="Simulation results" meta={`${d.city} · ${sizing} · |edge| ≥ ${(simEdge * 100).toFixed(0)}%${minEntry ? " · entry ≥ " + minEntry + "¢" : ""}`}>
+        <SimControls {...{ edge: simEdge, setEdge: setSimEdge, minEntry, setMinEntry,
+                           sizing, setSizing, exec, setExec, depth, setDepth,
+                           amount, setAmount, bankroll, setBankroll }} />
         <div className="bt-metrics" style={{ borderBottom: "1px solid var(--border)" }}>
           <BTMetric label="Final balance" value={moneyPlain(sim.final || 0)} sub={pct(sim.ret || 0)} tone={(sim.ret || 0) >= 0 ? "pos" : "neg"} />
           <BTMetric label="Resolved" value={`${Math.round((sim.n || 0) * (sim.win || 0))}/${sim.n || 0}`} sub={`${((sim.win || 0) * 100).toFixed(0)}% win rate`} />
@@ -764,7 +798,7 @@ function BacktestTab({ initialState }) {
         </div>
       </PanelBare>
 
-      <PanelBare title="Strategy comparison" meta={`${d.city} · head-to-head model variants · |edge| ≥ ${(edge * 100).toFixed(0)}%`}>
+      <PanelBare title="Strategy comparison" meta={`${d.city} · head-to-head model variants · |edge| ≥ ${(simEdge * 100).toFixed(0)}%`}>
         <table className="dt">
           <thead><tr>
             <th className="l">Model variant</th><th>Final balance</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Win rate</th><th>Brier</th><th>Trades</th>

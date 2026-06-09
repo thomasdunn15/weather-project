@@ -109,7 +109,12 @@ def _fit_logistic(p_model: np.ndarray, p_market: np.ndarray, y: np.ndarray) -> t
 
 
 def _city_model_source(city_code: str, city_name: str) -> str:
-    """The paper_trades model_source string for this city's combined-EMOS source."""
+    """The default paper_trades model_source string for this city.
+
+    Defaults to combined (GEFS+IFS); pass paper_model_source= to fit_blend()
+    to override (e.g., 'EMOS combined_hrrr 00Z Chicago (rolling 45d)' for KORD
+    live which uses HRRR-augmented EMOS).
+    """
     if city_code == "KNYC":
         # NYC is legacy: no city tag in the source string.
         return "EMOS combined 00Z (rolling 45d)"
@@ -120,8 +125,14 @@ def fit_blend(
     city_code: str,
     city_name: str,
     max_target_date: Optional[date] = None,
+    paper_model_source: Optional[str] = None,
 ) -> Optional[BlendFit]:
     """Fits a blend for one city from settled paper_trades.
+
+    paper_model_source: overrides the default 'EMOS combined 00Z {name}'.
+      Use this when live trading uses a different EMOS variant (e.g., KORD
+      uses combined_hrrr — fit the blend on those paper_trades for matched
+      probabilistic calibration).
 
     max_target_date: only train on paper_trades whose target_date is <= this.
       Used in backtests to avoid lookahead bias (fit on data up to T, evaluate
@@ -129,7 +140,7 @@ def fit_blend(
 
     Returns None if fewer than MIN_N_FIT settled trades available.
     """
-    ms = _city_model_source(city_code, city_name)
+    ms = paper_model_source or _city_model_source(city_code, city_name)
     rows = []
     with get_connection() as conn, conn.cursor() as cur:
         if max_target_date is not None:
@@ -183,9 +194,13 @@ def fit_blend(
 
 # Process-level cache so paper_trade_log / live_trade / dashboard each fit once.
 @lru_cache(maxsize=32)
-def get_blend(city_code: str, city_name: str) -> Optional[BlendFit]:
+def get_blend(city_code: str, city_name: str,
+              paper_model_source: Optional[str] = None) -> Optional[BlendFit]:
     """Cached version of fit_blend with no max_target_date. Use this in
     production (paper_trade_log, live_trade, dashboard). For backtests
     that need date-aware fits, call fit_blend(..., max_target_date=) directly.
+
+    paper_model_source: pass cfg["paper_model_source"] to fit on the EMOS
+    variant the live cron actually uses (e.g., combined_hrrr for KORD).
     """
-    return fit_blend(city_code, city_name)
+    return fit_blend(city_code, city_name, paper_model_source=paper_model_source)

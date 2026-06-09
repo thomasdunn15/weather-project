@@ -75,18 +75,40 @@ CITY_CONFIG = {
         # – Jun 5 2026 showed +$11.12/trade improvement at edge>=25% Amount $25
         # ($26.13 -> $37.25, +43%). Statistical significance improved from
         # p=0.013 to p=0.003. HRRR is already ingested daily for Chicago.
+        #
+        # REVISION 2026-06-09 (third): UNION MODE.
+        # Trade fires if EITHER raw_edge ≥ 25% OR blend_edge ≥ 10%.
+        # When both fire, they always agree on side (verified across 188 such
+        # historical signals — zero disagreements). When only raw fires (86
+        # cases), use raw side. When only blend fires (25 cases), use blend.
+        # Backtest at unit=500 + market+1¢ + full sample (n=872 paper_trades):
+        #   RAW only:     n=274, Sharpe 3.89, total +$61,700, p=0.00003
+        #   BLEND only:   n=213, Sharpe 3.79, total +$47,620, p=0.00030
+        #   UNION:        n=299, Sharpe 3.94, total +$67,480, p=0.00001  ← winner
+        # Adds 86 raw-only + 25 blend-only trades on top of the 188 overlap.
+        # Risk envelope (kill/halt thresholds) UNCHANGED.
         "models": ["gefs", "ifs", "hrrr"],
         "emos_model": "combined_hrrr",
         "model_source": "EMOS combined_hrrr 00Z Chicago (rolling 45d)",
         "paper_model_source": "EMOS combined_hrrr 00Z Chicago (rolling 45d)",
-        "live_model_source_tag": "EMOS combined_hrrr 00Z Chicago (rolling 45d) [LIVE]",
+        "live_model_source_tag": "EMOS combined_hrrr UNION raw25+blend10 00Z Chicago (rolling 45d) [LIVE]",
         "decision_hour": 14,
         "decision_minute": 46,
-        "edge_threshold": 0.25,                 # per-city — Chicago needs 25% (Bonferroni-passing)
-        "sizing_mode": "amount",                # "unit", "even_split", or "amount"
-        "amount_dollars": 50.0,                 # $/trade — UP from $25 (2026-06-08 revision)
-        "max_contracts_per_trade": 500,         # depth cap for amount mode
-        "unit_contracts": 200,                  # used only if sizing_mode == "unit"
+        "use_union": True,                      # NEW 2026-06-09: union of raw + blend
+        "use_blend": True,                      # blend coefficients still computed
+        "edge_threshold": 0.25,                 # raw threshold (25%)
+        "blend_edge_threshold": 0.10,           # blend threshold (10%)
+        # REVISION 2026-06-09: switched from "amount" $50 → "unit" 500 contracts.
+        # Backtest at unit=500 + blend@15% + market+1¢: Sharpe 3.88, +517% return.
+        # Per-trade stake now scales with entry price: 500 contracts × entry/100
+        # ($150 at 30¢, $250 at 50¢, $400 at 80¢). Bigger per-trade risk but
+        # better Sharpe (more contracts per trade → more diversification within day).
+        # Daily/cumulative limits unchanged — they'll halt sooner if a string of
+        # losses hits, which is the desired safety behavior.
+        "sizing_mode": "unit",                  # changed from "amount"
+        "unit_contracts": 500,                  # changed from 200 → matches backtest config
+        "amount_dollars": 50.0,                 # unused now (kept for reference)
+        "max_contracts_per_trade": 500,         # depth cap (same as unit_contracts — no over-bet)
         "daily_loss_limit_dollars":    150.0,   # UP from $75 (matches 3 × $50)
         "cumulative_kill_dollars":     500.0,   # UP from $200 (more runway at higher sizing)
         "max_open_contracts":         5000,
@@ -374,6 +396,32 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
 
     model_probs = gaussian_to_bracket_probs(emos_mu, emos_sigma, contracts)
 
+    # Signal mode selection:
+    #   UNION    — fire if raw_edge ≥ raw_threshold OR blend_edge ≥ blend_threshold
+    #   BLEND    — fire only on blend signal
+    #   RAW      — fire only on raw model signal (default)
+    use_union = cfg.get("use_union", False)
+    use_blend = cfg.get("use_blend", False) or use_union
+    blend_fit = None
+    if use_blend:
+        from weather_markets.blend import get_blend
+        blend_fit = get_blend(city, cfg["city_name"], cfg["paper_model_source"])
+        if blend_fit is None:
+            print(f"  blend unfittable (need ≥100 settled paper_trades); FALLING BACK to raw model edge only")
+            use_blend = False
+            use_union = False
+        else:
+            print(f"  BLEND fit: α={blend_fit.alpha:+.3f} β_m={blend_fit.beta_model:+.3f} β_mkt={blend_fit.beta_market:+.3f} "
+                  f"(mkt share {blend_fit.market_share()*100:.0f}%, n_train={blend_fit.n_train})")
+    raw_thresh = cfg.get("edge_threshold", EDGE_THRESHOLD)
+    blend_thresh = cfg.get("blend_edge_threshold", 0.10)
+    if use_union:
+        print(f"  UNION MODE ACTIVE: fire if |raw_edge| ≥ {raw_thresh:.0%} OR |blend_edge| ≥ {blend_thresh:.0%}")
+    elif use_blend:
+        print(f"  BLEND ONLY: fire if |blend_edge| ≥ {blend_thresh:.0%}")
+    else:
+        print(f"  RAW MODEL ONLY: fire if |raw_edge| ≥ {raw_thresh:.0%}")
+
     signals: list[dict] = []
     for c in contracts:
         ticker = c["ticker"]
@@ -385,17 +433,46 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             continue
         market_mid = (bid + ask) / 200.0
         model_p = model_probs[ticker]
-        edge = model_p - market_mid
-        if abs(edge) < cfg.get("edge_threshold", EDGE_THRESHOLD):
-            continue
+        # Compute raw + blend edges. UNION fires if either passes threshold.
+        raw_edge = model_p - market_mid
+        blend_p = float(blend_fit.predict(model_p, market_mid)) if blend_fit else None
+        blend_edge = (blend_p - market_mid) if blend_p is not None else None
+        raw_fires = abs(raw_edge) >= raw_thresh
+        blend_fires = (blend_edge is not None) and (abs(blend_edge) >= blend_thresh)
+        # Decide whether to act based on mode
+        if use_union:
+            if not (raw_fires or blend_fires):
+                continue
+            # Use raw side preferentially when it fires (they always agree
+            # historically when both fire; use raw's prob for Kelly etc.)
+            if raw_fires:
+                decision_p = model_p
+                edge = raw_edge
+                signal_source = "union_both" if blend_fires else "union_raw_only"
+            else:
+                decision_p = blend_p
+                edge = blend_edge
+                signal_source = "union_blend_only"
+        elif use_blend:
+            if not blend_fires:
+                continue
+            decision_p = blend_p
+            edge = blend_edge
+            signal_source = "blend"
+        else:
+            if not raw_fires:
+                continue
+            decision_p = model_p
+            edge = raw_edge
+            signal_source = "raw"
         if edge > 0:
             side = "yes"
             cross_entry = int(ask)
-            p_win = model_p
+            p_win = decision_p
         else:
             side = "no"
             cross_entry = 100 - int(bid)
-            p_win = 1 - model_p
+            p_win = 1 - decision_p
         # NO MIN ENTRY FILTER (matches pre-committed cell entry>=0)
 
         # Set limit_price + post_only flag according to EXECUTION_MODE.
@@ -426,6 +503,9 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
         signals.append({
             "ticker": ticker, "side": side, "limit_price": limit_price,
             "cross_price": cross_entry, "model_p": model_p,
+            "blend_p": blend_p,                                # always recorded if blend fit available
+            "raw_edge": raw_edge, "blend_edge": blend_edge,
+            "signal_source": signal_source,                    # union_both / union_raw_only / union_blend_only / raw / blend
             "market_mid": market_mid, "edge": edge, "p_win": p_win,
             "post_only": post_only_safe,
         })

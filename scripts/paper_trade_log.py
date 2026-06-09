@@ -80,17 +80,21 @@ def model_source_for(station: Station, platform: str = "kalshi", blend: bool = F
     return base
 
 
-# Per-city blend edge thresholds (from backtest analysis 2026-06-09).
-# Blends pull strongly toward market so blended edges are much smaller in
-# magnitude than raw-model edges; these thresholds preserve roughly the same
-# trade frequency or are tuned for Sharpe on held-out test set.
+# Per-city blend edge thresholds (revised 2026-06-09 after full-sample
+# statistical significance test). Earlier thresholds were tuned to backtest
+# Sharpe; the t-test version requires fewer but higher-conviction trades.
+#
+# Bonferroni-corrected α=0.0083 across 6 simultaneous tests. Only KORD@15%
+# passes. Other cities are kept paper-only at thresholds where their signal
+# is at least directionally positive; KAUS+KLAX are deliberately skipped
+# because their β_model is negative (model anti-informative on top of market).
 BLEND_EDGE_THRESHOLD_BY_CITY = {
-    "KORD": 0.10,   # backtest best Sharpe 4.95 at 15%, conservative 10%
-    "KMIA": 0.10,
-    "KAUS": 0.03,   # model anti-informative; blend is mostly market
-    "KDEN": 0.03,
-    "KLAX": 0.02,
-    "KNYC": 0.05,
+    "KORD": 0.10,   # LIVE — matches live_trade KORD blend_edge_threshold. User-tuned for trade frequency.
+    "KMIA": 0.15,   # Paper-only — suggestive (t=+1.43, p=0.084), not Bonferroni-significant.
+    # "KAUS" — intentionally absent: β_model = −0.10 (anti-informative).
+    "KDEN": 0.03,   # Paper-only — weak signal (t=+0.23).
+    # "KLAX" — intentionally absent: β_model = −0.07 (anti-informative).
+    "KNYC": 0.10,   # Paper-only — marginal (t=−0.30).
 }
 
 

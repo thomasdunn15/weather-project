@@ -117,8 +117,7 @@ def _fetch_city_payload(
 
             # Contracts + paper-trade snapshot for this date
             contracts = fetch_contracts_for_date(selected_date, conn, station_id=city_code, series=station.kalshi_series)
-            ms_for_city = (f"EMOS combined 00Z {city_name} (rolling 45d)"
-                           if city_code != "KNYC" else "EMOS combined 00Z (rolling 45d)")
+            ms_for_city = _paper_source_for(city_code, city_name)
             # Cron decision time for this city — drives the Edge-by-bracket
             # snapshot cutoff. Edge MUST reflect prices AS-OF the cron fire
             # time, never after-the-fact market drift or settlement.
@@ -175,7 +174,7 @@ def _fetch_city_payload(
                       AND pt.target_date >= %s
                     ORDER BY pt.target_date ASC, pt.logged_at ASC
                 """, (
-                    f"EMOS combined 00Z {city_name} (rolling 45d)" if city_code != "KNYC" else "EMOS combined 00Z (rolling 45d)",
+                    _paper_source_for(city_code, city_name),
                     selected_date,
                     selected_date - timedelta(days=365),
                 ))
@@ -305,6 +304,27 @@ def _fetch_city_payload(
             "nTrain": blend_fit.n_train,
         } if blend_fit else None),
     }
+
+
+def _paper_source_for(city_code: str, city_name: str) -> str:
+    """The paper_trades model_source for backtest analysis.
+
+    Defaults to "EMOS combined 00Z {city} (rolling 45d)" (GEFS+IFS only).
+    For cities where the LIVE cron uses a different EMOS variant (e.g.,
+    KORD uses combined_hrrr with HRRR added), read that from CITY_CONFIG
+    so the backtest reflects what live trading actually does.
+    """
+    try:
+        import live_trade
+        cfg = live_trade.CITY_CONFIG.get(city_code, {})
+        if "paper_model_source" in cfg:
+            return cfg["paper_model_source"]
+    except Exception:
+        pass
+    # Default fallback
+    if city_code == "KNYC":
+        return "EMOS combined 00Z (rolling 45d)"
+    return f"EMOS combined 00Z {city_name} (rolling 45d)"
 
 
 def _city_cron_datetime(city_code: str, target_date: date) -> datetime:
