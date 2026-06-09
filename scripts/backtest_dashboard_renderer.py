@@ -119,50 +119,42 @@ def _fetch_city_payload(
             contracts = fetch_contracts_for_date(selected_date, conn, station_id=city_code, series=station.kalshi_series)
             ms_for_city = (f"EMOS combined 00Z {city_name} (rolling 45d)"
                            if city_code != "KNYC" else "EMOS combined 00Z (rolling 45d)")
+            # Cron decision time for this city — drives the Edge-by-bracket
+            # snapshot cutoff. Edge MUST reflect prices AS-OF the cron fire
+            # time, never after-the-fact market drift or settlement.
+            cron_dt = _city_cron_datetime(city_code, selected_date)
             with conn.cursor() as cur:
-                # FROZEN market mid: if a paper_trade row exists, the cron has
-                # fired — use the snapshot at decision time so Edge by bracket
-                # doesn't keep moving with post-decision market drift.
-                frozen_market: dict = {}
-                cron_time = None
                 if contracts:
                     tickers = [c["ticker"] for c in contracts]
+                    # Pull most-recent snapshot AT OR BEFORE cron time for
+                    # EVERY contract. This is the authoritative "Market P at
+                    # decision time" and works for halted cities, days where
+                    # the cron didn't fire, and tickers the cron didn't log.
                     cur.execute(
-                        """SELECT ticker, market_yes_bid, market_yes_ask, logged_at
-                           FROM paper_trades
-                           WHERE target_date=%s AND model_source=%s AND ticker = ANY(%s)""",
-                        (selected_date, ms_for_city, tickers),
+                        """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask, snapshot_at
+                           FROM prices
+                           WHERE ticker = ANY(%s) AND snapshot_at <= %s
+                           ORDER BY ticker, snapshot_at DESC""",
+                        (tickers, cron_dt),
                     )
-                    for tk, yb, ya, lt in cur.fetchall():
+                    for tk, yb, ya, _ in cur.fetchall():
                         if yb is not None and ya is not None:
-                            frozen_market[tk] = (int(yb) + int(ya)) / 200.0
-                        if cron_time is None or (lt is not None and lt < cron_time):
-                            cron_time = lt
-                # For tickers not in paper_trades, pin to the snapshot AT cron
-                # time (NOT the latest). If cron hasn't fired today, use latest.
-                if contracts:
-                    missing = [c["ticker"] for c in contracts if c["ticker"] not in frozen_market]
-                    if missing:
-                        if cron_time is not None:
-                            cur.execute(
-                                """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                                   FROM prices
-                                   WHERE ticker = ANY(%s) AND snapshot_at <= %s
-                                   ORDER BY ticker, snapshot_at DESC""",
-                                (missing, cron_time),
-                            )
-                        else:
-                            cur.execute(
-                                """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
-                                   FROM prices WHERE ticker = ANY(%s)
-                                   ORDER BY ticker, snapshot_at DESC""",
-                                (missing,),
-                            )
+                            bracket_market[tk] = (float(yb) + float(ya)) / 200.0
+                    # For today specifically: if cron hasn't fired yet (current
+                    # time before cron_dt), there's no AT-cron-time snapshot to
+                    # use → fall back to latest. Detected here by tickers that
+                    # still have no entry after the above query.
+                    missing = [c["ticker"] for c in contracts if c["ticker"] not in bracket_market]
+                    if missing and selected_date >= datetime.now(timezone.utc).date():
+                        cur.execute(
+                            """SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                               FROM prices WHERE ticker = ANY(%s)
+                               ORDER BY ticker, snapshot_at DESC""",
+                            (missing,),
+                        )
                         for tk, yb, ya in cur.fetchall():
                             if yb is not None and ya is not None:
                                 bracket_market[tk] = (float(yb) + float(ya)) / 200.0
-                # Frozen prices win where present
-                bracket_market.update(frozen_market)
 
                 # Settled paper trades for the trade log + sim.
                 # ASCENDING by date — required so the balance chart's x-axis
@@ -292,6 +284,25 @@ def _fetch_city_payload(
         "trades": trades_payload,
         "strat": strat_payload,
     }
+
+
+def _city_cron_datetime(city_code: str, target_date: date) -> datetime:
+    """The UTC datetime the live_trade cron fires for this city on target_date.
+
+    Reads decision_hour/decision_minute from CITY_CONFIG in live_trade.py so
+    the Edge-by-bracket panel's Market P is always pinned to the precise
+    moment that city's strategy makes its trade decision.
+
+    Falls back to 14:46 UTC (KORD default) for cities not in CITY_CONFIG.
+    """
+    try:
+        import live_trade
+        cfg = live_trade.CITY_CONFIG.get(city_code, {})
+    except Exception:
+        cfg = {}
+    hour = cfg.get("decision_hour", 14)
+    minute = cfg.get("decision_minute", 46)
+    return datetime(target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=timezone.utc)
 
 
 def _empty_sim() -> dict:
