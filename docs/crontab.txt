@@ -60,8 +60,8 @@
 # than daily cleanup can keep up. Disk-full once crashed Postgres and locked
 # us out of SSH on 2026-05-30, so this is safety-critical. Herbie re-downloads
 # on cache miss, so aggressive cleanup is harmless to correctness.
-0 * * * * find /home/tdunn/data/gefs -type f -mmin +60 -delete
-0 * * * * find /home/tdunn/data/hrrr -type f -mmin +60 -delete
+0 * * * * find /home/tdunn/data/gefs -type f -mmin +180 -delete
+0 * * * * find /home/tdunn/data/hrrr -type f -mmin +180 -delete
 
 # ECMWF 00 UTC run (all registered stations): try at 07:00 (normal publication
 # ~04:00 UTC + buffer), retry at 13:00. The 07:00 run catches the 90% case;
@@ -84,7 +84,7 @@
 45 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr.log 2>&1
 
 # Clean up ECMWF GRIB cache hourly (see GEFS/HRRR cleanup note above for why).
-0 * * * * find /home/tdunn/data/ifs -type f -mmin +60 -delete
+0 * * * * find /home/tdunn/data/ifs -type f -mmin +180 -delete
 
 # Paper-trading log: 14:45 UTC daily — 15 min after Kalshi discovery (14:30) and well before NYC peak heating (~18 UTC).
 # Uses 00Z ECMWF forecast (ingested at 07 UTC), trades against pre-convergence market.
