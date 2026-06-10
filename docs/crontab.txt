@@ -108,9 +108,13 @@
 #   - sizing: Amount $25/trade with 500 contract cap (down from Unit 200)
 #   - cumulative kill: $200 (down from $500)
 #   - 30-day window with NO parameter changes — re-evaluate 2026-07-07
-# Miami remains HALTED (halt/KMIA file). Lifetime t=-0.49 in last 90d says no current edge.
+# Chicago: KORD with UNION strategy (raw 25% OR blend 10%), unit 500 contracts,
+# anti-stacking max_signals=2, edge cap at 40% for sizing.
+# Miami: RESUMED 2026-06-10 with BLEND-only at 10% edge, $15/trade Amount sizing,
+# anti-stacking max_signals=1, edge cap at 40% for sizing. 30-day no-tuning window.
+# See docs/miami_resume_2026-06-10_precommit.md for full rationale + bail criteria.
 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
-# 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
+30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.
