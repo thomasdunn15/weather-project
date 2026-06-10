@@ -109,7 +109,6 @@ CITY_CONFIG = {
         "unit_contracts": 500,                  # changed from 200 → matches backtest config
         "amount_dollars": 50.0,                 # unused now (kept for reference)
         "max_contracts_per_trade": 500,         # depth cap (same as unit_contracts — no over-bet)
-        "max_signals_per_day": 2,               # anti-stacking (added 2026-06-10) — keep top 2 by edge
         "daily_loss_limit_dollars":    150.0,   # UP from $75 (matches 3 × $50)
         "cumulative_kill_dollars":     500.0,   # UP from $200 (more runway at higher sizing)
         "max_open_contracts":         5000,
@@ -123,8 +122,10 @@ CITY_CONFIG = {
         # shows consistent profitability across all 7 windows (t=+4.10 to
         # +9.21), passes Bonferroni for 6-city correction. Most recent 90-day
         # window: t=+4.10, +$16.53, 61% wins (n=61).
-        # Edge per trade smaller than KORD ($0.27 vs $0.20-$0.30) so use
-        # conservative Amount $15 sizing. 30-day no-tuning window.
+        # SIZING: matches KORD framework — unit=500 contracts. Earlier draft
+        # used Amount $15/trade ("conservative"); user noted it under-deployed
+        # given Miami's t-stat strength. Same 500-unit sizing as KORD on the
+        # rationale that Miami's edge is comparable per trade.
         "models": ["gefs", "ifs"],
         "emos_model": "combined",
         "model_source": "EMOS combined 00Z Miami (rolling 45d)",
@@ -136,21 +137,20 @@ CITY_CONFIG = {
         "use_blend": True,
         "edge_threshold": 1.00,                 # raw threshold disabled (impossibly high)
         "blend_edge_threshold": 0.10,           # the only filter that fires
-        "sizing_mode": "amount",
-        "amount_dollars": 15.0,                 # conservative; ~half KORD per-trade $
-        "max_contracts_per_trade": 500,
-        "unit_contracts": 100,                  # unused (sizing_mode=amount)
-        "max_signals_per_day": 1,               # anti-stacking — single highest-conviction bet
-        "daily_loss_limit_dollars":    100.0,
-        "cumulative_kill_dollars":     300.0,
-        "max_open_contracts":         3000,
+        "sizing_mode": "unit",                  # matches KORD framework
+        "unit_contracts": 500,                  # matches KORD: same backtest-validated unit
+        "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
+        "max_contracts_per_trade": 500,         # depth cap (= unit_contracts)
+        "daily_loss_limit_dollars":    150.0,   # matches KORD
+        "cumulative_kill_dollars":     500.0,   # matches KORD
+        "max_open_contracts":         5000,     # matches KORD
         "is_active": True,                      # RESUMED per precommit doc
     },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 250.0    # = Chicago $150 + Miami $100
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 800.0     # = Chicago $500 + Miami $300
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 300.0    # = Chicago $150 + Miami $150
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1000.0    # = Chicago $500 + Miami $500
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
@@ -538,24 +538,11 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
     # Sort by edge magnitude DESCENDING for display purposes only.
     # Even-split sizing means budget is divided equally regardless of order.
     signals.sort(key=lambda s: -abs(s["edge"]))
-
-    # RISK CONTROL B (added 2026-06-10): anti-stacking cap.
-    # When the model has high directional conviction, multiple brackets express
-    # the SAME view (e.g. T90 YES + B90.5 NO + B92.5 NO all = "high will be
-    # cold"). If the model is wrong, MULTIPLE positions lose together. On
-    # 2026-06-10 this turned a -$35 (single best trade) into a -$114
-    # (three-trade) loss.
-    # The cap drops the lowest-edge stacked signals beyond max_signals_per_day.
-    # Default = 999 (no cap, legacy behavior). Per-city override via
-    # max_signals_per_day in CITY_CONFIG.
-    cfg = CITY_CONFIG[city]
-    max_signals = int(cfg.get("max_signals_per_day", 999))
-    if len(signals) > max_signals:
-        dropped = signals[max_signals:]
-        signals = signals[:max_signals]
-        for d in dropped:
-            print(f"    anti-stacking: dropped {d['ticker']} {d['side']} (edge {d['edge']:+.1%}) — "
-                  f"kept top {max_signals}")
+    # NOTE: anti-stacking control was added 2026-06-10 evening and reverted
+    # later the same day — historical backtest showed it net-negative for
+    # Sharpe on both cities. Today's stacked loss was a tail event, not
+    # structural correlated risk. Code kept clean (no cap field) since the
+    # dashboard backtest still offers it as a what-if toggle.
     return signals
 
 
@@ -587,21 +574,17 @@ def size_trade(city: str, signal: dict, per_trade_stake_cents: int) -> int:
     """
     cfg = CITY_CONFIG[city]
     mode = cfg.get("sizing_mode", "even_split")
-    # Edge cap for sizing — see "RISK CONTROL C" comment in amount mode below.
-    # In unit mode we scale the unit count by min(1, 0.40/|edge|) so a 90% edge
-    # doesn't get sized as 2× a 45% edge. Trade still fires; sizing just doesn't
-    # extrapolate beyond what we trust the model to deliver.
-    SIZE_EDGE_CAP = 0.40
-    edge_scale = min(1.0, SIZE_EDGE_CAP / max(abs(signal.get("edge", 0)), 0.01))
+    # NOTE: edge-cap-for-sizing was added 2026-06-10 evening and reverted later
+    # the same day. Backtest showed it net-negative — high-edge trades win at
+    # the highest rate, so capping their stake removes positive EV. Dashboard
+    # backtest still offers it as a what-if toggle for exploration.
     if mode == "unit":
-        return int(round(cfg["unit_contracts"] * edge_scale))
+        return int(cfg["unit_contracts"])
     if mode == "amount":
         limit_price = signal["limit_price"]
         if limit_price <= 0:
             return 0
-        # RISK CONTROL C: edge cap (see top of function). Scale per-trade $
-        # by edge_scale so a 90% "edge" gets sized like 40%.
-        amount_cents = int(round(cfg["amount_dollars"] * 100 * edge_scale))
+        amount_cents = int(round(cfg["amount_dollars"] * 100))
         n_contracts = amount_cents // limit_price
         cap = cfg.get("max_contracts_per_trade")
         if cap is not None and n_contracts > cap:
