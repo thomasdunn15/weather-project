@@ -238,6 +238,12 @@ def _get_live_data(cfg: dict) -> dict:
         series.append({"d": i, "v": round(cum, 2)})
 
     # Per-city
+    # Pre-compute per-city unrealized from open positions so the city cards
+    # show live mark-to-market, not just settled P&L.
+    per_city_unreal = {}
+    for p in positions_rows:
+        per_city_unreal[p["city"]] = per_city_unreal.get(p["city"], 0) + p["unreal"]
+
     cities_payload = []
     halt_dir = Path(__file__).parent.parent / "halt"
     for city_code, ccfg in city_config.items():
@@ -252,6 +258,7 @@ def _get_live_data(cfg: dict) -> dict:
                 city_realized += cum_
                 city_today += td_
                 city_today_orders += int(tdo)
+        city_unrealized = round(per_city_unreal.get(city_code, 0.0), 2)
         # Halt status — three layers: explicit is_active=False in config,
         # halt file present, or aggregate halt
         halt_file = halt_dir / city_code
@@ -276,8 +283,8 @@ def _get_live_data(cfg: dict) -> dict:
             "model": ms_tag.replace(" [LIVE]", "").replace(" (rolling 45d)", " · rolling 45d"),
             "status": "halted" if is_halted else "active",
             "realized": round(city_realized, 2),
-            "unrealized": 0.0,  # we don't track unrealized in DB yet — set 0
-            "today": round(city_today, 2),
+            "unrealized": city_unrealized,
+            "today": round(city_today + city_unrealized, 2),
             "orders": city_today_orders,
             "budget": int(ccfg.get("daily_loss_limit_dollars", 0)),
             "contracts": ccfg.get("max_open_contracts", 0),
@@ -426,9 +433,14 @@ def _open_positions(today: date) -> list[dict]:
                 ORDER BY lt.ticker""", (today,))
             trade_rows = cur.fetchall()
 
-            # Latest market snapshot per ticker for mark-to-market
+            # Latest market snapshot per ticker for mark-to-market.
+            # We store BID and ASK separately because closing a position requires
+            # CROSSING the spread:
+            #   YES position: close by SELLING YES → hit YES bid (lower price)
+            #   NO position:  close by SELLING NO  → hit NO bid = (100 − YES ask)
+            # Using yes-mid overstates value on wide-spread illiquid books.
             tickers = list({r[0] for r in trade_rows})
-            marks: dict = {}
+            marks: dict = {}   # ticker -> (yes_bid, yes_ask) in cents
             if tickers:
                 cur.execute("""
                     SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
@@ -436,29 +448,39 @@ def _open_positions(today: date) -> list[dict]:
                     ORDER BY ticker, snapshot_at DESC""", (tickers,))
                 for tk, yb, ya in cur.fetchall():
                     if yb is not None and ya is not None:
-                        marks[tk] = (int(yb) + int(ya)) / 2.0   # YES-mid in cents
+                        marks[tk] = (int(yb), int(ya))
 
         for ticker, side, qty, fill_px_yes_eq, station_id, bt, sl, sh in trade_rows:
             qty = int(qty)
             avg_yes = int(fill_px_yes_eq) if fill_px_yes_eq is not None else None
-            mark_yes = marks.get(ticker)
-            # PnL per contract (in cents, YES-eq): for BUY_YES position,
-            # value = mark - cost. For BUY_NO, value = -mark - (-cost) = cost - mark.
+            mark = marks.get(ticker)
+            # PnL per contract (in cents, YES-eq) — conservative "close it now"
+            # mark using the side-appropriate bid.
             unreal_cents = 0
             unreal_pct = 0
-            if avg_yes is not None and mark_yes is not None:
+            display_mark_yes_eq = 0
+            if avg_yes is not None and mark is not None:
+                yes_bid, yes_ask = mark
                 if side == "yes":
-                    per_contract = mark_yes - avg_yes
+                    # Close by SELLING YES at yes_bid
+                    per_contract = yes_bid - avg_yes
                     cost_basis = avg_yes
+                    display_mark_yes_eq = yes_bid
                 else:
-                    # BUY_NO: stored avg_yes is YES-equivalent (= 100 - NO entry).
-                    # Our cost was (100 - avg_yes) cents NO. Value if we sold now
-                    # at the displayed bid: NO bid = 100 - YES ask. Simpler:
-                    # use YES-eq throughout. Profit = avg_yes - mark_yes
-                    per_contract = avg_yes - mark_yes
+                    # Close by SELLING NO. NO bid = 100 − YES ask.
+                    # avg_yes is YES-eq cost (= 100 − NO entry). So NO entry cost
+                    # was (100 − avg_yes). Sell NO at NO bid = (100 − YES ask).
+                    # Profit per contract = (100 − yes_ask) − (100 − avg_yes)
+                    #                     = avg_yes − yes_ask
+                    per_contract = avg_yes - yes_ask
                     cost_basis = 100 - avg_yes
+                    # Display mark in YES-eq for consistency
+                    display_mark_yes_eq = yes_ask
                 unreal_cents = per_contract * qty
                 unreal_pct = (per_contract / cost_basis * 100) if cost_basis else 0
+            else:
+                # Fallback display when no live mark
+                display_mark_yes_eq = avg_yes if avg_yes is not None else 0
             # Bracket label (short)
             if bt == "greater_than":
                 bracket_lbl = f"≥{int(sl)+1}°F"
@@ -473,7 +495,7 @@ def _open_positions(today: date) -> list[dict]:
                 "side": side.upper(),
                 "qty": qty,
                 "avg": avg_yes if avg_yes is not None else 0,
-                "mark": int(round(mark_yes)) if mark_yes is not None else 0,
+                "mark": int(display_mark_yes_eq),
                 "unreal": round(unreal_cents / 100.0, 2),
                 "unrealPct": round(unreal_pct, 1),
             })
