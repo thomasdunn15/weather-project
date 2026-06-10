@@ -192,6 +192,27 @@ class KalshiClient:
         but goes through the authenticated path for consistency."""
         return self._request("GET", f"/markets/{ticker}")
 
+    def get_orderbook(self, ticker: str, depth: int = 0) -> dict:
+        """Fetch the full order book (all price levels with quantities).
+
+        Kalshi convention: response.orderbook contains TWO bid arrays — yes
+        and no. There are no separate ask arrays because in binary markets the
+        YES ask at price X equals the NO bid at price (100−X). To get YES asks,
+        invert the no bid array.
+
+        Args:
+            ticker: market ticker
+            depth: max levels per side (0 = all). Default 0 — we want full depth
+                   for the walk-book backtest.
+
+        Returns:
+            Kalshi response dict. The key data is at
+            response["orderbook"]["yes"] and response["orderbook"]["no"], each
+            being a list of [price_cents, qty] arrays sorted descending by price.
+        """
+        params = {"depth": depth} if depth > 0 else {}
+        return self._request("GET", f"/markets/{ticker}/orderbook", params=params)
+
     # ----- order placement / cancellation (Phase 3+) ------------------------
     # These methods CAN move real money on production. Callers are responsible
     # for risk controls (size limits, kill switches, etc.) — those live in

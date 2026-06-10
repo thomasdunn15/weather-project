@@ -372,6 +372,12 @@ function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDa
                       : "Need ≥100 settled paper_trades to fit blend"}>
               Blend (Benter)
             </button>
+            <button className={strategy === "union" ? "on" : ""}
+                    disabled={!blendAvailable}
+                    onClick={() => blendAvailable && setStrategy("union")}
+                    title="Fire if RAW edge ≥ filter OR BLEND edge ≥ (filter × 0.4). Both signals captured; live KORD config.">
+              Union (R + B)
+            </button>
           </div>
         </div>
         <div className="ctrl">
@@ -448,6 +454,11 @@ function jsComputeSim(trades, params) {
           startingBankroll, kellyFraction: kf = 0.5, scalingPct = 0.05,
           strategy = "raw" } = params;
   const useBlend = strategy === "blend";
+  const useUnion = strategy === "union";
+  // For UNION: edgeFilter = raw threshold; blend threshold scales at 0.4×
+  // (so 25% raw → 10% blend, matching live KORD config).
+  const rawThreshold = edgeFilter;
+  const blendThreshold = edgeFilter * 0.4;
   let balance = startingBankroll;
   let peak = startingBankroll;
   let maxDD = 0;          // worst peak-to-trough as % of peak
@@ -460,17 +471,39 @@ function jsComputeSim(trades, params) {
   const tradeRecords = [];
   for (const t of trades) {
     nTotal++;
-    // STRATEGY: edge + side derived from chosen probability (model vs blend).
-    // In blend mode, fall back to model if blendP is missing for this trade.
-    const pSel = (useBlend && t.blendP != null) ? t.blendP : t.modelP;
-    const edgeSel = pSel - t.mktP;
-    if (Math.abs(edgeSel) < edgeFilter) {
-      tradeRecords.push({ ...t, fill: "filtered", computedQty: 0, computedPnl: 0,
-                          stratEdge: edgeSel, stratP: pSel });
-      continue;
+    // STRATEGY: select edge + probability.
+    //   raw    → use modelP, filter at edgeFilter
+    //   blend  → use blendP (fallback modelP), filter at edgeFilter
+    //   union  → fire if |raw_edge| ≥ rawThreshold OR |blend_edge| ≥ blendThreshold
+    let pSel, edgeSel;
+    if (useUnion) {
+      const rawEdge = t.modelP - t.mktP;
+      const blendEdge = (t.blendP != null) ? (t.blendP - t.mktP) : null;
+      const rawFires = Math.abs(rawEdge) >= rawThreshold;
+      const blendFires = (blendEdge != null) && (Math.abs(blendEdge) >= blendThreshold);
+      if (!rawFires && !blendFires) {
+        tradeRecords.push({ ...t, fill: "filtered", computedQty: 0, computedPnl: 0,
+                            stratEdge: rawEdge, stratP: t.modelP, unionSource: "neither" });
+        continue;
+      }
+      // When both fire (or only raw), use raw probability/edge.
+      // When only blend fires, use blend.
+      if (rawFires) {
+        pSel = t.modelP; edgeSel = rawEdge;
+      } else {
+        pSel = t.blendP; edgeSel = blendEdge;
+      }
+    } else {
+      pSel = (useBlend && t.blendP != null) ? t.blendP : t.modelP;
+      edgeSel = pSel - t.mktP;
+      if (Math.abs(edgeSel) < edgeFilter) {
+        tradeRecords.push({ ...t, fill: "filtered", computedQty: 0, computedPnl: 0,
+                            stratEdge: edgeSel, stratP: pSel });
+        continue;
+      }
     }
-    // For blend mode, recompute the side from sign of blend edge — the
-    // recorded t.pos was the raw model's decision and may flip in blend.
+    // For blend / union mode, recompute the side from sign of selected edge.
+    // t.pos was the raw model's decision and may flip.
     const stratSide = edgeSel > 0 ? "BUY_YES" : "BUY_NO";
     const crossEntry = t.entry;
     if (crossEntry < minEntry) {
@@ -701,21 +734,58 @@ function BacktestTab({ initialState }) {
         </div>
       </div>
 
-      <PanelBare title="Edge by bracket" meta={`${strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(bracketEdge * 100).toFixed(0)}% · set in top bar (independent of P&L sim)`}>
+      <PanelBare title="Edge by bracket" meta={
+        strategy === "union"
+          ? `UNION signal: raw ≥ ${(bracketEdge * 100).toFixed(0)}% OR blend ≥ ${(bracketEdge * 40).toFixed(0)}% · set in top bar`
+          : `${strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(bracketEdge * 100).toFixed(0)}% · set in top bar (independent of P&L sim)`
+      }>
         <table className="dt">
           <thead><tr>
             <th className="l">Bracket</th>
-            <th>{strategy === "blend" ? "Blend P" : "Model P"}</th>
+            {strategy === "union"
+              ? <><th>Model P</th><th>Blend P</th></>
+              : <th>{strategy === "blend" ? "Blend P" : "Model P"}</th>}
             <th>Market P</th>
             <th>Edge</th>
             <th>Signal</th>
             <th>Resolved</th>
           </tr></thead>
           <tbody>
-            {brackets.length === 0 && <tr><td className="l muted" colSpan="6" style={{ padding: "16px 12px" }}>No brackets for {dateStr}.</td></tr>}
+            {brackets.length === 0 && (
+              <tr><td className="l muted" colSpan={strategy === "union" ? 7 : 6} style={{ padding: "16px 12px" }}>
+                No brackets for {dateStr}.
+              </td></tr>
+            )}
             {brackets.map((b, i) => {
-              // When blend selected, fall back to model P if blend is missing
-              // (e.g., market price is 0 → blend undefined).
+              if (strategy === "union") {
+                const rawEdge = b.modelP - b.mktP;
+                const blendEdge = (b.blendP != null) ? (b.blendP - b.mktP) : null;
+                const rawFires = Math.abs(rawEdge) >= bracketEdge;
+                const blendFires = blendEdge != null && Math.abs(blendEdge) >= (bracketEdge * 0.4);
+                const fires = rawFires || blendFires;
+                // Side: take whichever fires; when both fire they agree
+                const e = rawFires ? rawEdge : blendEdge;
+                const side = e > 0 ? "YES" : "NO";
+                const tag = rawFires && blendFires ? "both"
+                          : rawFires ? "raw"
+                          : blendFires ? "blend" : "";
+                return (
+                  <tr key={i}>
+                    <td className="l hi">{b.label}</td>
+                    <td>{(b.modelP * 100).toFixed(0)}%</td>
+                    <td>{b.blendP != null ? `${(b.blendP * 100).toFixed(0)}%` : "—"}</td>
+                    <td>{(b.mktP * 100).toFixed(0)}%</td>
+                    <td><EdgeCell edge={e || 0} /></td>
+                    <td>{fires
+                      ? <span className={"side " + (side === "YES" ? "yes" : "no")}>
+                          BUY {side} <small style={{opacity: 0.6, marginLeft: 4}}>{tag}</small>
+                        </span>
+                      : <span className="muted">—</span>}</td>
+                    <td><span className={"outcome " + (b.resolved === "YES" ? "yes" : "no")}>{b.resolved}</span></td>
+                  </tr>
+                );
+              }
+              // Default raw/blend single-prob display
               const probSel = strategy === "blend" && b.blendP != null ? b.blendP : b.modelP;
               const e = probSel - b.mktP;
               const fires = Math.abs(e) >= bracketEdge;
@@ -759,7 +829,7 @@ function BacktestTab({ initialState }) {
         </div>
       </PanelBare>
 
-      <PanelBare title="Trade-by-trade detail" meta={`every paper trade · ${strategy === "blend" ? "BLEND" : "RAW"} signal · qty/P&L reflect (${sizing}, $${Number(amount).toLocaleString()}/trade, cap ${depth})`}>
+      <PanelBare title="Trade-by-trade detail" meta={`every paper trade · ${strategy === "union" ? "UNION" : strategy === "blend" ? "BLEND" : "RAW"} signal · qty/P&L reflect (${sizing}, $${Number(amount).toLocaleString()}/trade, cap ${depth})`}>
         <div className="tbl-scroll" style={{ maxHeight: 280 }}>
           <table className="dt">
             <thead><tr>
