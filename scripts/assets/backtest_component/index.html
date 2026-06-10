@@ -391,7 +391,7 @@ function ControlsBar({ platform, setPlatform, cityCode, setCityCode, date, setDa
   );
 }
 
-function SimControls({ edge, setEdge, minEntry, setMinEntry, sizing, setSizing, exec, setExec, depth, setDepth, amount, setAmount, bankroll, setBankroll }) {
+function SimControls({ edge, setEdge, minEntry, setMinEntry, sizing, setSizing, exec, setExec, depth, setDepth, amount, setAmount, bankroll, setBankroll, maxSignals, setMaxSignals, edgeCap, setEdgeCap }) {
   return (
     <div className="controls sim-controls">
       <div className="ctrl"><span className="cl">Bankroll</span>
@@ -414,6 +414,26 @@ function SimControls({ edge, setEdge, minEntry, setMinEntry, sizing, setSizing, 
       </div>
       <div className="ctrl"><span className="cl">{sizing === "unit" ? "Contracts" : sizing === "amount" ? "$ / trade" : "% bankroll"}</span>
         <input type="number" value={amount} onChange={e => setAmount(e.target.value)} step={sizing === "unit" ? "50" : sizing === "amount" ? "5" : "1"} />
+      </div>
+      <div className="ctrl" title="Anti-stacking: per-day, keep only top N signals by |edge|. Live KORD=2, KMIA=1, 0=off.">
+        <span className="cl">Max signals/day</span>
+        <select value={maxSignals} onChange={e => setMaxSignals(+e.target.value)}>
+          <option value={0}>no cap</option>
+          <option value={1}>1 (KMIA live)</option>
+          <option value={2}>2 (KORD live)</option>
+          <option value={3}>3</option>
+          <option value={4}>4</option>
+        </select>
+      </div>
+      <div className="ctrl" title="Edge cap for sizing only: treat edges above this as if they were this. Doesn't change which trades fire — only sizing. Live: 40% in both cities.">
+        <span className="cl">Edge cap (size)</span>
+        <select value={edgeCap} onChange={e => setEdgeCap(+e.target.value)}>
+          <option value={0}>no cap</option>
+          <option value={0.30}>≥ 30%</option>
+          <option value={0.40}>≥ 40% (live)</option>
+          <option value={0.50}>≥ 50%</option>
+          <option value={0.60}>≥ 60%</option>
+        </select>
       </div>
       <div className="ctrl"><span className="cl">Execution</span>
         <select value={exec} onChange={e => setExec(e.target.value)}>
@@ -452,13 +472,55 @@ function applyStakeCap(rawStake, balance, maxPct, maxDollars) {
 function jsComputeSim(trades, params) {
   const { sizing, edgeFilter, minEntry, amountDollars, depthCap, execution,
           startingBankroll, kellyFraction: kf = 0.5, scalingPct = 0.05,
-          strategy = "raw" } = params;
+          strategy = "raw",
+          maxSignals = 0,                            // 0 = no cap (legacy)
+          edgeCap = 0,                               // 0 = no cap (legacy)
+        } = params;
   const useBlend = strategy === "blend";
   const useUnion = strategy === "union";
   // For UNION: edgeFilter = raw threshold; blend threshold scales at 0.4×
   // (so 25% raw → 10% blend, matching live KORD config).
   const rawThreshold = edgeFilter;
   const blendThreshold = edgeFilter * 0.4;
+
+  // RISK CONTROL B — anti-stacking (added 2026-06-10):
+  // Pre-process trades to keep only top N signals per day (by |edge|). Mark
+  // dropped trades so the trade table can show them as "anti-stacking".
+  // Done as a Set lookup to keep the main loop's structure intact.
+  let droppedByStacking = new Set();
+  if (maxSignals > 0) {
+    const byDate = {};
+    for (const t of trades) {
+      // Compute the same edge that the main loop would use, for stack-ranking.
+      let edgeForRank;
+      if (useUnion) {
+        const r = Math.abs(t.modelP - t.mktP);
+        const b = t.blendP != null ? Math.abs(t.blendP - t.mktP) : 0;
+        edgeForRank = Math.max(r, b);
+      } else if (useBlend && t.blendP != null) {
+        edgeForRank = Math.abs(t.blendP - t.mktP);
+      } else {
+        edgeForRank = Math.abs(t.modelP - t.mktP);
+      }
+      // Only consider trades that would fire under the chosen strategy/edge
+      // filter — otherwise we'd be ranking already-filtered noise.
+      const fires = (useUnion
+        ? (Math.abs(t.modelP - t.mktP) >= rawThreshold ||
+           (t.blendP != null && Math.abs(t.blendP - t.mktP) >= blendThreshold))
+        : edgeForRank >= edgeFilter);
+      if (!fires) continue;
+      (byDate[t.date] ||= []).push({ trade: t, edge: edgeForRank });
+    }
+    for (const dateStr in byDate) {
+      const arr = byDate[dateStr];
+      arr.sort((a, b) => b.edge - a.edge);          // desc by edge
+      for (let i = maxSignals; i < arr.length; i++) {
+        // Use a stable per-trade key — date + ticker is unique
+        droppedByStacking.add(arr[i].trade.date + "|" + arr[i].trade.bracket);
+      }
+    }
+  }
+
   let balance = startingBankroll;
   let peak = startingBankroll;
   let maxDD = 0;          // worst peak-to-trough as % of peak
@@ -511,6 +573,13 @@ function jsComputeSim(trades, params) {
                           stratEdge: edgeSel, stratP: pSel });
       continue;
     }
+    // RISK CONTROL B — anti-stacking drop. Trade passed the edge filter but
+    // there are higher-|edge| signals on the same day; we cap.
+    if (maxSignals > 0 && droppedByStacking.has(t.date + "|" + t.bracket)) {
+      tradeRecords.push({ ...t, fill: "anti-stack", computedQty: 0, computedPnl: 0,
+                          stratEdge: edgeSel, stratP: pSel });
+      continue;
+    }
     if (t.won === null || t.won === undefined) {
       nPending++;
       tradeRecords.push({ ...t, fill: "pending", computedQty: 0, computedPnl: 0,
@@ -551,21 +620,27 @@ function jsComputeSim(trades, params) {
     const sideFlipped = stratSide !== recordedSide;
     const won = sideFlipped ? !t.won : !!t.won;
     const feePer = kalshiFeeCents(entry) / 100;
+    // RISK CONTROL C — edge cap for sizing. Edges above edgeCap get sized as
+    // if they were edgeCap. Doesn't change which trades fire — only sizing.
+    // Live config: 0.40 in both cities.
+    const edgeScale = (edgeCap > 0)
+      ? Math.min(1, edgeCap / Math.max(Math.abs(edgeSel), 0.01))
+      : 1;
     let contracts, stakeDollars;
     if (sizing === "unit") {
-      contracts = Math.floor(amountDollars);
+      contracts = Math.floor(amountDollars * edgeScale);
       stakeDollars = contracts * entry / 100;
     } else if (sizing === "amount") {
-      stakeDollars = amountDollars;
+      stakeDollars = amountDollars * edgeScale;
       contracts = Math.floor(stakeDollars / (entry / 100));
     } else if (sizing === "scaling") {
-      const raw = balance * scalingPct;
+      const raw = balance * scalingPct * edgeScale;
       stakeDollars = applyStakeCap(raw, balance, null, null);
       contracts = Math.floor(stakeDollars / (entry / 100));
     } else { // kelly — uses STRATEGY-chosen probability
       const pWin = stratSide === "BUY_YES" ? pSel : (1 - pSel);
       const f = kellyFraction(pWin, entry) * kf;
-      const raw = balance * f;
+      const raw = balance * f * edgeScale;
       stakeDollars = applyStakeCap(raw, balance, null, null);
       contracts = Math.floor(stakeDollars / (entry / 100));
     }
@@ -653,6 +728,16 @@ function BacktestTab({ initialState }) {
   const [minEntry, setMinEntry] = useState(init.minEntry ?? 0);            // LOCAL only
   const [amount, setAmount] = useState(init.amount ?? 50);                 // LOCAL only
   const [bankroll, setBankroll_] = useState(3000);                         // LOCAL only — matches real Kalshi balance
+  // RISK CONTROLS (added 2026-06-10, matching live_trade.py).
+  // maxSignals — anti-stacking cap. When the model has high directional
+  // conviction, multiple brackets express the SAME view; capping to top N
+  // prevents losing on all stacked positions when the model is wrong.
+  // 0 = no cap (legacy). Live config: KORD=2, KMIA=1.
+  const [maxSignals, setMaxSignals] = useState(init.maxSignals ?? 0);
+  // edgeCap — for SIZING ONLY. Edges above this get sized as-if they were
+  // edgeCap. Doesn't change which trades fire — only sizing math. 0 = no cap.
+  // Live: 0.40 in both cities.
+  const [edgeCap, setEdgeCap] = useState(init.edgeCap ?? 0);
   const [dateStr, setDateStr_] = useState(init.date || (window.BTDATA[defaultCity] || {}).date);
   // Strategy: "raw" = use modelP; "blend" = use blendP (Benter-style logistic blend).
   // Auto-default to blend if available, else raw.
@@ -688,7 +773,9 @@ function BacktestTab({ initialState }) {
   const sim = jsComputeSim(d.trades || [], {
     sizing, edgeFilter: simEdge, minEntry, amountDollars: Number(amount) || 0,
     depthCap: Number(depth) || 0, execution: exec, startingBankroll: bankroll,
-    strategy,    // "raw" or "blend"
+    strategy,                                       // "raw" / "blend" / "union"
+    maxSignals: Number(maxSignals) || 0,            // 0 = no cap (legacy)
+    edgeCap: Number(edgeCap) || 0,                  // 0 = no cap (legacy)
   });
   const brackets = d.brackets || [];
   // For the Edge by bracket display, pick which P to compare to market.
@@ -809,7 +896,8 @@ function BacktestTab({ initialState }) {
       <PanelBare title="Simulation results" meta={`${d.city} · ${sizing} · |edge| ≥ ${(simEdge * 100).toFixed(0)}%${minEntry ? " · entry ≥ " + minEntry + "¢" : ""}`}>
         <SimControls {...{ edge: simEdge, setEdge: setSimEdge, minEntry, setMinEntry,
                            sizing, setSizing, exec, setExec, depth, setDepth,
-                           amount, setAmount, bankroll, setBankroll }} />
+                           amount, setAmount, bankroll, setBankroll,
+                           maxSignals, setMaxSignals, edgeCap, setEdgeCap }} />
         <div className="bt-metrics" style={{ borderBottom: "1px solid var(--border)" }}>
           <BTMetric label="Final balance" value={moneyPlain(sim.final || 0)} sub={pct(sim.ret || 0)} tone={(sim.ret || 0) >= 0 ? "pos" : "neg"} />
           <BTMetric label="Resolved" value={`${Math.round((sim.n || 0) * (sim.win || 0))}/${sim.n || 0}`} sub={`${((sim.win || 0) * 100).toFixed(0)}% win rate`} />

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     polymarket_key_id: str | None = None
     polymarket_secret: str | None = None  # base64-encoded Ed25519 private key
 
+    # polymarketdata.co (3rd-party historical data — only covers international
+    # Polymarket, NOT Polymarket US weather contracts. Kept for completeness.)
+    polymarketdata_api_key: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

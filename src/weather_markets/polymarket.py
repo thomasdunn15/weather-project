@@ -89,15 +89,35 @@ class PolymarketClient:
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, params: dict | None = None) -> Any:
+    def _request(self, method: str, path: str, params: dict | None = None,
+                 json_body: dict | None = None) -> Any:
         url = f"{self.base_url}{path}"
         headers = self._auth_headers(method, path)
         if method == "GET":
             r = self._client.get(url, headers=headers, params=params)
+        elif method == "POST":
+            r = self._client.post(url, headers=headers, params=params, json=json_body)
         else:
-            raise NotImplementedError(f"only GET supported in read-only client; got {method}")
+            raise NotImplementedError(f"unsupported method: {method}")
         r.raise_for_status()
         return r.json()
+
+    # === Historical price data (Polymarket DOES have this) ===
+
+    def get_candlesticks(self, slug: str, start: str, end: str, interval: str = "5m") -> dict:
+        """POST /v1beta1/report/trades/stats — server-aggregated OHLCV candles.
+
+        Args:
+            slug: market slug (e.g., 'tc-temp-mdwhigh-2026-06-08-gte80lt81f')
+            start: ISO 8601 UTC start timestamp
+            end:   ISO 8601 UTC end timestamp
+            interval: '1m', '5m', '15m', '1h', '4h', '1d'
+
+        Returns dict with candles list: {interval_start, interval_end,
+        open, high, low, close, volume, notional}
+        """
+        body = {"symbol": slug, "start_time": start, "end_time": end, "interval": interval}
+        return self._request("POST", "/v1beta1/report/trades/stats", json_body=body)
 
     # === Public-ish market data (still authed via headers) ===
 
