@@ -237,9 +237,13 @@ def _get_live_data(cfg: dict) -> dict:
         cum += daily.get(d, 0.0)
         series.append({"d": i, "v": round(cum, 2)})
 
-    # Per-city
-    # Pre-compute per-city unrealized from open positions so the city cards
-    # show live mark-to-market, not just settled P&L.
+    # Open positions (filled + partial_resting trades for today, marked to
+    # market). Used by both the per-city cards AND the bottom Positions panel.
+    # Must be computed BEFORE cities_payload since cities use the per-city
+    # rollup for the unrealized column.
+    positions_rows = _open_positions(today)
+
+    # Per-city: aggregate position-level unrealized into per-city totals.
     per_city_unreal = {}
     for p in positions_rows:
         per_city_unreal[p["city"]] = per_city_unreal.get(p["city"], 0) + p["unreal"]
@@ -309,10 +313,7 @@ def _get_live_data(cfg: dict) -> dict:
         "contractCap": sum(c.get("max_open_contracts", 0) for c in city_config.values()),
     }
 
-    # Open positions — aggregate filled+partial_resting from live_trades,
-    # not net-of-settlement. Drives the Positions panel + the today-unrealized
-    # bucket (mark-to-market not computed here — needs live prices, TODO).
-    positions_rows = _open_positions(today)
+    # (positions_rows already computed earlier — needed by per-city loop.)
 
     # Today's signals (from paper_trades — most recent decision)
     signals_rows = _today_signals(city_config, today)
