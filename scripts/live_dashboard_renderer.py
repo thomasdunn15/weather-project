@@ -209,11 +209,13 @@ def _get_live_data(cfg: dict) -> dict:
                 "status": status,
             })
 
-        # Recent 7-day fills
+        # Recent 7-day fills — include partial_resting so today's open partials show
         cur.execute("""
             SELECT target_date, ticker, side, fill_count, fill_price_cents, realized_pnl_cents
             FROM live_trades
-            WHERE target_date >= %s AND fill_status IN ('filled','partial')
+            WHERE target_date >= %s
+              AND fill_status IN ('filled','partial','partial_resting')
+              AND fill_count > 0
             ORDER BY placed_at DESC LIMIT 50
         """, (today - timedelta(days=7),))
         fills_rows = []
@@ -300,6 +302,11 @@ def _get_live_data(cfg: dict) -> dict:
         "contractCap": sum(c.get("max_open_contracts", 0) for c in city_config.values()),
     }
 
+    # Open positions — aggregate filled+partial_resting from live_trades,
+    # not net-of-settlement. Drives the Positions panel + the today-unrealized
+    # bucket (mark-to-market not computed here — needs live prices, TODO).
+    positions_rows = _open_positions(today)
+
     # Today's signals (from paper_trades — most recent decision)
     signals_rows = _today_signals(city_config, today)
 
@@ -325,6 +332,11 @@ def _get_live_data(cfg: dict) -> dict:
     # HRRR data freshness
     hrrr = _hrrr_freshness()
 
+    # Mark-to-market unrealized PnL across all open positions today.
+    # _open_positions uses the latest yes-mid snapshot for the mark.
+    today_unrealized = sum(p["unreal"] for p in positions_rows)
+    n_open_contracts = sum(p["qty"] for p in positions_rows)
+
     return {
         "id": "live",
         "label": "Live",
@@ -333,17 +345,17 @@ def _get_live_data(cfg: dict) -> dict:
         "asOf": datetime.now().strftime("today %H:%M ET"),
         "balance": round(balance, 2),
         "today": {
-            "total": round(today_realized, 2),
+            "total": round(today_realized + today_unrealized, 2),
             "realized": round(today_realized, 2),
-            "unrealized": 0.0,
+            "unrealized": round(today_unrealized, 2),
             "trades": int(today_trades),
-            "open": open_orders_count,
+            "open": n_open_contracts,
         },
         "cumulative": {
-            "total": round(cum_realized, 2),
+            "total": round(cum_realized + today_unrealized, 2),
             "realizedCum": round(cum_realized, 2),
-            "unrealizedCum": 0.0,
-            "returnPct": round((cum_realized / 3050.0) * 100, 1),  # assumes $3050 starting
+            "unrealizedCum": round(today_unrealized, 2),
+            "returnPct": round(((cum_realized + today_unrealized) / 3050.0) * 100, 1),
             "winRate": round(win_rate, 3),
             "nSettled": int(n_settled),
         },
@@ -353,7 +365,7 @@ def _get_live_data(cfg: dict) -> dict:
         "series": series,
         "cities": cities_payload,
         "agg": agg,
-        "positions": [],  # TODO: pull from Kalshi positions API
+        "positions": positions_rows,
         "signals": signals_rows,
         "orders": today_orders_rows,
         "openOrdersTbl": open_orders_rows,
@@ -388,12 +400,100 @@ def _fmt_age(ts: str | None) -> str:
         return "—"
 
 
+def _open_positions(today: date) -> list[dict]:
+    """Open positions = filled or partial_resting trades for today that haven't
+    settled yet. Marks to market using the latest price snapshot.
+    Aggregates multiple orders on the same (ticker, side) into one position
+    (weighted-average entry price).
+    Returns list of {ticker, city, bracket, side, qty, avg, mark, unreal, unrealPct}.
+    """
+    rows = []
+    try:
+        with get_connection() as conn, conn.cursor() as cur:
+            # Aggregate by (ticker, side): SUM fill_count, weighted avg fill_price
+            cur.execute("""
+                SELECT lt.ticker, lt.side,
+                       SUM(lt.fill_count)::int AS total_qty,
+                       (SUM(lt.fill_count::numeric * lt.fill_price_cents) / NULLIF(SUM(lt.fill_count), 0))::int AS avg_fill_cents,
+                       c.station_id, c.bracket_type, c.strike_low, c.strike_high
+                FROM live_trades lt
+                JOIN contracts c ON c.ticker = lt.ticker
+                WHERE lt.target_date = %s
+                  AND lt.fill_status IN ('filled','partial','partial_resting')
+                  AND lt.fill_count IS NOT NULL AND lt.fill_count > 0
+                  AND lt.settlement IS NULL
+                GROUP BY lt.ticker, lt.side, c.station_id, c.bracket_type, c.strike_low, c.strike_high
+                ORDER BY lt.ticker""", (today,))
+            trade_rows = cur.fetchall()
+
+            # Latest market snapshot per ticker for mark-to-market
+            tickers = list({r[0] for r in trade_rows})
+            marks: dict = {}
+            if tickers:
+                cur.execute("""
+                    SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                    FROM prices WHERE ticker = ANY(%s)
+                    ORDER BY ticker, snapshot_at DESC""", (tickers,))
+                for tk, yb, ya in cur.fetchall():
+                    if yb is not None and ya is not None:
+                        marks[tk] = (int(yb) + int(ya)) / 2.0   # YES-mid in cents
+
+        for ticker, side, qty, fill_px_yes_eq, station_id, bt, sl, sh in trade_rows:
+            qty = int(qty)
+            avg_yes = int(fill_px_yes_eq) if fill_px_yes_eq is not None else None
+            mark_yes = marks.get(ticker)
+            # PnL per contract (in cents, YES-eq): for BUY_YES position,
+            # value = mark - cost. For BUY_NO, value = -mark - (-cost) = cost - mark.
+            unreal_cents = 0
+            unreal_pct = 0
+            if avg_yes is not None and mark_yes is not None:
+                if side == "yes":
+                    per_contract = mark_yes - avg_yes
+                    cost_basis = avg_yes
+                else:
+                    # BUY_NO: stored avg_yes is YES-equivalent (= 100 - NO entry).
+                    # Our cost was (100 - avg_yes) cents NO. Value if we sold now
+                    # at the displayed bid: NO bid = 100 - YES ask. Simpler:
+                    # use YES-eq throughout. Profit = avg_yes - mark_yes
+                    per_contract = avg_yes - mark_yes
+                    cost_basis = 100 - avg_yes
+                unreal_cents = per_contract * qty
+                unreal_pct = (per_contract / cost_basis * 100) if cost_basis else 0
+            # Bracket label (short)
+            if bt == "greater_than":
+                bracket_lbl = f"≥{int(sl)+1}°F"
+            elif bt == "less_than":
+                bracket_lbl = f"≤{int(sh)-1}°F"
+            else:
+                bracket_lbl = f"{int(sl)}–{int(sh)}°F" if int(sl) != int(sh) else f"{int(sl)}°F"
+            rows.append({
+                "ticker": _short_ticker(ticker),
+                "city": station_id,
+                "bracket": bracket_lbl,
+                "side": side.upper(),
+                "qty": qty,
+                "avg": avg_yes if avg_yes is not None else 0,
+                "mark": int(round(mark_yes)) if mark_yes is not None else 0,
+                "unreal": round(unreal_cents / 100.0, 2),
+                "unrealPct": round(unreal_pct, 1),
+            })
+    except Exception:
+        pass
+    return rows
+
+
 def _today_signals(city_config: dict, today: date) -> list[dict]:
-    """Pull today's paper_trade signals for all live cities."""
+    """Pull today's paper_trade signals for the LIVE cities only.
+
+    Skips cities where is_active=False (e.g., Miami) so the dashboard
+    doesn't surface paper signals for halted markets.
+    """
     rows = []
     try:
         with get_connection() as conn, conn.cursor() as cur:
             for city_code, ccfg in city_config.items():
+                if not ccfg.get("is_active", True):
+                    continue   # halted city — skip its paper signals
                 ms = ccfg.get("paper_model_source", "")
                 cur.execute("""
                     SELECT ticker, edge, market_mid_prob, model_prob_yes, position, entry_price_cents
