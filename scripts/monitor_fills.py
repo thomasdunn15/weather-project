@@ -190,15 +190,18 @@ def main() -> int:
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Include partial_resting rows too — they can collect more fills
+            # over time. Without re-checking them, dashboard shows stale
+            # fill_count even as the resting order keeps filling.
             cur.execute("""
                 SELECT id, kalshi_order_id, ticker, count
                 FROM live_trades
-                WHERE fill_status = 'pending' AND target_date = %s
+                WHERE fill_status IN ('pending', 'partial_resting') AND target_date = %s
                 ORDER BY placed_at
             """, (today,))
             rows = cur.fetchall()
 
-        print(f"  pending rows for today: {len(rows)}")
+        print(f"  pending + partial_resting rows for today: {len(rows)}")
 
         had_error = False
         for row in rows:

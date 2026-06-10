@@ -25,11 +25,19 @@ function Hero({ d }) {
         <div className="spark"><Spark data={d.series} /></div>
       </div>
       <div>
-        <div className="k">Account value <span className="tag-pill">cash + portfolio</span></div>
-        <div className="v sm" style={{ color: "var(--text-hi)" }}>{moneyPlain(d.balance)}</div>
+        <div className="k">Cash · Portfolio <span className="tag-pill">free $ · total a/c value</span></div>
+        <div style={{ display: "flex", gap: 18, alignItems: "baseline" }}>
+          <div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", letterSpacing: "0.1em", textTransform: "uppercase" }}>cash</div>
+            <div className="v sm" style={{ color: "var(--text-hi)" }}>{moneyPlain(d.cashBalance != null ? d.cashBalance : d.balance)}</div>
+          </div>
+          <div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-lo)", letterSpacing: "0.1em", textTransform: "uppercase" }}>portfolio</div>
+            <div className="v sm pos">{moneyPlain(d.balance)}</div>
+          </div>
+        </div>
         <div className="sub">
-          <span>cash <b>{moneyPlain(d.cashBalance != null ? d.cashBalance : d.balance)}</b></span>
-          <span>portfolio <b>{moneyPlain(d.portfolioValue || 0)}</b></span>
+          <span>position value <b>{moneyPlain(d.portfolioValue || 0)}</b></span>
           <span><b>{d.openOrders.contracts.toLocaleString()}</b> contracts · <b>{d.openOrders.count}</b> orders</span>
         </div>
       </div>
