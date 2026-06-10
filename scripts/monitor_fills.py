@@ -172,21 +172,12 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
     return f"unknown kalshi status: {kstatus}"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--cancel-unfilled", action="store_true",
-                        help="If an order is still resting, cancel it. Use for EOD run only.")
-    args = parser.parse_args()
-
-    try:
-        client = KalshiClient()
-    except KalshiAuthError as e:
-        print(f"FAIL: {e}", file=sys.stderr)
-        return 1
-
+def _run_once(client, cancel_unfilled: bool, verbose: bool = True) -> bool:
+    """One pass over open orders. Returns True if all OK, False on any error."""
     today = datetime.now(timezone.utc).date()
-    print(f"=== monitor_fills ({datetime.now(timezone.utc).isoformat()}, today={today}) ===")
-    print(f"  cancel_unfilled: {args.cancel_unfilled}")
+    if verbose:
+        print(f"\n=== monitor_fills ({datetime.now(timezone.utc).isoformat()}, today={today}) ===")
+        print(f"  cancel_unfilled: {cancel_unfilled}")
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -201,17 +192,73 @@ def main() -> int:
             """, (today,))
             rows = cur.fetchall()
 
-        print(f"  pending + partial_resting rows for today: {len(rows)}")
+        if verbose:
+            print(f"  pending + partial_resting rows for today: {len(rows)}")
 
         had_error = False
         for row in rows:
-            result = update_one_pending(conn, client, row, args.cancel_unfilled)
-            print(f"  {row[2]} (id={row[0]}, order_id={row[1]}): {result}")
+            result = update_one_pending(conn, client, row, cancel_unfilled)
+            if verbose:
+                print(f"  {row[2]} (id={row[0]}, order_id={row[1]}): {result}")
             if result.startswith("error"):
                 had_error = True
+    return not had_error
 
-    client.close()
-    return 2 if had_error else 0
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cancel-unfilled", action="store_true",
+                        help="If an order is still resting, cancel it. Use for EOD run only.")
+    parser.add_argument("--loop", type=int, metavar="SECONDS", default=0,
+                        help="Loop forever, re-checking every N seconds (e.g., --loop 15 for "
+                             "near-realtime dashboard updates). Default 0 = single pass.")
+    parser.add_argument("--until", type=str, metavar="HH:MM", default=None,
+                        help="Stop loop at this UTC time (e.g., --until 20:00). Used with --loop "
+                             "to terminate at EOD. Without this, --loop runs indefinitely.")
+    args = parser.parse_args()
+
+    try:
+        client = KalshiClient()
+    except KalshiAuthError as e:
+        print(f"FAIL: {e}", file=sys.stderr)
+        return 1
+
+    # Parse --until into time-of-day check
+    stop_at = None
+    if args.until:
+        try:
+            hh, mm = args.until.split(":")
+            stop_at = (int(hh), int(mm))
+        except ValueError:
+            print(f"FAIL: --until must be HH:MM format, got {args.until!r}", file=sys.stderr)
+            return 1
+
+    # Single-shot mode (default — preserves existing cron behavior)
+    if args.loop <= 0:
+        ok = _run_once(client, args.cancel_unfilled)
+        client.close()
+        return 0 if ok else 2
+
+    # Loop mode — keep refreshing every N seconds
+    print(f"monitor_fills LOOP MODE: every {args.loop}s"
+          + (f", stopping at {args.until} UTC" if stop_at else " (no stop time — Ctrl-C to quit)"))
+    import time
+    try:
+        while True:
+            now = datetime.now(timezone.utc)
+            if stop_at and (now.hour, now.minute) >= stop_at:
+                print(f"\nReached stop time {args.until} UTC — exiting loop.")
+                break
+            try:
+                _run_once(client, args.cancel_unfilled, verbose=True)
+            except Exception as e:
+                print(f"  ERR (continuing): {type(e).__name__}: {e}", file=sys.stderr)
+            time.sleep(args.loop)
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt — exiting loop.")
+    finally:
+        client.close()
+    return 0
 
 
 if __name__ == "__main__":
