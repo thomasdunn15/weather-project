@@ -31,6 +31,43 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (snapshot_at, ticker) DO NOTHING
 """
 
+# Upsert any new contract before snapshotting its price — Polymarket adds new
+# tickers daily and the FK to contracts.ticker would otherwise crash the run.
+UPSERT_CONTRACT_SQL = """
+INSERT INTO contracts (
+    ticker, series, station_id, target_date,
+    strike_low, strike_high, bracket_type, platform
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, 'polymarket')
+ON CONFLICT (ticker) DO NOTHING
+"""
+
+
+def _parse_polymarket_slug(slug: str):
+    """tc-temp-{city}-{YYYY-MM-DD}-{spec}f -> (station_id, series, target_date,
+    bracket_type, strike_low, strike_high) or None if not parseable."""
+    import re
+    from datetime import datetime as _dt
+    CITY_TO_STATION = {
+        "mdwhigh": "KMDW", "nychigh": "KNYC", "miahigh": "KMIA",
+        "laxhigh": "KLAX", "sfohigh": "KSFO",
+    }
+    m = re.match(r"^tc-temp-(?P<city>[a-z]+)-(?P<date>\d{4}-\d{2}-\d{2})-(?P<spec>[a-z0-9]+)f$", slug)
+    if not m: return None
+    station = CITY_TO_STATION.get(m.group("city"))
+    if not station: return None
+    try:
+        target_date = _dt.strptime(m.group("date"), "%Y-%m-%d").date()
+    except ValueError: return None
+    spec = m.group("spec")
+    if (mm := re.match(r"^lt(\d+)$", spec)):
+        return (station, f"tc-temp-{m.group('city')}", target_date, "less_than", None, float(mm.group(1)))
+    if (mm := re.match(r"^gte(\d+)lt(\d+)$", spec)):
+        return (station, f"tc-temp-{m.group('city')}", target_date, "between", float(mm.group(1)), float(mm.group(2)))
+    if (mm := re.match(r"^gte(\d+)$", spec)):
+        return (station, f"tc-temp-{m.group('city')}", target_date, "greater_than", float(mm.group(1)), None)
+    return None
+
 
 def cents_or_none(v):
     if v is None:
@@ -116,6 +153,13 @@ def main():
             no_ask_c = (100 - yes_bid_c) if yes_bid_c is not None else None
             last_c = cents_or_none(last_trade)
 
+            # Upsert the contract first to satisfy the FK. Polymarket lists
+            # new tickers daily; without this the snapshot crashes the first
+            # time a brand-new ticker shows up.
+            parsed = _parse_polymarket_slug(slug)
+            if parsed:
+                station_id, series, td_, bt, sl, sh = parsed
+                cur.execute(UPSERT_CONTRACT_SQL, (slug, series, station_id, td_, sl, sh, bt))
             cur.execute(
                 INSERT_PRICE_SQL,
                 (slug, now, yes_bid_c, yes_ask_c, no_bid_c, no_ask_c,
