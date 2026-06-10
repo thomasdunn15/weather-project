@@ -141,27 +141,27 @@ AGGREGATE_CUMULATIVE_KILL_DOLLARS = 500.0     # = Chicago cumulative; Miami halt
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
-# "post_inside_spread"   = old behavior. Post 1c inside spread (maker fee, no
-#                         taker fee, but may not fill if no one takes our offer).
-#                         Cost yesterday: 1071 contracts on B85.5 never filled,
-#                         missed ~$1000 profit.
+# "post_inside_spread"   = post 1c inside spread (maker fee, no taker fee).
+#                         May fail to fill if no one takes our offer. Cost on
+#                         2026-06-10: T90 trade (88.7% edge) got 0 fills because
+#                         spread was 2¢ wide.
 # "cross_at_ask"         = post AT the ask (= taker). Gets all available book
-#                         depth immediately; remainder rests at the ask price
-#                         and may still partially fill. Closer to backtest's
-#                         "limit-100% assume 100% fill" intent.
+#                         depth immediately; remainder rests.
 # "cross_with_premium"   = post at ask + premium cents to walk the book.
-#                         Highest fill rate, highest cost.
-# Revised 2026-06-06 — switched back to post_inside_spread after empirical
-# backtest analysis. Dashboard's "Empirical comparison" mode showed that on
-# 332 resolved trades:
+# "smart"                = edge-aware: cross at ask for high-edge trades (don't
+#                         risk missing the fill), post_inside_spread for moderate
+#                         edges (capture spread savings on the long tail).
+#                         Threshold: |edge| ≥ SMART_CROSS_EDGE_THRESHOLD.
+# Revised 2026-06-10 — switched to "smart". Past empirical data:
 #   post_inside_spread:    75% fill rate, +$35.19/filled, +291% final, -24% DD
 #   cross_at_ask:          99% fill rate, +$6.27/filled,  +69% final,  -66% DD
-#   cross_with_premium=1:  99% fill rate, +$3.24/filled,  +35% final,  -72% DD
-# The 80 trades that crossing catches but maker misses LOSE ~$80/trade — the
-# unfilled trades are adverse-selected losers. Missing them is net beneficial.
-# B85.5 miss was a sample-of-one; aggregate says it's worth tolerating.
-EXECUTION_MODE = "post_inside_spread"
-CROSS_PREMIUM_CENTS = 0   # n/a in this mode
+# Smart mode aims to keep post_inside's per-trade profit while plugging the
+# "missed huge edge" hole that bit us on T90. For high-edge trades, the
+# expected profit on filling vs. the small spread savings is overwhelmingly
+# tilted toward filling.
+EXECUTION_MODE = "smart"
+CROSS_PREMIUM_CENTS = 0
+SMART_CROSS_EDGE_THRESHOLD = 0.40   # |edge| ≥ 40% → cross at ask, else post inside
 
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
@@ -477,7 +477,18 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
 
         # Set limit_price + post_only flag according to EXECUTION_MODE.
         spread = int(ask) - int(bid)
-        if EXECUTION_MODE == "post_inside_spread":
+        exec_path = EXECUTION_MODE   # may be overridden by 'smart' branch
+
+        if EXECUTION_MODE == "smart":
+            # Edge-aware execution: cross at ask for high-conviction trades
+            # (don't risk missing the fill on a 50%+ edge); post inside for
+            # moderate edges (save the spread). See SMART_CROSS_EDGE_THRESHOLD.
+            if abs(edge) >= SMART_CROSS_EDGE_THRESHOLD:
+                exec_path = "cross_at_ask"
+            else:
+                exec_path = "post_inside_spread"
+
+        if exec_path == "post_inside_spread":
             if spread > 1:
                 if side == "yes":
                     limit_price = int(ask) - (spread - 1)
@@ -487,17 +498,17 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             else:
                 limit_price = cross_entry
                 post_only_safe = False
-        elif EXECUTION_MODE == "cross_at_ask":
+        elif exec_path == "cross_at_ask":
             # Post AT the ask = guaranteed taker on existing depth; remainder
             # rests at that price. Better fill rate vs post-inside-spread.
             limit_price = cross_entry
             post_only_safe = False
-        elif EXECUTION_MODE == "cross_with_premium":
+        elif exec_path == "cross_with_premium":
             # Walk the book up to CROSS_PREMIUM_CENTS beyond the ask.
             limit_price = cross_entry + CROSS_PREMIUM_CENTS
             post_only_safe = False
         else:
-            raise ValueError(f"Unknown EXECUTION_MODE: {EXECUTION_MODE!r}")
+            raise ValueError(f"Unknown EXECUTION_MODE/exec_path: {EXECUTION_MODE!r}/{exec_path!r}")
         limit_price = max(1, min(99, limit_price))
 
         signals.append({
@@ -506,6 +517,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             "blend_p": blend_p,                                # always recorded if blend fit available
             "raw_edge": raw_edge, "blend_edge": blend_edge,
             "signal_source": signal_source,                    # union_both / union_raw_only / union_blend_only / raw / blend
+            "exec_path": exec_path,                            # what smart resolved to: cross_at_ask / post_inside_spread / etc
             "market_mid": market_mid, "edge": edge, "p_win": p_win,
             "post_only": post_only_safe,
         })
@@ -618,8 +630,10 @@ def main() -> int:
         signals = compute_signals_for_today(conn, city, today)
         print(f"  signals passing filter: {len(signals)}")
         for s in signals:
+            ep = s.get("exec_path", EXECUTION_MODE)
             print(f"    {s['ticker']} {s['side'].upper()} edge={s['edge']:+.1%} "
-                  f"limit={s['limit_price']}¢ cross={s['cross_price']}¢")
+                  f"limit={s['limit_price']}¢ cross={s['cross_price']}¢ "
+                  f"[exec={ep}]")
 
         if not signals:
             print("  no actionable signals; clean exit.")

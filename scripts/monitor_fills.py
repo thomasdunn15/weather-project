@@ -136,16 +136,38 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
             return "cancelled (0 fills)"
 
     if kstatus == "resting":
+        # FIX 2026-06-10: resting orders may have PARTIAL fills (we filled some
+        # contracts at the limit but the rest is still resting). Record those
+        # partial fills so the dashboard shows accurate position size, and so
+        # reconcile_live_trades has the right qty when settlement lands.
+        if filled_qty > 0:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE live_trades
+                    SET fill_status = 'partial_resting',
+                        fill_price_cents = %s,
+                        fill_count = %s,
+                        kalshi_fee_cents = %s,
+                        fill_time = COALESCE(fill_time, NOW())
+                    WHERE id = %s
+                """, (vwap_yes_cents or None, filled_qty, fees_cents, id_))
+            partial_msg = f"partial-resting ({filled_qty} filled @ {vwap_yes_cents}¢ YES-eq, {parse_count(order, 'remaining_count_fp')} still resting)"
+        else:
+            partial_msg = "still_pending"
+
         if cancel_unfilled:
             try:
                 client.cancel_order(kalshi_order_id)
                 with conn.cursor() as cur:
-                    cur.execute("UPDATE live_trades SET fill_status='cancelled' WHERE id=%s", (id_,))
-                return "cancelled by us (EOD)"
+                    # If partial fills, update status to 'partial' (final); else 'cancelled'
+                    final_status = "partial" if filled_qty > 0 else "cancelled"
+                    cur.execute("UPDATE live_trades SET fill_status=%s WHERE id=%s",
+                                (final_status, id_))
+                return f"cancelled by us (EOD) — {partial_msg}"
             except Exception as e:
                 return f"error cancelling: {type(e).__name__}: {e}"
         else:
-            return "still_pending"
+            return partial_msg
 
     return f"unknown kalshi status: {kstatus}"
 
