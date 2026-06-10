@@ -341,9 +341,25 @@ def _get_live_data(cfg: dict) -> dict:
     hrrr = _hrrr_freshness()
 
     # Mark-to-market unrealized PnL across all open positions today.
-    # _open_positions uses the latest yes-mid snapshot for the mark.
+    # _open_positions uses the latest bid-side snapshot for the mark.
     today_unrealized = sum(p["unreal"] for p in positions_rows)
     n_open_contracts = sum(p["qty"] for p in positions_rows)
+
+    # Portfolio value = sum of (position size × side-appropriate close-now price)
+    # in YES-equivalent cents. For a YES position, close-value = qty × yes_bid.
+    # For a NO position, close-value = qty × NO bid = qty × (100 − yes_ask).
+    # We approximate using the position's mark (already side-adjusted to
+    # YES-equivalent close price).
+    portfolio_value = 0.0
+    for p in positions_rows:
+        if p["side"] == "YES":
+            # mark = yes_bid → position close value = qty × yes_bid / 100
+            portfolio_value += p["qty"] * p["mark"] / 100.0
+        else:
+            # mark stored is yes_ask (YES-eq mark); NO close value = qty × (100 - yes_ask) / 100
+            portfolio_value += p["qty"] * (100 - p["mark"]) / 100.0
+    portfolio_value = round(portfolio_value, 2)
+    total_account_value = round(balance + portfolio_value, 2)
 
     return {
         "id": "live",
@@ -351,7 +367,9 @@ def _get_live_data(cfg: dict) -> dict:
         "env": "LIVE",
         "killArmed": cum_realized > -agg_cum_kill,
         "asOf": datetime.now().strftime("today %H:%M ET"),
-        "balance": round(balance, 2),
+        "balance": total_account_value,         # NOW total = cash + portfolio
+        "cashBalance": round(balance, 2),       # cash component (free / settled)
+        "portfolioValue": portfolio_value,      # mark-to-market position value
         "today": {
             "total": round(today_realized + today_unrealized, 2),
             "realized": round(today_realized, 2),

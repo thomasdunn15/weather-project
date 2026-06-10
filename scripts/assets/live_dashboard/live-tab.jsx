@@ -25,11 +25,12 @@ function Hero({ d }) {
         <div className="spark"><Spark data={d.series} /></div>
       </div>
       <div>
-        <div className="k">Account balance</div>
+        <div className="k">Account value <span className="tag-pill">cash + portfolio</span></div>
         <div className="v sm" style={{ color: "var(--text-hi)" }}>{moneyPlain(d.balance)}</div>
         <div className="sub">
-          <span>open orders <b>{d.openOrders.count}</b></span>
-          <span><b>{d.openOrders.contracts.toLocaleString()}</b> contracts</span>
+          <span>cash <b>{moneyPlain(d.cashBalance != null ? d.cashBalance : d.balance)}</b></span>
+          <span>portfolio <b>{moneyPlain(d.portfolioValue || 0)}</b></span>
+          <span><b>{d.openOrders.contracts.toLocaleString()}</b> contracts · <b>{d.openOrders.count}</b> orders</span>
         </div>
       </div>
     </div>
