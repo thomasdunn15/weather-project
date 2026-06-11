@@ -359,14 +359,28 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
     models_list = cfg.get("models", MODELS_LIST_DEFAULT)
     emos_model = cfg.get("emos_model", "combined")
 
+    # CRITICAL: verify EVERY configured model has data at this init_time.
+    # The validated backtest is on the FULL model mix (e.g. KORD's combined_hrrr
+    # = gefs+ifs+hrrr). If any required model is missing at decision time, the
+    # cron would silently fall back to a PARTIAL model mix that hasn't been
+    # validated. On 2026-06-10, GEFS 00Z was missing at KORD's 14:46 decision
+    # and the cron silently traded on IFS+HRRR alone — contributing to today's
+    # -$114 loss. Halt the day rather than firing on a wrong-model basis.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM forecasts WHERE station_id=%s AND model=ANY(%s) AND init_time=%s LIMIT 1",
+            """SELECT model, COUNT(*) AS n FROM forecasts
+               WHERE station_id=%s AND model=ANY(%s) AND init_time=%s
+               GROUP BY model""",
             (city, models_list, init_time),
         )
-        if cur.fetchone() is None:
-            print(f"  no forecast for init {init_time.isoformat()}; skipping")
-            return []
+        present = {m: int(n) for m, n in cur.fetchall()}
+    missing = [m for m in models_list if m not in present or present[m] == 0]
+    if missing:
+        print(f"  HALT: required model(s) MISSING at init {init_time.isoformat()}: "
+              f"{missing}. Have: {present}. Refusing to trade on partial model mix "
+              f"(validated backtest = {models_list}).")
+        return []
+    print(f"  forecast data check OK: {present}")
 
     try:
         ensemble_values = compute_combined_daily_highs(
