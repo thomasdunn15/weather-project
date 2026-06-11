@@ -359,28 +359,41 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
     models_list = cfg.get("models", MODELS_LIST_DEFAULT)
     emos_model = cfg.get("emos_model", "combined")
 
-    # CRITICAL: verify EVERY configured model has data at this init_time.
-    # The validated backtest is on the FULL model mix (e.g. KORD's combined_hrrr
-    # = gefs+ifs+hrrr). If any required model is missing at decision time, the
-    # cron would silently fall back to a PARTIAL model mix that hasn't been
-    # validated. On 2026-06-10, GEFS 00Z was missing at KORD's 14:46 decision
-    # and the cron silently traded on IFS+HRRR alone — contributing to today's
-    # -$114 loss. Halt the day rather than firing on a wrong-model basis.
+    # CRITICAL: verify EVERY configured model has its FULL ensemble at this
+    # init_time. Two failure modes this guards against:
+    #   1. Entire model missing (e.g. GEFS 00Z silently failed) — that's what
+    #      contributed to yesterday's -$114 loss
+    #   2. Partial ensemble (e.g. GEFS got 15 of 31 members before DB blip) —
+    #      the model would average over fewer members → narrower ensemble
+    #      spread → overconfident bracket probabilities → oversized bets that
+    #      shouldn't have fired. User flagged 2026-06-11: with full GEFS, the
+    #      90-91°F NO bet (which lost $315) would have shown only -4% blend
+    #      edge and would NOT have fired.
+    # Expected member counts per model (matches what NOAA/ECMWF publish):
+    EXPECTED_MEMBERS = {"gefs": 31, "ifs": 50, "hrrr": 1}
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT model, COUNT(*) AS n FROM forecasts
+            """SELECT model, COUNT(DISTINCT member_id) AS n_members FROM forecasts
                WHERE station_id=%s AND model=ANY(%s) AND init_time=%s
                GROUP BY model""",
             (city, models_list, init_time),
         )
         present = {m: int(n) for m, n in cur.fetchall()}
-    missing = [m for m in models_list if m not in present or present[m] == 0]
-    if missing:
-        print(f"  HALT: required model(s) MISSING at init {init_time.isoformat()}: "
-              f"{missing}. Have: {present}. Refusing to trade on partial model mix "
-              f"(validated backtest = {models_list}).")
+    incomplete = []
+    for m in models_list:
+        have = present.get(m, 0)
+        want = EXPECTED_MEMBERS.get(m, 1)
+        if have < want:
+            incomplete.append(f"{m}={have}/{want}")
+    if incomplete:
+        print(f"  HALT: incomplete forecast ensembles at init {init_time.isoformat()}: "
+              f"{incomplete}. Have: {present}, expected: "
+              f"{ {m: EXPECTED_MEMBERS.get(m, 1) for m in models_list} }. "
+              f"Refusing to trade on partial ensemble — model uncertainty would be "
+              f"under-estimated, leading to overconfident bracket probabilities.")
         return []
-    print(f"  forecast data check OK: {present}")
+    print(f"  forecast data check OK: {present} (expected "
+          f"{ {m: EXPECTED_MEMBERS.get(m, 1) for m in models_list} })")
 
     try:
         ensemble_values = compute_combined_daily_highs(
