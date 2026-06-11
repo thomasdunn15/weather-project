@@ -108,11 +108,31 @@
 #   - sizing: Amount $25/trade with 500 contract cap (down from Unit 200)
 #   - cumulative kill: $200 (down from $500)
 #   - 30-day window with NO parameter changes — re-evaluate 2026-07-07
-# Chicago: KORD with UNION strategy (raw 25% OR blend 10%), unit 500 contracts,
-# anti-stacking max_signals=2, edge cap at 40% for sizing.
-# Miami: RESUMED 2026-06-10 with BLEND-only at 10% edge, $15/trade Amount sizing,
-# anti-stacking max_signals=1, edge cap at 40% for sizing. 30-day no-tuning window.
-# See docs/miami_resume_2026-06-10_precommit.md for full rationale + bail criteria.
+# Chicago: KORD with UNION strategy (raw 25% OR blend 10%), unit 500 contracts.
+# Miami:   KMIA with BLEND-only at 10% edge,  unit 500 contracts (KORD parity).
+# See docs/miami_resume_2026-06-10_precommit.md and chicago_resume_2026-06-07
+# for the no-tuning windows + bail criteria.
+#
+# PRE-TRADE FORECAST VERIFICATION (added 2026-06-11): re-run GEFS, IFS, HRRR
+# ingests 1 hour before each city's live trade. On 2026-06-10 the GEFS 00Z
+# ingest failed silently (DB connection blip during the 06:15 UTC run); the
+# live cron then ran on a partial model mix that wasn't in the validated
+# backtest. live_trade.py now HALTS if any required model is missing — but
+# we want to ACTUALLY catch up the data, not just halt, so retries run here.
+# Idempotent (ON CONFLICT DO NOTHING) so re-running is harmless.
+#
+# 13:46 UTC = 1h before KORD live cron (14:46 UTC). Re-ingests GEFS 00Z + IFS
+# 00Z + HRRR 00Z. If any failed earlier, this is the recovery shot.
+46 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_gefs_run.py >> /var/log/weather/gefs_retry.log 2>&1
+46 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_retry.log 2>&1
+46 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr_retry.log 2>&1
+# 14:30 UTC = 1h before KMIA live cron (15:30 UTC). Re-runs GEFS + IFS for
+# KMIA's model mix. HRRR not used by KMIA but kept in the retry for KORD's
+# 14:46 cron in case the 13:46 retry itself hit issues.
+30 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_gefs_run.py >> /var/log/weather/gefs_retry.log 2>&1
+30 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_retry.log 2>&1
+30 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr_retry.log 2>&1
+
 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
