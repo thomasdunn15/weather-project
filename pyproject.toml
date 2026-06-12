@@ -28,5 +28,6 @@ packages = ["src/weather_markets"]
 
 [dependency-groups]
 dev = [
+    "mini-racer>=0.14.1",
     "pytest>=9.0.3",
 ]

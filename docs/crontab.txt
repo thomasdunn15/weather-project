@@ -144,12 +144,17 @@
 0,30 15-19 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py >> /var/log/weather/monitor_fills.log 2>&1
 
 # REAL-TIME fill monitor: 15-second polling for near-instant dashboard updates.
-# Launches a tmux session at 14:45 UTC (right when KORD's live cron places
-# orders) that runs monitor_fills.py --loop 15 --until 19:55. Polls Kalshi
-# every 15s, updates DB as partial fills come in. Auto-terminates at 19:55
-# UTC (right before the 20:00 EOD cancel-unfilled cron). Idempotent: if a
-# session already exists, the new-session command is a no-op.
-45 14 * * * /usr/bin/tmux new-session -d -s monitor_loop "cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --loop 15 --until 19:55 >> /var/log/weather/monitor_fills_loop.log 2>&1" 2>/dev/null || true
+# Runs monitor_fills.py --loop 15 --until 19:55 in a tmux session. Polls
+# Kalshi every 15s, updates DB as partial fills come in. Auto-terminates at
+# 19:55 UTC (right before the 20:00 EOD cancel-unfilled cron).
+# SELF-HEALING (2026-06-12): the spawn attempt repeats every 5 minutes
+# through the trading window instead of firing once at 14:45. tmux
+# new-session with a fixed session name is idempotent — if the loop is
+# already alive the attempt is a no-op; if it crashed, the next 5-min tick
+# resurrects it. Previously a crash after 14:45 left no realtime monitor
+# until the next day (only the 30-min safety-net cron).
+45-59/5 14 * * * /usr/bin/tmux new-session -d -s monitor_loop "cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --loop 15 --until 19:55 >> /var/log/weather/monitor_fills_loop.log 2>&1" 2>/dev/null || true
+*/5 15-19 * * * /usr/bin/tmux new-session -d -s monitor_loop "cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --loop 15 --until 19:55 >> /var/log/weather/monitor_fills_loop.log 2>&1" 2>/dev/null || true
 
 # EOD fill cleanup: 20:00 UTC daily. Cancels any still-pending orders so we don't carry them overnight.
 0 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --cancel-unfilled >> /var/log/weather/monitor_fills.log 2>&1

@@ -176,6 +176,36 @@ EXECUTION_MODE = "smart"
 CROSS_PREMIUM_CENTS = 0
 SMART_CROSS_EDGE_THRESHOLD = 0.40   # |edge| ≥ 40% → cross at ask, else post inside
 
+# Full expected ensemble per model (what NOAA/ECMWF publish). The pre-trade
+# guard refuses to trade unless every configured model has ALL its members —
+# a partial ensemble under-estimates spread → overconfident bracket probs.
+EXPECTED_MEMBERS = {"gefs": 31, "ifs": 50, "hrrr": 1}
+
+
+def resolve_exec_path(execution_mode: str, edge: float) -> str:
+    """Map (EXECUTION_MODE, signal edge) → concrete execution path.
+
+    'smart' is edge-aware: cross at ask on high-conviction trades (don't risk
+    missing the fill), post inside the spread on moderate edges (capture
+    spread savings). All other modes pass through unchanged."""
+    if execution_mode == "smart":
+        if abs(edge) >= SMART_CROSS_EDGE_THRESHOLD:
+            return "cross_at_ask"
+        return "post_inside_spread"
+    return execution_mode
+
+
+def incomplete_ensembles(present: dict, models_list: list) -> list[str]:
+    """Return ['gefs=15/31', ...] for every configured model whose ensemble
+    is short of EXPECTED_MEMBERS. Empty list = safe to trade."""
+    out = []
+    for m in models_list:
+        have = int(present.get(m, 0))
+        want = EXPECTED_MEMBERS.get(m, 1)
+        if have < want:
+            out.append(f"{m}={have}/{want}")
+    return out
+
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
 HALT_FILE_ALL = HALT_DIR / "ALL"
@@ -369,8 +399,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
     #      shouldn't have fired. User flagged 2026-06-11: with full GEFS, the
     #      90-91°F NO bet (which lost $315) would have shown only -4% blend
     #      edge and would NOT have fired.
-    # Expected member counts per model (matches what NOAA/ECMWF publish):
-    EXPECTED_MEMBERS = {"gefs": 31, "ifs": 50, "hrrr": 1}
+    # Expected member counts per model: see module-level EXPECTED_MEMBERS.
     with conn.cursor() as cur:
         cur.execute(
             """SELECT model, COUNT(DISTINCT member_id) AS n_members FROM forecasts
@@ -379,12 +408,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             (city, models_list, init_time),
         )
         present = {m: int(n) for m, n in cur.fetchall()}
-    incomplete = []
-    for m in models_list:
-        have = present.get(m, 0)
-        want = EXPECTED_MEMBERS.get(m, 1)
-        if have < want:
-            incomplete.append(f"{m}={have}/{want}")
+    incomplete = incomplete_ensembles(present, models_list)
     if incomplete:
         print(f"  HALT: incomplete forecast ensembles at init {init_time.isoformat()}: "
               f"{incomplete}. Have: {present}, expected: "
@@ -517,16 +541,7 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
 
         # Set limit_price + post_only flag according to EXECUTION_MODE.
         spread = int(ask) - int(bid)
-        exec_path = EXECUTION_MODE   # may be overridden by 'smart' branch
-
-        if EXECUTION_MODE == "smart":
-            # Edge-aware execution: cross at ask for high-conviction trades
-            # (don't risk missing the fill on a 50%+ edge); post inside for
-            # moderate edges (save the spread). See SMART_CROSS_EDGE_THRESHOLD.
-            if abs(edge) >= SMART_CROSS_EDGE_THRESHOLD:
-                exec_path = "cross_at_ask"
-            else:
-                exec_path = "post_inside_spread"
+        exec_path = resolve_exec_path(EXECUTION_MODE, edge)
 
         if exec_path == "post_inside_spread":
             if spread > 1:
