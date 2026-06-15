@@ -36,6 +36,19 @@ Aggregate: daily $300, cumulative kill $1,000.
 4. Code changes that do NOT alter trading behavior (tests, dashboards,
    monitoring, data backfills, analysis scripts) are fine.
 
+## Changes applied during the freeze (safety/correctness only)
+
+- **2026-06-15 — guaranteed order placement.** A post_only signal (T74 YES,
+  +31% edge) was 400-rejected when the book moved under our maker limit so it
+  would cross; the bot dropped it and the user placed it by hand. Fixed under
+  the "broken order placement" exception: on a maker rejection the order is
+  resubmitted as a taker at the current ask (`place_with_guaranteed_fill`),
+  and rejected orders are now persisted to `live_trades` with
+  `fill_status='rejected'` (previously they left no DB trace, so the dashboard
+  looked like the bot never tried the signal). No change to which signals fire
+  or to sizing. The smart-cross *threshold* question (should a 31% edge have
+  crossed in the first place) stays in the backlog for re-eval.
+
 ## Re-evaluation: 2026-07-10
 
 Decide with full evidence, in one sitting:

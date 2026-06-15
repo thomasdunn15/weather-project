@@ -196,3 +196,139 @@ class TestDryRunSmoke:
         assert proc.returncode == 0, f"dry run exited {proc.returncode}:\n{out[-2000:]}"
         assert ("forecast data check OK" in out) or ("HALT" in out), out[-2000:]
         assert "Traceback" not in out, out[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# best_cross_price_from_book — order-book parsing for the cross fallback
+# ---------------------------------------------------------------------------
+
+# The actual KORD T74 book at 2026-06-15 14:46:16 UTC — the moment the bot's
+# post_only YES @5¢ was rejected. Best NO bid was 95¢ → YES ask (cross) = 5¢.
+T74_BOOK_1446 = {
+    "orderbook_fp": {
+        "yes_dollars": [["0.04", 80], ["0.03", 539], ["0.02", 198], ["0.01", 2006]],
+        "no_dollars": [["0.95", 82], ["0.94", 1025], ["0.93", 693], ["0.92", 112],
+                       ["0.06", 33], ["0.05", 200], ["0.01", 2652]],
+    }
+}
+
+
+class TestBestCrossPriceFromBook:
+    def test_today_t74_yes_cross_is_5(self):
+        # Regression for 2026-06-15: YES cross = 100 − best NO bid (95) = 5¢.
+        assert live_trade.best_cross_price_from_book(T74_BOOK_1446, "yes") == 5
+
+    def test_today_t74_no_cross(self):
+        # NO cross = 100 − best YES bid (4) = 96¢.
+        assert live_trade.best_cross_price_from_book(T74_BOOK_1446, "no") == 96
+
+    def test_empty_book_returns_none(self):
+        assert live_trade.best_cross_price_from_book({"orderbook_fp": {}}, "yes") is None
+        assert live_trade.best_cross_price_from_book({}, "no") is None
+
+    def test_legacy_shape(self):
+        legacy = {"orderbook": {"yes": [["0.40", 10]], "no": [["0.55", 10]]}}
+        assert live_trade.best_cross_price_from_book(legacy, "yes") == 45   # 100-55
+        assert live_trade.best_cross_price_from_book(legacy, "no") == 60    # 100-40
+
+    def test_malformed_levels_skipped(self):
+        book = {"orderbook_fp": {"no_dollars": [["bad", 1], ["0.90", 5]], "yes_dollars": []}}
+        assert live_trade.best_cross_price_from_book(book, "yes") == 10   # 100-90
+
+
+# ---------------------------------------------------------------------------
+# place_with_guaranteed_fill — the cross-fallback placement logic
+# ---------------------------------------------------------------------------
+
+class FakeClient:
+    """Records place_limit_order calls; behavior() decides success/raise."""
+    def __init__(self, behavior, book=None):
+        self._behavior = behavior
+        self._book = book if book is not None else {}
+        self.calls = []
+
+    def place_limit_order(self, **kw):
+        self.calls.append(kw)
+        return self._behavior(**kw)
+
+    def get_orderbook(self, ticker):
+        if isinstance(self._book, Exception):
+            raise self._book
+        return self._book
+
+
+def _ok(order_id="OK"):
+    return {"order": {"order_id": order_id}}
+
+
+class TestPlaceWithGuaranteedFill:
+    BASE = dict(ticker="KXHIGHCHI-26JUN15-T74", side="yes", count=500,
+                limit_price=5, cross_price=6, client_order_id="livech-KORD-x-T74-yes")
+
+    def test_maker_success_no_fallback(self):
+        client = FakeClient(lambda **kw: _ok("M1"))
+        status, price, koid, coid, note = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=True, **self.BASE)
+        assert status == "placed" and price == 5 and koid == "M1"
+        assert coid == self.BASE["client_order_id"] and note == ""
+        assert len(client.calls) == 1 and client.calls[0]["post_only"] is True
+
+    def test_today_t74_fallback_crosses_at_live_ask(self):
+        # Reproduce 2026-06-15: post_only @5¢ → 400; book shows YES ask 5¢ →
+        # resubmit as taker @5¢. THIS is the trade the bot used to drop.
+        def behavior(**kw):
+            if kw["post_only"]:
+                raise Exception("Client error '400 Bad Request' for url ...")
+            return _ok("CROSS1")
+        client = FakeClient(behavior, book=T74_BOOK_1446)
+        status, price, koid, coid, note = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=True, **self.BASE)
+        assert status == "placed"
+        assert price == 5                     # live ask from the book
+        assert koid == "CROSS1"
+        assert coid == self.BASE["client_order_id"] + "-x"
+        assert "cross-fallback" in note
+        # two attempts: the rejected maker, then the taker
+        assert [c["post_only"] for c in client.calls] == [True, False]
+
+    def test_fallback_uses_signal_cross_when_book_unavailable(self):
+        def behavior(**kw):
+            if kw["post_only"]:
+                raise Exception("400 Bad Request")
+            return _ok("CROSS2")
+        client = FakeClient(behavior, book=RuntimeError("orderbook down"))
+        status, price, koid, coid, note = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=True, **self.BASE)
+        assert status == "placed" and price == 6   # fell back to signal cross_price
+        assert client.calls[1]["price_cents"] == 6
+
+    def test_both_fail_returns_rejected(self):
+        client = FakeClient(lambda **kw: (_ for _ in ()).throw(Exception("400 Bad Request")),
+                            book=T74_BOOK_1446)
+        status, price, koid, coid, note = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=True, **self.BASE)
+        assert status == "rejected" and koid is None
+        assert "cross-fallback" in note
+        assert [c["post_only"] for c in client.calls] == [True, False]
+
+    def test_taker_primary_failure_no_fallback_loop(self):
+        # A non-post_only primary that fails is not a would-cross race; don't
+        # spin a second order.
+        client = FakeClient(lambda **kw: (_ for _ in ()).throw(Exception("400")))
+        status, *_ = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=False, **self.BASE)
+        assert status == "rejected"
+        assert len(client.calls) == 1
+
+    def test_429_retries_then_succeeds(self):
+        state = {"n": 0}
+        def behavior(**kw):
+            if state["n"] < 2:
+                state["n"] += 1
+                raise Exception("429 Too Many Requests")
+            return _ok("AFTER_RETRY")
+        client = FakeClient(behavior)
+        status, price, koid, *_ = live_trade.place_with_guaranteed_fill(
+            client, primary_post_only=True, sleep=lambda _s: None, **self.BASE)
+        assert status == "placed" and koid == "AFTER_RETRY"
+        assert len(client.calls) == 3   # two 429s + success, all on the maker order

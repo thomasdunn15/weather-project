@@ -206,6 +206,100 @@ def incomplete_ensembles(present: dict, models_list: list) -> list[str]:
             out.append(f"{m}={have}/{want}")
     return out
 
+
+def best_cross_price_from_book(book_resp: dict, side: str) -> int | None:
+    """Taker (cross) price in cents to immediately buy `side` from a Kalshi
+    orderbook response, or None if that side has no resting depth.
+
+    Kalshi books list YES bids and NO bids separately; an "ask" is the opposite
+    side's best bid. To BUY YES you lift the best YES ask = 100 − best NO bid.
+    To BUY NO, 100 − best YES bid. Handles both the current
+    `orderbook_fp.{yes,no}_dollars` shape and the legacy `orderbook.{yes,no}`."""
+    book = book_resp.get("orderbook_fp") or book_resp.get("orderbook") or {}
+    yes_levels = book.get("yes_dollars") or book.get("yes") or []
+    no_levels = book.get("no_dollars") or book.get("no") or []
+
+    def _best_bid(levels):
+        best = None
+        for lvl in levels:
+            try:
+                c = int(round(float(lvl[0]) * 100))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if 1 <= c <= 99 and (best is None or c > best):
+                best = c
+        return best
+
+    opposite = _best_bid(no_levels) if side == "yes" else _best_bid(yes_levels)
+    return (100 - opposite) if opposite is not None else None
+
+
+def fetch_live_cross_price(client, ticker: str, side: str) -> int | None:
+    """Re-fetch the live order book and return the current cross price (cents)
+    for `side`, or None if unavailable. Used to reprice a maker order the
+    exchange rejected for would-crossing so it can be resubmitted as a taker."""
+    try:
+        ob = client.get_orderbook(ticker)
+    except Exception:
+        return None
+    return best_cross_price_from_book(ob, side)
+
+
+def place_with_guaranteed_fill(client, *, ticker, side, count, limit_price,
+                               cross_price, primary_post_only, client_order_id,
+                               sleep=lambda _s: None):
+    """Place an order, guaranteeing it lands on the exchange.
+
+    Tries the intended (usually maker / post_only) order first. If the exchange
+    rejects it — the common case being a post_only order the book has moved
+    under so it would now cross — resubmit as a TAKER (post_only=False) at the
+    current ask. A would-cross rejection on a BUY only happens when price moved
+    toward us, so the taker price is at-or-below our original limit; we never
+    overpay past what we already wanted.
+
+    Pure of the database and of wall-clock (sleep is injected) so it can be
+    unit-tested with a fake client. Returns:
+        (status, price_used, kalshi_order_id, client_order_id_used, note_suffix)
+    status is 'placed' or 'rejected'. The caller records the result to the DB —
+    keeping placement (which must never be retried blindly) separate from
+    recording (which is idempotent and safe to fail)."""
+    def _place(price, post_only_flag, coid, attempt=0):
+        try:
+            return client.place_limit_order(
+                ticker=ticker, side=side, count=count, price_cents=price,
+                post_only=post_only_flag, client_order_id=coid,
+            )
+        except Exception as exc:
+            is_429 = "429" in str(exc) or "Too Many Requests" in str(exc)
+            if is_429 and attempt < 2:
+                sleep(2.0 + attempt * 2.0)
+                return _place(price, post_only_flag, coid, attempt + 1)
+            raise
+
+    try:
+        resp = _place(limit_price, primary_post_only, client_order_id)
+        koid = resp.get("order", resp).get("order_id")
+        return ("placed", limit_price, koid, client_order_id, "")
+    except Exception as e_primary:
+        # A taker order that fails isn't a would-cross race — don't loop on it.
+        if not primary_post_only:
+            return ("rejected", limit_price, None, client_order_id,
+                    f"REJECTED: {type(e_primary).__name__}: {str(e_primary)[:200]}")
+        live_cross = fetch_live_cross_price(client, ticker, side) or cross_price
+        cross_coid = f"{client_order_id}-x"
+        sleep(1.0)  # rate-limit cushion before the retry
+        try:
+            resp = _place(live_cross, False, cross_coid)
+            koid = resp.get("order", resp).get("order_id")
+            return ("placed", live_cross, koid, cross_coid,
+                    f"; cross-fallback after post_only would-cross "
+                    f"({type(e_primary).__name__})")
+        except Exception as e_cross:
+            return ("rejected", limit_price, None, client_order_id,
+                    f"REJECTED (incl. cross-fallback): "
+                    f"{type(e_cross).__name__}: {str(e_cross)[:200]}")
+
+
 # Halt directory — per-city + aggregate halt files.
 HALT_DIR = Path(__file__).parent.parent / "halt"
 HALT_FILE_ALL = HALT_DIR / "ALL"
@@ -747,30 +841,15 @@ def main() -> int:
 
             # Rate-limit cushion: Kalshi returns 429 if we burst orders.
             # Today's KORD cron fired 3 orders in 0.3s; #2 and #3 got 429'd.
-            # Sleep 1s between orders + retry once on 429 with longer backoff.
+            # Sleep 1s between orders.
             import time as _time
             if placed > 0 or rejected > 0:
                 _time.sleep(1.0)
 
-            def _place_with_retry(attempt: int = 0):
-                try:
-                    return client.place_limit_order(
-                        ticker=s['ticker'], side=s['side'], count=count,
-                        price_cents=s['limit_price'],
-                        post_only=s.get("post_only", True),
-                        client_order_id=client_order_id,
-                    )
-                except Exception as exc:
-                    is_429 = "429" in str(exc) or "Too Many Requests" in str(exc)
-                    if is_429 and attempt < 2:
-                        _time.sleep(2.0 + attempt * 2.0)
-                        return _place_with_retry(attempt + 1)
-                    raise
+            base_note = (f"sizing={sizing_mode}({cfg.get('unit_contracts','')}), "
+                         f"balance=${balance/100:.2f}")
 
-            try:
-                resp = _place_with_retry()
-                order = resp.get("order", resp)
-                kalshi_order_id = order.get("order_id")
+            def _insert_trade(price_cents, koid, coid, status, note):
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO live_trades (
@@ -778,22 +857,53 @@ def main() -> int:
                             limit_price_cents, cross_price_cents, model_source,
                             model_prob_yes, market_mid_prob, edge,
                             kalshi_order_id, client_order_id, fill_status, notes
-                        ) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+                        ) VALUES (NOW(), %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (client_order_id) DO NOTHING
                     """, (today, s['ticker'], s['side'], count,
-                          s['limit_price'], s['cross_price'], cfg["live_model_source_tag"],
+                          price_cents, s['cross_price'], cfg["live_model_source_tag"],
                           s['model_p'], s['market_mid'], s['edge'],
-                          kalshi_order_id, client_order_id,
-                          f"sizing={sizing_mode}({cfg.get('unit_contracts','')}), "
-                          f"balance=${balance/100:.2f}"))
+                          koid, coid, status, note))
+
+            # PLACEMENT (network) is kept separate from RECORD (DB): a DB error
+            # after a successful placement must never bounce us into a retry that
+            # double-places on the exchange.
+            status, price_used, kalshi_order_id, coid_used, note_suffix = \
+                place_with_guaranteed_fill(
+                    client, ticker=s['ticker'], side=s['side'], count=count,
+                    limit_price=s['limit_price'], cross_price=s['cross_price'],
+                    primary_post_only=bool(s.get("post_only", True)),
+                    client_order_id=client_order_id, sleep=_time.sleep,
+                )
+
+            if status == "placed":
                 placed += 1
-                print(f"    placed: order_id={kalshi_order_id}")
-            except Exception as e:
+                if note_suffix.startswith(";"):  # cross-fallback path
+                    print(f"    placed (cross-fallback) @ {price_used}¢: order_id={kalshi_order_id}")
+                else:
+                    print(f"    placed: order_id={kalshi_order_id}")
+                try:
+                    _insert_trade(price_used, kalshi_order_id, coid_used,
+                                  "pending", base_note + note_suffix)
+                except Exception as db_e:
+                    # Order IS on Kalshi; reconcile_live_trades recovers it by
+                    # client_order_id. Do not re-place.
+                    print(f"    (placed but DB insert failed; reconcile will recover: {db_e})",
+                          file=sys.stderr)
+            else:
                 rejected += 1
-                print(f"    ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+                # Persist the rejection so it's visible on the dashboard /
+                # reconcile — previously a rejected order left no DB trace,
+                # making it look like the bot never tried the signal.
+                try:
+                    _insert_trade(s['limit_price'], None, client_order_id,
+                                  "rejected", f"{base_note} | {note_suffix}")
+                except Exception as db_e:
+                    print(f"    (could not persist rejected row: {db_e})", file=sys.stderr)
+                print(f"    ERROR: {note_suffix}", file=sys.stderr)
                 send_alert(
-                    f"{city} order place failed: {s['ticker']} {s['side']} {count}@{s['limit_price']}¢: "
-                    f"{type(e).__name__}: {e}", severity="warn", source=f"live_trade.{city}.place")
+                    f"{city} order place failed (incl. cross-fallback): "
+                    f"{s['ticker']} {s['side']} {count}@{s['limit_price']}¢: {note_suffix}",
+                    severity="warn", source=f"live_trade.{city}.place")
 
         print(f"\n  placed: {placed}, rejected: {rejected}, total contracts: {total_contracts}")
         if sizing_mode != "unit":
