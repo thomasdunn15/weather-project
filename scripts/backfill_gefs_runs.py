@@ -10,6 +10,24 @@ import argparse
 import time
 from datetime import datetime, date, timezone, timedelta
 from weather_markets.gefs import ingest_gefs_run
+from weather_markets.db import get_connection
+
+GEFS_EXPECTED_MEMBERS = 31
+
+
+def _already_complete(conn, station_id: str, run_time: datetime) -> bool:
+    """True if this (station, init_time) already has the full GEFS ensemble in
+    the DB — lets the backfill skip it WITHOUT downloading anything. Gaps are
+    scattered, so a full-range pass that skips present dates is both complete
+    and fast (the original full-range pass wasted hours re-downloading present
+    dates)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(DISTINCT member_id) FROM forecasts "
+            "WHERE station_id=%s AND model='gefs' AND init_time=%s",
+            (station_id, run_time),
+        )
+        return cur.fetchone()[0] >= GEFS_EXPECTED_MEMBERS
 
 
 # Forecast hours per init hour, chosen to cover NYC afternoon peak (~18-22 UTC).
@@ -48,6 +66,8 @@ def main() -> None:
 
     succeeded = 0
     failed = 0
+    skipped = 0
+    skip_conn = get_connection()
     overall_start = time.time()
 
     current = args.start
@@ -56,6 +76,11 @@ def main() -> None:
             current.year, current.month, current.day,
             args.run_hour, 0, tzinfo=timezone.utc,
         )
+        if _already_complete(skip_conn, args.station, run_time):
+            print(f"=== {run_time.isoformat()} === SKIP (already complete)", flush=True)
+            skipped += 1
+            current += timedelta(days=1)
+            continue
         print(f"\n=== {run_time.isoformat()} ===", flush=True)
         t0 = time.time()
         try:

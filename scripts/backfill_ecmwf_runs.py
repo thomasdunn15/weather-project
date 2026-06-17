@@ -10,6 +10,21 @@ import argparse
 import time
 from datetime import datetime, date, timezone, timedelta
 from weather_markets.ecmwf import ingest_ecmwf_run
+from weather_markets.db import get_connection
+
+IFS_EXPECTED_MEMBERS = 50
+
+
+def _already_complete(conn, station_id: str, run_time: datetime) -> bool:
+    """True if this (station, init_time) already has the full IFS ensemble in
+    the DB — skip without downloading. See backfill_gefs_runs for rationale."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(DISTINCT member_id) FROM forecasts "
+            "WHERE station_id=%s AND model='ifs' AND init_time=%s",
+            (station_id, run_time),
+        )
+        return cur.fetchone()[0] >= IFS_EXPECTED_MEMBERS
 
 
 FORECAST_HOURS_BY_RUN_HOUR = {
@@ -49,6 +64,8 @@ def main() -> None:
 
     succeeded = 0
     failed = 0
+    skipped = 0
+    skip_conn = get_connection()
     overall_start = time.time()
 
     current = args.start
@@ -57,6 +74,11 @@ def main() -> None:
             current.year, current.month, current.day,
             args.run_hour, 0, tzinfo=timezone.utc,
         )
+        if _already_complete(skip_conn, args.station, run_time):
+            print(f"=== {run_time.isoformat()} === SKIP (already complete)", flush=True)
+            skipped += 1
+            current += timedelta(days=1)
+            continue
         print(f"\n=== {run_time.isoformat()} ===", flush=True)
         t0 = time.time()
         try:
