@@ -35,7 +35,11 @@ import pytest
 py_mini_racer = pytest.importorskip("py_mini_racer")
 
 ROOT = Path(__file__).resolve().parent.parent
-INDEX_HTML = ROOT / "scripts" / "assets" / "backtest_component" / "index.html"
+# Source of truth is app.jsx (raw JSX). index.html is now a BUILT artifact
+# (babel-compiled, with runtime helpers) — extracting a slice from it would
+# pull compiled code that references undefined babel helpers. The functions we
+# test (kalshiFeeCents..jsComputeSim) are plain JS in app.jsx and run in V8 as-is.
+APP_JSX = ROOT / "scripts" / "assets" / "backtest_component" / "app.jsx"
 DASHBOARD_PY = ROOT / "scripts" / "dashboard.py"
 
 
@@ -44,8 +48,9 @@ DASHBOARD_PY = ROOT / "scripts" / "dashboard.py"
 # ---------------------------------------------------------------------------
 
 def _load_js_sim():
-    """Extract kalshiFeeCents..jsComputeSim from index.html into a V8 context."""
-    src = INDEX_HTML.read_text()
+    """Extract kalshiFeeCents..jsComputeSim (plain JS, no JSX) from app.jsx into
+    a V8 context. The slice stops before the first React component (BTMetric)."""
+    src = APP_JSX.read_text()
     start = src.index("function kalshiFeeCents")
     end = src.index("function BTMetric")
     ctx = py_mini_racer.MiniRacer()
