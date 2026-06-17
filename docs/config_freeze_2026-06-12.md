@@ -49,6 +49,19 @@ Aggregate: daily $300, cumulative kill $1,000.
   or to sizing. The smart-cross *threshold* question (should a 31% edge have
   crossed in the first place) stays in the backlog for re-eval.
 
+- **2026-06-17 — per-city smart-cross threshold (KMIA fill mechanics).** Both
+  KMIA blend orders (B93.5 YES +12.3%, B91.5 NO −14.0%) posted as passive
+  maker orders and never filled — B93.5's market then ran 58¢→81¢ (the model
+  was right; we missed it). Root cause: KMIA is blend-only with inherently
+  small edges (~10-15%), all below the global 40% smart-cross threshold, so it
+  NEVER crossed → chronic missed fills. Fix: per-city
+  `smart_cross_edge_threshold` — KMIA=0.10 (crosses), KORD=0.40 (unchanged).
+  This is an EXECUTION knob only: the 10% edge FILTER is untouched, so the same
+  signals fire and sizing is identical — they just take liquidity instead of
+  resting below a moving market. Filed as a fill-mechanics fix, not a strategy
+  change. (Today's already-resting KMIA orders predate the fix; it takes effect
+  at the next 15:30 UTC cron.)
+
 ## Re-evaluation: 2026-07-10
 
 Decide with full evidence, in one sitting:

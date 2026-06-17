@@ -47,6 +47,14 @@ class TestResolveExecPath:
         assert live_trade.resolve_exec_path(mode, 0.99) == mode
         assert live_trade.resolve_exec_path(mode, 0.0) == mode
 
+    def test_per_city_cross_threshold(self):
+        # KMIA's low threshold (0.10) makes a 12% blend edge CROSS, where the
+        # default 0.40 would post passively (the 2026-06-17 missed-fills bug).
+        assert live_trade.resolve_exec_path("smart", 0.123, 0.10) == "cross_at_ask"
+        assert live_trade.resolve_exec_path("smart", 0.123, 0.40) == "post_inside_spread"
+        # boundary is inclusive at the per-city threshold too
+        assert live_trade.resolve_exec_path("smart", 0.10, 0.10) == "cross_at_ask"
+
 
 # ---------------------------------------------------------------------------
 # incomplete_ensembles — the pre-trade data guard
@@ -156,6 +164,7 @@ class TestFrozenConfig:
         assert c["use_union"] is True
         assert c["edge_threshold"] == 0.25
         assert c["blend_edge_threshold"] == 0.10
+        assert c["smart_cross_edge_threshold"] == 0.40   # KORD execution unchanged
         assert c["sizing_mode"] == "unit"
         assert c["unit_contracts"] == 500
         assert c["is_active"] is True
@@ -164,7 +173,8 @@ class TestFrozenConfig:
         c = live_trade.CITY_CONFIG["KMIA"]
         assert c["use_union"] is False
         assert c["use_blend"] is True
-        assert c["blend_edge_threshold"] == 0.10
+        assert c["blend_edge_threshold"] == 0.10         # edge filter UNCHANGED — same trades fire
+        assert c["smart_cross_edge_threshold"] == 0.10   # exec fix 2026-06-17: cross instead of miss fills
         assert c["sizing_mode"] == "unit"
         assert c["unit_contracts"] == 500
         assert c["is_active"] is True

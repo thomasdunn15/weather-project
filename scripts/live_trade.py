@@ -98,6 +98,7 @@ CITY_CONFIG = {
         "use_blend": True,                      # blend coefficients still computed
         "edge_threshold": 0.25,                 # raw threshold (25%)
         "blend_edge_threshold": 0.10,           # blend threshold (10%)
+        "smart_cross_edge_threshold": 0.40,     # exec: cross at ≥40% edge (union raw edges get big; keep maker savings on the long tail)
         # REVISION 2026-06-09: switched from "amount" $50 → "unit" 500 contracts.
         # Backtest at unit=500 + blend@15% + market+1¢: Sharpe 3.88, +517% return.
         # Per-trade stake now scales with entry price: 500 contracts × entry/100
@@ -136,7 +137,11 @@ CITY_CONFIG = {
         "use_union": False,                     # BLEND ONLY (raw has no edge)
         "use_blend": True,
         "edge_threshold": 1.00,                 # raw threshold disabled (impossibly high)
-        "blend_edge_threshold": 0.10,           # the only filter that fires
+        "blend_edge_threshold": 0.10,           # the only filter that fires (UNCHANGED — same trades fire)
+        "smart_cross_edge_threshold": 0.10,     # exec: cross at ≥10% edge. Blend edges are ~10-15%; the
+                                                # default 40% meant KMIA NEVER crossed → passive maker orders
+                                                # chronically missed fills (2026-06-17). This makes the trades
+                                                # the 10% filter already selects actually take liquidity.
         "sizing_mode": "unit",                  # matches KORD framework
         "unit_contracts": 500,                  # matches KORD: same backtest-validated unit
         "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
@@ -182,14 +187,22 @@ SMART_CROSS_EDGE_THRESHOLD = 0.40   # |edge| ≥ 40% → cross at ask, else post
 EXPECTED_MEMBERS = {"gefs": 31, "ifs": 50, "hrrr": 1}
 
 
-def resolve_exec_path(execution_mode: str, edge: float) -> str:
+def resolve_exec_path(execution_mode: str, edge: float,
+                      cross_threshold: float = SMART_CROSS_EDGE_THRESHOLD) -> str:
     """Map (EXECUTION_MODE, signal edge) → concrete execution path.
 
-    'smart' is edge-aware: cross at ask on high-conviction trades (don't risk
-    missing the fill), post inside the spread on moderate edges (capture
-    spread savings). All other modes pass through unchanged."""
+    'smart' is edge-aware: cross at ask when |edge| ≥ cross_threshold (don't
+    risk missing the fill), post inside the spread below it (capture spread
+    savings). All other modes pass through unchanged.
+
+    cross_threshold is per-city (CITY_CONFIG[city]['smart_cross_edge_threshold'],
+    default SMART_CROSS_EDGE_THRESHOLD). KMIA is blend-only with inherently
+    small edges (~10-15%); with the default 40% it would NEVER cross and its
+    passive maker orders chronically missed fills (2026-06-17), so it gets a
+    low threshold to actually take liquidity. NOTE: this is an EXECUTION knob
+    only — it does not change which signals fire (that's the edge filter)."""
     if execution_mode == "smart":
-        if abs(edge) >= SMART_CROSS_EDGE_THRESHOLD:
+        if abs(edge) >= cross_threshold:
             return "cross_at_ask"
         return "post_inside_spread"
     return execution_mode
@@ -635,7 +648,10 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
 
         # Set limit_price + post_only flag according to EXECUTION_MODE.
         spread = int(ask) - int(bid)
-        exec_path = resolve_exec_path(EXECUTION_MODE, edge)
+        exec_path = resolve_exec_path(
+            EXECUTION_MODE, edge,
+            cfg.get("smart_cross_edge_threshold", SMART_CROSS_EDGE_THRESHOLD),
+        )
 
         if exec_path == "post_inside_spread":
             if spread > 1:
