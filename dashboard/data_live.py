@@ -27,129 +27,21 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import streamlit.components.v1 as st_components
 
 from weather_markets.db import get_connection
 
+import sys as _sys
+_SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+if _SCRIPTS not in _sys.path:
+    _sys.path.insert(0, _SCRIPTS)
 
-ASSETS_DIR = Path(__file__).parent / "assets" / "live_dashboard"
-
-
-def _load_asset(name: str) -> str:
-    return (ASSETS_DIR / name).read_text(encoding="utf-8")
-
-
-# The App shell that wires DASH_DATA + a 1s countdown clock into <LiveTab>.
-# Kept as a plain string (not an f-string) so it can be transpiled as-is.
-_LIVE_APP_SHELL = """
-const { useState: __useState, useEffect: __useEffect } = React;
-function App() {
-  const d = window.DASH_DATA;
-  const [tick, setTick] = __useState(0);
-  __useEffect(() => {
-    const t = setInterval(() => setTick(x => x + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
-  function fmt() {
-    if (d.nextCron.inMin === null || d.nextCron.inMin === undefined) return "—";
-    const totalSec = Math.max(0, d.nextCron.inMin * 60 - tick);
-    const m = Math.floor(totalSec / 60), s = totalSec % 60;
-    return m + "m " + String(s).padStart(2, "0") + "s";
-  }
-  return <window.LiveTab d={d} countdown={fmt()} />;
-}
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-"""
-
-_VENDOR_DIR = Path(__file__).parent / "assets" / "vendor"
-_COMPILED_LIVE = Path(__file__).parent / "assets" / "live_dashboard" / "live_app.compiled.js"
-
-
-def live_jsx_bundle() -> str:
-    """Assemble the live-tab JSX bundle (components → live-tab → app shell).
-    Used by the BUILD step (scripts/build_dashboard_components.py) to pre-
-    transpile, and by the CDN fallback below. Source of truth for the live UI."""
-    components_js = _load_asset("components.jsx")
-    live_tab_js = _load_asset("live-tab.jsx")
-    return (f"// ===== components.jsx =====\n{components_js}\n"
-            f"// ===== live-tab.jsx =====\n{live_tab_js}\n"
-            f"// ===== App shell =====\n{_LIVE_APP_SHELL}")
-
-
-def _frontend_bootstrap() -> tuple[str, str]:
-    """Return (head_scripts, body_app_script) for embedding the React app.
-
-    PRIMARY (no network, no Babel, NO V8 at render time): inline the vendored
-    React + ReactDOM and the PRE-BUILT compiled app
-    (assets/live_dashboard/live_app.compiled.js, produced by
-    scripts/build_dashboard_components.py). This avoids two failures:
-      - CDN unreachable from the browser (2026-06-16 blank dashboard), and
-      - running py_mini_racer/V8 inside Streamlit's render thread, which could
-        crash the whole process on connect (2026-06-16 "kills the script").
-
-    FALLBACK: if the compiled file is missing, emit the original unpkg <script>
-    tags + an in-browser Babel block over the raw JSX. Still no V8 server-side.
-    """
-    try:
-        compiled = _COMPILED_LIVE.read_text()
-        react = (_VENDOR_DIR / "react.production.min.js").read_text()
-        react_dom = (_VENDOR_DIR / "react-dom.production.min.js").read_text()
-        head = f"<script>{react}</script>\n<script>{react_dom}</script>"
-        body = f"<script>{compiled}</script>"
-        return head, body
-    except FileNotFoundError:
-        head = (
-            '<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>\n'
-            '<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>\n'
-            '<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>'
-        )
-        body = f'<script type="text/babel" data-presets="env,react">\n{live_jsx_bundle()}\n</script>'
-        return head, body
-
-
-def _build_html(dash_payload: dict) -> str:
-    """Wrap CSS + React components + DASH payload into a single HTML doc."""
-    css = _load_asset("styles.css")
-    head_scripts, body_app_script = _frontend_bootstrap()
-    return f"""<!doctype html>
-<html><head>
-<meta charset="utf-8" />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-{css}
-/* Streamlit embed tweak: kill the scroll on the outer body since
-   components.html scrolls itself. */
-html, body {{ overflow-x: hidden; min-height: 100vh; }}
-/* Faint visible message while React loads, so we don't show a blank box */
-#root:empty::before {{
-  content: "Loading dashboard…";
-  display: block;
-  padding: 40px;
-  color: var(--text-lo);
-  font-family: var(--ui);
-  font-size: 12px;
-  text-align: center;
-}}
-</style>
-{head_scripts}
-</head>
-<body>
-<div id="root"></div>
-<script>
-window.DASH_DATA = {json.dumps(dash_payload, default=str)};
-</script>
-{body_app_script}
-</body></html>
-"""
 
 
 # ----------------------------------------------------------------------
 # Data adapters: real DB/API → DASH payload shape expected by the design
 # ----------------------------------------------------------------------
 
-def _get_live_data(cfg: dict) -> dict:
+def get_live_data(cfg: dict) -> dict:
     """Build the DASH payload from live sources.
 
     cfg comes from dashboard's _live_trade_config() — provides CITY_CONFIG,
@@ -622,12 +514,13 @@ def _hrrr_freshness() -> dict:
         return {"age": "—", "status": "warn"}
 
 
-# ----------------------------------------------------------------------
-# Streamlit entry point
-# ----------------------------------------------------------------------
 
-def render_live_tab(cfg: dict, height: int = 2400):
-    """Render the redesigned Live Trading tab into a Streamlit container."""
-    payload = _get_live_data(cfg)
-    html = _build_html(payload)
-    st_components.html(html, height=height, scrolling=True)
+def _live_trade_config() -> dict:
+    """CITY_CONFIG + aggregate risk limits from live_trade.py, kept in sync with
+    the cron. scripts/ is on sys.path via the import-time bootstrap above."""
+    import live_trade as _lt
+    return {
+        "CITY_CONFIG": _lt.CITY_CONFIG,
+        "AGG_DAILY_LOSS": _lt.AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS,
+        "AGG_CUM_KILL": _lt.AGGREGATE_CUMULATIVE_KILL_DOLLARS,
+    }

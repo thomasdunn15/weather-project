@@ -24,8 +24,6 @@ import statistics
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
-import streamlit as st
-import streamlit.components.v1 as st_components
 
 from weather_markets.db import get_connection
 from weather_markets.aggregation import (
@@ -36,26 +34,17 @@ from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
 from weather_markets.evaluation import contract_resolved_yes
 from weather_markets.stations import get as get_station, all_stations
 
+import sys as _sys
+_SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+if _SCRIPTS not in _sys.path:
+    _sys.path.insert(0, _SCRIPTS)
 
-COMPONENT_DIR = Path(__file__).parent / "assets" / "backtest_component"
-
-# Lazy-create the declared component (only on first use; module-level call
-# would run at import time even when the Backtest tab isn't open).
-_backtest_component = None
-
-
-def _component():
-    global _backtest_component
-    if _backtest_component is None:
-        _backtest_component = st_components.declare_component(
-            "backtest_panel",
-            path=str(COMPONENT_DIR),
-        )
-    return _backtest_component
+from dashboard.ttl_cache import ttl_cache
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _fetch_city_payload(
+
+@ttl_cache(300)
+def fetch_city_payload(
     city_code: str,
     selected_date: date,
     selected_sizing: str = "amount",
@@ -65,7 +54,7 @@ def _fetch_city_payload(
 ) -> dict:
     """Build BTDATA[city] from real sources. Falls back gracefully when data missing.
 
-    @st.cache_data: 5-min TTL. Repeat (city, date, ...) is instant — only hits
+    @ttl_cache(300): 5-min TTL. Repeat (city, date, ...) is instant — only hits
     DB on first call per cache key. Live prices update every 5 min anyway, so
     this matches the natural data cadence.
     """
@@ -471,71 +460,8 @@ def _compute_sims(rows: list, edge_filter: float, amount_dollars: float, depth_c
     return out
 
 
-def render_backtest_tab(
-    selected_city: str,
-    selected_date: date,
-    sizing: str,
-    amount: float,
-    depth: int,
-    edge_filter: float,
-    height: int = 2400,
-    available_cities: list[str] | None = None,
-    key: str = "backtest_panel",
-):
-    """Render the redesigned Backtest tab via a bidirectional Streamlit component.
 
-    Returns a dict with the user's current selections from the React panel:
-      {platform, cityCode, date, sizing, edge, exec, depth, minEntry, amount}
-    or None on first render before the component reports back. The dashboard
-    layer should compare this dict to the previous render's selections; when
-    they differ, set session_state + st.rerun() so Python recomputes the
-    payload with the new params.
-    """
-    # Build the payload for ALL kalshi cities so the React city dropdown can
-    # switch instantly without a round-trip. Each city is cheap (~1-2 sec)
-    # because Streamlit caches the @cache_data wrapper.
-    if available_cities is None:
-        available_cities = [s.station_id for s in all_stations() if s.kalshi_series]
-    payload: dict = {"cities": available_cities}
-    for code in available_cities:
-        # Only deep-compute the selected city's data; placeholders for others.
-        # The React side hits the selected city's data first; if user switches,
-        # the onChange callback round-trips back to Python which computes that
-        # city in turn.
-        if code == selected_city:
-            payload[code] = _fetch_city_payload(code, selected_date, sizing, amount, depth, edge_filter)
-        else:
-            payload[code] = {
-                "code": code,
-                "city": get_station(code).city if code in [s.station_id for s in all_stations()] else code,
-                "date": selected_date.isoformat(),
-                "members": [], "nMembers": 0, "ensMean": 0, "ensSpread": 0,
-                "emosMu": 0, "emosSigma": 0, "observed": 0,
-                "brackets": [],
-                "sim": {"unit": _empty_sim(), "amount": _empty_sim(),
-                        "kelly": _empty_sim(), "scaling": _empty_sim()},
-                "trades": [], "strat": [],
-            }
-
-    # payloadKey forces React to remount the BacktestTab when Python pushes
-    # a fresh payload, so the new data flows through the initial-state hooks.
-    payload_key = f"{selected_city}_{selected_date.isoformat()}_{sizing}_{int(edge_filter*100)}_{int(amount)}_{int(depth)}"
-    initial_state = {
-        "platform": "Kalshi",
-        "cityCode": selected_city,
-        "date": selected_date.isoformat(),
-        "sizing": sizing,
-        "edge": edge_filter,
-        "amount": amount,
-        "depth": depth,
-        "exec": "post_inside_spread",
-        "minEntry": 0,
-    }
-    return _component()(
-        payload=payload,
-        payloadKey=payload_key,
-        initialState=initial_state,
-        key=key,
-        default=None,
-        height=height,
-    )
+def list_cities() -> list[dict]:
+    """City code + label for every Kalshi-series station — the backtest dropdown."""
+    return [{"code": s.station_id, "label": s.city}
+            for s in all_stations() if s.kalshi_series]
