@@ -327,22 +327,35 @@ def _paper_source_for(city_code: str, city_name: str) -> str:
     return f"EMOS combined 00Z {city_name} (rolling 45d)"
 
 
+# Backtest decision time (UTC) for cities not in the live CITY_CONFIG. These
+# are backtest-only candidate cities (not live-traded); 17:00 UTC ≈ late
+# morning local for the western/central US cities, when the daily-high
+# contracts are listed and liquid but the market hasn't converged. Must match
+# the decision time used when their paper_trades were backfilled.
+_BACKTEST_DECISION_UTC = {
+    "KPHX": (17, 0), "KLAS": (17, 0), "KSEA": (17, 0),
+    "KDFW": (17, 0), "KMSY": (17, 0),
+}
+
+
 def _city_cron_datetime(city_code: str, target_date: date) -> datetime:
     """The UTC datetime the live_trade cron fires for this city on target_date.
 
     Reads decision_hour/decision_minute from CITY_CONFIG in live_trade.py so
-    the Edge-by-bracket panel's Market P is always pinned to the precise
-    moment that city's strategy makes its trade decision.
-
-    Falls back to 14:46 UTC (KORD default) for cities not in CITY_CONFIG.
+    the Edge-by-bracket panel's Market P is pinned to the precise moment that
+    city's strategy makes its trade decision. For backtest-only candidate
+    cities (not in CITY_CONFIG) uses _BACKTEST_DECISION_UTC; falls back to
+    14:46 UTC (KORD default).
     """
     try:
         import live_trade
         cfg = live_trade.CITY_CONFIG.get(city_code, {})
     except Exception:
         cfg = {}
-    hour = cfg.get("decision_hour", 14)
-    minute = cfg.get("decision_minute", 46)
+    if "decision_hour" in cfg:
+        hour, minute = cfg["decision_hour"], cfg.get("decision_minute", 0)
+    else:
+        hour, minute = _BACKTEST_DECISION_UTC.get(city_code, (14, 46))
     return datetime(target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=timezone.utc)
 
 
