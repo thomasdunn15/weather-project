@@ -680,6 +680,31 @@ function jsComputeSim(trades, params) {
   };
 }
 
+// Find the best (strategy, edge) for a city's trades by sweeping the grid with
+// the SAME sim the dashboard runs (so the auto-loaded config matches what's
+// shown). Objective: highest annualized Sharpe among configs with >= MIN_TRADES
+// filled — the trade floor avoids picking a tiny lucky high-edge slice. Uses
+// unit-500 + market execution (the realistic defaults).
+function findBestParams(trades) {
+  if (!trades || !trades.length) return null;
+  const MIN_TRADES = 15;
+  const edges = [0.05, 0.07, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30];
+  let best = null;
+  for (const strategy of ["raw", "blend", "union"]) {
+    for (const edge of edges) {
+      const r = jsComputeSim(trades, {
+        sizing: "unit", amountDollars: 500, edgeFilter: edge, minEntry: 0,
+        depthCap: 0, execution: "market", startingBankroll: 3000,
+        strategy, maxSignals: 0, edgeCap: 0,
+      });
+      if ((r.filled || 0) >= MIN_TRADES && (best === null || r.sharpe > best.sharpe)) {
+        best = { strategy, edge, sharpe: r.sharpe, n: r.filled };
+      }
+    }
+  }
+  return best;   // null if no config cleared MIN_TRADES
+}
+
 function BTMetric({ label, value, sub, tone }) {
   return <div className="m"><div className="ml">{label}</div><div className={"mv " + (tone || "")}>{value}</div><div className="ms">{sub}</div></div>;
 }
@@ -692,7 +717,7 @@ function BacktestTab({ initialState }) {
   const defaultCity = init.cityCode || (window.BTDATA && window.BTDATA.cities && window.BTDATA.cities[0]) || "KORD";
   const [platform, setPlatform_] = useState(init.platform || "Kalshi");
   const [cityCode, setCityCode_] = useState(defaultCity);
-  const [sizing, setSizing] = useState(init.sizing || "amount");           // LOCAL only — JS sim
+  const [sizing, setSizing] = useState(init.sizing || "unit");             // LOCAL only — default unit
   // Migrate any legacy 'cross_at_ask' / 'cross_with_premium' values from old
   // saved state to the new explicit names.
   const _execInit = (() => {
@@ -713,7 +738,7 @@ function BacktestTab({ initialState }) {
   const [bracketEdge, setBracketEdge] = useState(init.edge ?? 0.10);
   const [simEdge, setSimEdge] = useState(init.edge ?? 0.10);
   const [minEntry, setMinEntry] = useState(init.minEntry ?? 0);            // LOCAL only
-  const [amount, setAmount] = useState(init.amount ?? 50);                 // LOCAL only
+  const [amount, setAmount] = useState(init.amount ?? 500);               // LOCAL only — default 500 contracts (unit)
   const [bankroll, setBankroll_] = useState(3000);                         // LOCAL only — matches real Kalshi balance
   // RISK CONTROLS (added 2026-06-10, matching live_trade.py).
   // maxSignals — anti-stacking cap. When the model has high directional
@@ -751,6 +776,27 @@ function BacktestTab({ initialState }) {
   const setBankroll = (v) => { setBankroll_(Math.max(100, Number(v) || 1000)); };  // local only
 
   const d = window.BTDATA[cityCode] || window.BTDATA[defaultCity];
+
+  // AUTO-LOAD best params when a city's data first appears (on click / initial
+  // load). Sets strategy + edge to that city's best (by Sharpe, min 15 trades)
+  // and forces the realistic unit-500 / market defaults. Tracked per-city via a
+  // ref so it runs ONCE per city and never fights the user's manual tweaks.
+  const autoedCity = useRef(null);
+  useEffect(() => {
+    if (!d || !d.trades || !d.trades.length) return;
+    if (autoedCity.current === cityCode) return;
+    const best = findBestParams(d.trades);
+    autoedCity.current = cityCode;
+    if (best) {
+      setStrategy(best.strategy);
+      setSimEdge(best.edge);
+      setBracketEdge(best.edge);
+    }
+    setSizing("unit");
+    setAmount(500);
+    setExec("market");
+  }, [cityCode, d && d.trades && d.trades.length]);
+
   if (!d) {
     return <div style={{ padding: 24, color: "var(--text-lo)" }}>No data for {cityCode}.</div>;
   }
