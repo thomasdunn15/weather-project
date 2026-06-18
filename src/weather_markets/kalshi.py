@@ -1,5 +1,5 @@
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from psycopg.types.json import Jsonb
 from weather_markets.db import get_connection
 
@@ -8,6 +8,22 @@ BRACKET_TYPE_MAP = {
     'less': 'less_than',
     'between': 'between',
 }
+
+_MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+           "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+
+
+def ticker_event_date(ticker: str) -> date:
+    """Event (target) date from a Kalshi daily-high ticker, e.g.
+    'KXHIGHTPHX-26JUN15-B106.5' -> date(2026, 6, 15).
+
+    The ticker date is authoritative — it matches Kalshi's contract title
+    ("...on Jun 15"). Do NOT use occurrence_datetime.date(): for the newer
+    "T"-prefixed western/central series (KXHIGHTPHX/TLV/TSEA/TDAL/TNOLA),
+    Kalshi sets occurrence_datetime to the settle day (event+1 in UTC), which
+    silently shifted target_date one day late (2026-06-18 bug)."""
+    seg = ticker.split("-")[1]            # "26JUN15"
+    return date(2000 + int(seg[0:2]), _MONTHS[seg[2:5]], int(seg[5:7]))
 
 def dollars_to_cents(dollar_str: str) -> int:
     """Convert Kalshi's dollar string format (e.g., '0.0500') to cents (5)."""
@@ -68,7 +84,7 @@ def parse_contracts(raw_markets: list[dict], station_id: str = "KNYC") -> list[t
             m['ticker'],
             m['ticker'].split('-')[0],   # series
             station_id,
-            datetime.fromisoformat(m['occurrence_datetime']).date(),
+            ticker_event_date(m['ticker']),   # authoritative; NOT occurrence_datetime.date()
             strike_low,
             strike_high,
             bracket_type,
