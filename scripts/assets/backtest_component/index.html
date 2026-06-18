@@ -1812,7 +1812,18 @@ function BacktestTab({
   }, "P&L simulation — tweak the run parameters below"), /*#__PURE__*/React.createElement(PanelBare, {
     title: "Simulation results",
     meta: `${d.city} · ${sizing} · |edge| ≥ ${(simEdge * 100).toFixed(0)}%${minEntry ? " · entry ≥ " + minEntry + "¢" : ""}`
-  }, /*#__PURE__*/React.createElement(SimControls, {
+  }, (!d.trades || d.trades.length === 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "16px 12px",
+      margin: "8px 0",
+      borderRadius: 6,
+      background: "rgba(255,153,0,0.08)",
+      border: "1px solid rgba(255,153,0,0.3)",
+      color: "var(--warn)",
+      fontFamily: "var(--mono)",
+      fontSize: 12
+    }
+  }, "⏳ ", d.city, ": backtest data is still backfilling (forecast history for this city's traded dates hasn't finished downloading). Best-results will load automatically once it's ready — no action needed."), /*#__PURE__*/React.createElement(SimControls, {
     edge: simEdge,
     setEdge: setSimEdge,
     minEntry,
