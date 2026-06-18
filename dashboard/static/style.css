@@ -334,6 +334,12 @@ table.dt tbody tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--pos); 
 .chosen-tag { font: 600 8.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--pos); border: 1px solid var(--pos-line); border-radius: 100px; padding: 2px 6px; margin-left: 7px; }
 
 .chart-axis-x { font: 500 10px var(--mono); fill: var(--text-faint); }
+
+/* clickable US map (location picker) */
+.mapdot { cursor: pointer; }
+.mapdot text { pointer-events: none; }
+.mapdot:hover .md { filter: brightness(1.25); }
+.mapdot:hover text { fill: var(--text-hi); }
 .ens-note { display: flex; gap: 18px; flex-wrap: wrap; font: 500 11px/1 var(--mono); color: var(--text-lo); padding: 0 16px 14px; }
 .ens-note .sw { width: 11px; height: 11px; border-radius: 2px; display: inline-block; vertical-align: -1px; margin-right: 6px; }
 

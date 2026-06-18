@@ -654,6 +654,46 @@ function renderLive() {
 }
 
 // ====================================================================
+// CLICKABLE US MAP — click a city's location to load its best backtest.
+// Outline + dots share one lon/lat→xy projection so the dots land correctly.
+// ====================================================================
+const US_BBOX = { lonMin: -125, lonMax: -66.5, latMin: 24, latMax: 49.5 };
+// Stylized lower-48 border (lon,lat), traced NW → west coast → south → Gulf →
+// east coast → northern border. Recognizable, not survey-accurate.
+const US_OUTLINE = [
+  [-123.5, 48.4], [-124.6, 42.0], [-124.2, 40.4], [-122.4, 37.8], [-120.6, 34.5],
+  [-117.3, 32.5], [-114.7, 32.7], [-111.0, 31.3], [-108.2, 31.3], [-106.5, 31.8],
+  [-103.0, 29.0], [-99.5, 27.5], [-97.1, 25.9], [-94.7, 29.3], [-93.0, 29.8],
+  [-90.0, 29.2], [-88.0, 30.3], [-84.0, 30.0], [-82.8, 27.8], [-81.0, 25.2],
+  [-80.1, 26.5], [-81.4, 30.7], [-80.9, 32.0], [-78.0, 33.9], [-75.9, 36.9],
+  [-75.0, 38.8], [-74.0, 40.5], [-71.1, 41.5], [-70.0, 43.5], [-67.0, 47.4],
+  [-71.5, 45.0], [-76.5, 43.6], [-79.0, 43.3], [-82.5, 41.7], [-83.0, 46.0],
+  [-87.5, 46.5], [-90.0, 46.7], [-95.0, 49.0], [-104.0, 49.0], [-116.0, 49.0],
+];
+function projXY(lon, lat, W, H, pad) {
+  const b = US_BBOX;
+  const x = pad + ((lon - b.lonMin) / (b.lonMax - b.lonMin)) * (W - 2 * pad);
+  const y = pad + ((b.latMax - lat) / (b.latMax - b.latMin)) * (H - 2 * pad);
+  return [x, y];
+}
+function usMapSVG(selected) {
+  const W = 720, H = 420, pad = 16;
+  const pts = US_OUTLINE.map(([lo, la]) => { const [x, y] = projXY(lo, la, W, H, pad); return `${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
+  const dots = BT_CITIES.map(c => {
+    if (c.lon == null || c.lat == null) return "";
+    const [x, y] = projXY(c.lon, c.lat, W, H, pad);
+    const on = c.code === selected;
+    const r = on ? 7 : 5;
+    const fill = on ? "var(--dial)" : "var(--teal)";
+    return `<g class="mapdot" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)}) — click to load best backtest</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/><circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/><text x="${(x + 9).toFixed(1)}" y="${(y + 3.5).toFixed(1)}" fill="${on ? "var(--text-hi)" : "var(--text-lo)"}" style="font:${on ? "600" : "500"} 10px var(--mono)">${esc(c.code.replace(/^K/, ""))}</text></g>`;
+  }).join("");
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polygon points="${pts}" fill="rgba(103,184,166,0.05)" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round"/>${dots}</svg>`;
+}
+function locationMap(d) {
+  return `<div class="panel"><div class="panel-h"><h3>Select a location</h3><span class="meta">click a city → loads its best backtest · ${esc(d.city)} selected</span></div><div style="padding:10px 12px"><div class="chart-wrap">${usMapSVG(bt.cityCode)}</div></div></div>`;
+}
+
+// ====================================================================
 // BACKTEST TAB render functions
 // ====================================================================
 function controlsBar(d) {
@@ -768,6 +808,7 @@ function renderBacktest() {
   const simMeta = `${esc(d.city)} · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%${bt.minEntry ? " · entry ≥ " + bt.minEntry + "¢" : ""}`;
   root.innerHTML = `<div class="wrap">` +
     controlsBar(d) +
+    locationMap(d) +
     `<div class="section-label">Forecast — combined GEFS + ECMWF ensemble · ${esc(d.city)} · ${esc(bt.date || "")}</div>` +
     `<div class="grid" style="grid-template-columns:1.5fr 1fr">` +
       `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:var(--bg-3)"></span>member daily highs</span><span><span class="sw" style="background:var(--warn)"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--pos)"></span>resolved high ${d.observed}°</span></div></div>` +

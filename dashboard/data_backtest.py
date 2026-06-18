@@ -462,6 +462,8 @@ def _compute_sims(rows: list, edge_filter: float, amount_dollars: float, depth_c
 
 
 def list_cities() -> list[dict]:
-    """City code + label for every Kalshi-series station — the backtest dropdown."""
-    return [{"code": s.station_id, "label": s.city}
+    """Code + label + lat/lon for every Kalshi-series station. Drives both the
+    dropdown and the clickable US map in the backtest tab."""
+    return [{"code": s.station_id, "label": s.city,
+             "lat": s.latitude, "lon": s.longitude}
             for s in all_stations() if s.kalshi_series]
