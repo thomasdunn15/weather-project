@@ -182,10 +182,28 @@ def _fetch_city_payload(
     except Exception:
         pass
 
-    # Fit blend for this city once — used for both bracket display AND per-trade
-    # blend probabilities so the React side can toggle Raw ↔ Blend.
-    from weather_markets.blend import fit_blend as _fit_blend
-    blend_fit = _fit_blend(city_code, city_name) if station.kalshi_series else None
+    # WALK-FORWARD blend (no lookahead): each trade is scored by a blend fit
+    # trained ONLY on settled data before that trade's date. Fitting on the full
+    # history and scoring it on that same history (the old behavior) inflated
+    # blend/union backtests by ~30-50%. `wf_blends[date]` is the fit to use for
+    # trades on that date; None until MIN_N_FIT prior samples exist.
+    from weather_markets.blend import walkforward_blends as _wf_blends
+    ms = _paper_source_for(city_code, city_name)
+    wf_blends = _wf_blends(city_code, city_name, paper_model_source=ms) if station.kalshi_series else {}
+
+    def _blend_for(d) -> "object | None":
+        """Blend fit to use for a trade/display on date d: the fit trained on
+        data strictly before d. Falls back to the latest fit at/before d."""
+        if not wf_blends:
+            return None
+        f = wf_blends.get(d)
+        if f is not None:
+            return f
+        prior = [bf for dd, bf in wf_blends.items() if dd <= d and bf is not None]
+        return prior[-1] if prior else None
+
+    # Blend fit for the SELECTED date's bracket table (also no lookahead).
+    blend_fit = _blend_for(selected_date)
 
     # Build bracket table for the Edge by bracket display
     brackets_payload: list[dict] = []
@@ -245,11 +263,12 @@ def _fetch_city_payload(
                 pnl_per = (100 - int(entry)) if won else -int(entry)
                 pnl = round(pnl_per / 100, 2)
                 fill_status = "filled"
-            # Blend probability for the YES side (always compute from market mid +
-            # raw model P, regardless of which side the bot took). The React-side
-            # JS sim flips it for BUY_NO via 1 - blendP when needed.
-            blend_p_yes = (float(blend_fit.predict(float(mp), float(mkt)))
-                           if blend_fit and mkt > 0 else None)
+            # Blend probability for the YES side, using the WALK-FORWARD fit for
+            # THIS trade's date (trained only on prior data — no lookahead). The
+            # React-side JS sim flips it for BUY_NO via 1 - blendP when needed.
+            _bf = _blend_for(td)
+            blend_p_yes = (float(_bf.predict(float(mp), float(mkt)))
+                           if _bf and mkt > 0 else None)
             trades_payload.append({
                 "date": td.strftime("%Y-%m-%d"),
                 "bracket": bracket_label,

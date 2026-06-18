@@ -1040,10 +1040,10 @@ function SimControls({
     value: exec,
     onChange: e => setExec(e.target.value)
   }, /*#__PURE__*/React.createElement("option", {
-    value: "post_inside_spread"
-  }, "post_inside_spread — post limit 1¢ inside spread (saves $)"), /*#__PURE__*/React.createElement("option", {
     value: "market"
-  }, "market — buy at the ask (cross the spread)"), /*#__PURE__*/React.createElement("option", {
+  }, "market — cross the spread, 100% fill (realistic default)"), /*#__PURE__*/React.createElement("option", {
+    value: "post_inside_spread"
+  }, "post_inside_spread — 1¢ inside, only ~75% fill (saves $ when it fills)"), /*#__PURE__*/React.createElement("option", {
     value: "market_plus_1"
   }, "market_plus_1 — pay ask + 1¢ (aggressive, ensures fill)"), /*#__PURE__*/React.createElement("option", {
     value: "market_plus_2"
@@ -1063,6 +1063,21 @@ function SimControls({
 // changing sizing/edge/amount/depth/bankroll updates the panel instantly with
 // no Python round-trip. Fields needed from each trade: entry, edge, won (bool|null),
 // pos ("BUY_YES"|"BUY_NO"), modelP, marketYesBid, marketYesAsk, date.
+// Fraction of post_inside_spread (maker) orders that actually fill. A maker
+// order posted inside the spread only fills when the market trades through it;
+// live KORD/KMIA data shows ~75%. Missed fills produce no position. Taker
+// modes (market / market_plus_*) cross the spread and fill 100%.
+const POST_INSIDE_FILL_RATE = 0.75;
+// Deterministic [0,1) hash (FNV-1a) so the modeled fill outcome is stable
+// across reruns — same trade always fills-or-misses identically.
+function hashUnit(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) % 100000 / 100000;
+}
 function kalshiFeeCents(entry) {
   if (entry <= 0 || entry >= 100) return 0;
   const p = entry / 100;
@@ -1146,7 +1161,8 @@ function jsComputeSim(trades, params) {
     nFilled = 0,
     nWon = 0,
     nPending = 0,
-    nTotal = 0;
+    nTotal = 0,
+    nMissed = 0;
   const pnls = [];
   const curve = [startingBankroll];
   // Per-trade computed records — drives Trade-by-trade detail table so qty/PnL
@@ -1185,8 +1201,38 @@ function jsComputeSim(trades, params) {
         pSel = t.blendP;
         edgeSel = blendEdge;
       }
+    } else if (useBlend) {
+      // Blend strategy: you can't run a blend before it's been fit. The
+      // walk-forward fit sets blendP=null for trades before MIN_N_FIT prior
+      // samples exist — skip those (don't silently fall back to raw, which
+      // would overstate the blend strategy's trade count and returns).
+      if (t.blendP == null) {
+        tradeRecords.push({
+          ...t,
+          fill: "no-blend",
+          computedQty: 0,
+          computedPnl: 0,
+          stratEdge: 0,
+          stratP: t.modelP
+        });
+        continue;
+      }
+      pSel = t.blendP;
+      edgeSel = pSel - t.mktP;
+      if (Math.abs(edgeSel) < edgeFilter) {
+        tradeRecords.push({
+          ...t,
+          fill: "filtered",
+          computedQty: 0,
+          computedPnl: 0,
+          stratEdge: edgeSel,
+          stratP: pSel
+        });
+        continue;
+      }
     } else {
-      pSel = useBlend && t.blendP != null ? t.blendP : t.modelP;
+      // Raw strategy: always available (no fit needed).
+      pSel = t.modelP;
       edgeSel = pSel - t.mktP;
       if (Math.abs(edgeSel) < edgeFilter) {
         tradeRecords.push({
@@ -1267,6 +1313,24 @@ function jsComputeSim(trades, params) {
       tradeRecords.push({
         ...t,
         fill: "skipped",
+        computedQty: 0,
+        computedPnl: 0,
+        stratEdge: edgeSel,
+        stratP: pSel
+      });
+      continue;
+    }
+    // REALISTIC FILL MODEL: a maker order posted inside the spread (entry below
+    // the cross price) only fills ~POST_INSIDE_FILL_RATE of the time. Missed
+    // fills = no position, no P&L (not free money). Deterministic per trade.
+    // Only applies when we actually improved on the cross (entry < crossEntry);
+    // if the spread was 1¢ there was no room to post inside, so it crosses and
+    // fills. Taker modes never hit this branch.
+    if (execution === "post_inside_spread" && entry < crossEntry && hashUnit(t.date + "|" + t.bracket + "|" + t.side) >= POST_INSIDE_FILL_RATE) {
+      nMissed++;
+      tradeRecords.push({
+        ...t,
+        fill: "missed",
         computedQty: 0,
         computedPnl: 0,
         stratEdge: edgeSel,
@@ -1363,6 +1427,7 @@ function jsComputeSim(trades, params) {
     filled: nFilled,
     pending: nPending,
     total: nTotal,
+    missed: nMissed,
     avg: pnls.length ? Math.round(pnls.reduce((s, x) => s + x, 0) / pnls.length * 100) / 100 : 0,
     curve,
     tradeRecords
@@ -1399,7 +1464,10 @@ function BacktestTab({
   // Migrate any legacy 'cross_at_ask' / 'cross_with_premium' values from old
   // saved state to the new explicit names.
   const _execInit = (() => {
-    const v = init.exec || "post_inside_spread";
+    // Default to "market" (cross, 100% fill) — the realistic baseline. The old
+    // default (post_inside_spread) assumed a free cent AND a guaranteed fill,
+    // which overstated returns; it's still selectable but now fill-modeled.
+    const v = init.exec || "market";
     if (v === "cross_at_ask") return "market";
     if (v === "cross_with_premium") return "market_plus_1";
     return v;
@@ -1731,13 +1799,14 @@ function BacktestTab({
     sub: `${pct(sim.maxDD || 0)} peak-to-trough`,
     tone: "neg"
   }), /*#__PURE__*/React.createElement(BTMetric, {
-    label: "Pending",
-    value: sim.pending || 0,
-    sub: "unresolved"
+    label: "Missed fills",
+    value: sim.missed || 0,
+    sub: "maker didn't fill",
+    tone: (sim.missed || 0) > 0 ? "neg" : ""
   }), /*#__PURE__*/React.createElement(BTMetric, {
     label: "Filtered / total",
     value: `${sim.n || 0} / ${sim.total || 0}`,
-    sub: "passed filter"
+    sub: "filled / passed filter"
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "12px 12px 4px"

@@ -51,7 +51,10 @@ def _load_js_sim():
     """Extract kalshiFeeCents..jsComputeSim (plain JS, no JSX) from app.jsx into
     a V8 context. The slice stops before the first React component (BTMetric)."""
     src = APP_JSX.read_text()
-    start = src.index("function kalshiFeeCents")
+    # Start at POST_INSIDE_FILL_RATE so the slice includes the fill-model
+    # constant + hashUnit() that jsComputeSim depends on (they sit above
+    # kalshiFeeCents).
+    start = src.index("const POST_INSIDE_FILL_RATE")
     end = src.index("function BTMetric")
     ctx = py_mini_racer.MiniRacer()
     ctx.eval(src[start:end])
@@ -212,3 +215,32 @@ class TestGoldenJsOnly:
         assert res["n"] == 2
         filtered = [r for r in res["tradeRecords"] if r["fill"] == "filtered"]
         assert len(filtered) == 1 and filtered[0]["bracket"] == "NONE"
+
+    # --- realism additions (2026-06-18) ---
+
+    def test_blend_skips_unfit_trades(self, js):
+        # Walk-forward: a trade with blendP=null (before the blend was fittable)
+        # must NOT be traded by the blend strategy, and must NOT silently fall
+        # back to raw (that overstated blend's trade count + returns).
+        trades = [
+            _one_js_trade(20, True, 0.50, 0.20, blend_p=None, bracket="UNFIT"),  # no blend yet
+            _one_js_trade(20, True, 0.50, 0.20, blend_p=0.50, bracket="FIT"),    # blend present, edge .30
+        ]
+        res = js.call("jsComputeSim", trades, {**JS_BASE_PARAMS, "strategy": "blend", "edgeFilter": 0.10})
+        assert res["n"] == 1                                   # only the fitted trade
+        recs = {r["bracket"]: r["fill"] for r in res["tradeRecords"]}
+        assert recs["UNFIT"] == "no-blend"                    # skipped, not "filled"/"filtered"
+
+    def test_post_inside_models_missed_fills(self, js):
+        # post_inside posts inside a 4¢ spread (fills only ~75%); across many
+        # trades some MUST miss (missed>0) and filled<total. market fills all.
+        trades = [_one_js_trade(50, True, 0.90, 0.10, bracket=f"B{i}", date=f"2026-06-{10+i%20:02d}")
+                  for i in range(40)]
+        for t in trades:  # widen spread so post_inside actually posts inside
+            t["marketYesBid"], t["marketYesAsk"] = 46, 50
+        pi = js.call("jsComputeSim", trades, {**JS_BASE_PARAMS, "edgeFilter": 0.05, "execution": "post_inside_spread"})
+        mkt = js.call("jsComputeSim", trades, {**JS_BASE_PARAMS, "edgeFilter": 0.05, "execution": "market"})
+        assert pi["missed"] > 0 and pi["filled"] < pi["total"]
+        assert mkt["missed"] == 0 and mkt["filled"] == mkt["total"]   # taker always fills
+        # ~75% fill rate (allow noise on n=40)
+        assert 0.6 <= pi["filled"] / (pi["filled"] + pi["missed"]) <= 0.9

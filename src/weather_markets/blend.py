@@ -204,3 +204,74 @@ def get_blend(city_code: str, city_name: str,
     variant the live cron actually uses (e.g., combined_hrrr for KORD).
     """
     return fit_blend(city_code, city_name, paper_model_source=paper_model_source)
+
+
+@lru_cache(maxsize=32)
+def walkforward_blends(
+    city_code: str,
+    city_name: str,
+    paper_model_source: Optional[str] = None,
+    refit_every_days: int = 7,
+) -> dict:
+    """Walk-forward blend fits — one BlendFit per settled target_date, each
+    trained ONLY on settled data STRICTLY BEFORE that date (expanding window).
+
+    This is what an honest backtest must use: fitting the blend on the full
+    history and then scoring it on that same history (what get_blend/fit_blend
+    do) is lookahead bias that inflates blend/union results. With this, each
+    trade is scored by a blend that could only have seen earlier data.
+
+    Returns {target_date: BlendFit | None}. Dates before MIN_N_FIT settled
+    samples have accrued map to None (no blend possible yet — realistic).
+    Refits every `refit_every_days` to bound cost (coefficients are stable
+    week-to-week); between refits the most recent fit is reused.
+
+    One DB query + ~N/refit_every fits. Process-cached.
+    """
+    from datetime import timedelta
+    ms = paper_model_source or _city_model_source(city_code, city_name)
+    rows: list[tuple] = []   # (target_date, p_model, p_market, y)
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT pt.target_date, pt.model_prob_yes, pt.market_yes_bid, pt.market_yes_ask,
+                      c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
+               FROM paper_trades pt
+               JOIN contracts c ON c.ticker = pt.ticker
+               LEFT JOIN LATERAL (SELECT high_temp_f FROM observations
+                 WHERE date = pt.target_date AND station_id = c.station_id LIMIT 1) o ON TRUE
+               WHERE pt.model_source = %s
+                 AND pt.market_yes_bid IS NOT NULL AND pt.market_yes_ask IS NOT NULL
+                 AND pt.model_prob_yes IS NOT NULL
+               ORDER BY pt.target_date""",
+            (ms,),
+        )
+        for td, mp, bid, ask, bt, sl, sh, high in cur.fetchall():
+            if high is None:
+                continue
+            mkt_p = (int(bid) + int(ask)) / 200.0
+            yes_won = contract_resolved_yes(int(high), {"bracket_type": bt, "strike_low": sl, "strike_high": sh})
+            rows.append((td, float(mp), mkt_p, 1.0 if yes_won else 0.0))
+
+    if not rows:
+        return {}
+
+    rows.sort(key=lambda r: r[0])
+    unique_dates = sorted({r[0] for r in rows})
+    out: dict = {}
+    cur_fit: Optional[BlendFit] = None
+    last_refit: Optional[date] = None
+
+    for d in unique_dates:
+        need_refit = (last_refit is None) or ((d - last_refit).days >= refit_every_days)
+        if need_refit:
+            train = [(mp, mk, y) for (td, mp, mk, y) in rows if td < d]
+            if len(train) >= MIN_N_FIT:
+                a = np.array(train, dtype=float)
+                alpha, bm, bk = _fit_logistic(a[:, 0], a[:, 1], a[:, 2])
+                cur_fit = BlendFit(
+                    city_code=city_code, alpha=alpha, beta_model=bm, beta_market=bk,
+                    n_train=len(train), fit_through_date=str(d - timedelta(days=1)),
+                )
+                last_refit = d
+        out[d] = cur_fit
+    return out
