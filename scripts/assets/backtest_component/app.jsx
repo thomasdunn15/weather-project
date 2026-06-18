@@ -777,16 +777,18 @@ function BacktestTab({ initialState }) {
 
   const d = window.BTDATA[cityCode] || window.BTDATA[defaultCity];
 
-  // AUTO-LOAD best params when a city's data first appears (on click / initial
-  // load). Sets strategy + edge to that city's best (by Sharpe, min 15 trades)
-  // and forces the realistic unit-500 / market defaults. Tracked per-city via a
-  // ref so it runs ONCE per city and never fights the user's manual tweaks.
-  const autoedCity = useRef(null);
+  // AUTO-LOAD best params the FIRST time each city's data appears (on click /
+  // initial load). Sets strategy + edge to that city's best (by Sharpe, min 15
+  // trades) and forces the realistic unit-500 / market defaults. Tracked via a
+  // Set of cities already auto-loaded so it runs ONCE per city per session and
+  // never fights the user's manual tweaks — neither on revisit nor when a
+  // city's trade count changes mid-session (e.g. backfill data arriving).
+  const autoedCities = useRef(new Set());
   useEffect(() => {
     if (!d || !d.trades || !d.trades.length) return;
-    if (autoedCity.current === cityCode) return;
+    if (autoedCities.current.has(cityCode)) return;
     const best = findBestParams(d.trades);
-    autoedCity.current = cityCode;
+    autoedCities.current.add(cityCode);
     if (best) {
       setStrategy(best.strategy);
       setSimEdge(best.edge);

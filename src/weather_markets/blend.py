@@ -206,7 +206,6 @@ def get_blend(city_code: str, city_name: str,
     return fit_blend(city_code, city_name, paper_model_source=paper_model_source)
 
 
-@lru_cache(maxsize=32)
 def walkforward_blends(
     city_code: str,
     city_name: str,
@@ -224,9 +223,14 @@ def walkforward_blends(
     Returns {target_date: BlendFit | None}. Dates before MIN_N_FIT settled
     samples have accrued map to None (no blend possible yet — realistic).
     Refits every `refit_every_days` to bound cost (coefficients are stable
-    week-to-week); between refits the most recent fit is reused.
+    week-to-week); between refits the most recent fit is reused (still strictly
+    pre-`d`, so lookahead-free).
 
-    One DB query + ~N/refit_every fits. Process-cached.
+    One DB query + ~N/refit_every fits. Deliberately NOT lru_cached: the output
+    is date-keyed, so a process-level cache would serve stale fits (missing the
+    newest settled dates) in a long-lived dashboard. The sole caller,
+    _fetch_city_payload, is already @st.cache_data(ttl=300), which bounds how
+    often this recomputes while staying fresh.
     """
     from datetime import timedelta
     ms = paper_model_source or _city_model_source(city_code, city_name)

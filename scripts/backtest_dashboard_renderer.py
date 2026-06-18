@@ -372,7 +372,7 @@ def _city_cron_datetime(city_code: str, target_date: date) -> datetime:
     except Exception:
         cfg = {}
     if "decision_hour" in cfg:
-        hour, minute = cfg["decision_hour"], cfg.get("decision_minute", 0)
+        hour, minute = cfg["decision_hour"], cfg.get("decision_minute", 46)
     else:
         hour, minute = _BACKTEST_DECISION_UTC.get(city_code, (14, 46))
     return datetime(target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=timezone.utc)
