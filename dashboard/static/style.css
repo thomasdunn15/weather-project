@@ -335,6 +335,9 @@ table.dt tbody tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--pos); 
 
 .chart-axis-x { font: 500 10px var(--mono); fill: var(--text-faint); }
 
+/* interactive charts (hover crosshair) */
+svg[data-chart] { cursor: crosshair; }
+
 /* clickable US map (location picker) */
 .mapdot { cursor: pointer; }
 .mapdot text { pointer-events: none; }

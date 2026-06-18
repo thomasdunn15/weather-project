@@ -59,7 +59,7 @@ function sparkSVG(data, color) {
 }
 
 function pnlChartSVG(data) {
-  if (!data || data.length < 2) return `<div class="loading">No P&amp;L series.</div>`;
+  if (!data || data.length < 2) { CHARTS.pnl = null; return `<div class="loading">No P&amp;L series.</div>`; }
   const w = 720, height = 232;
   const padL = 14, padR = 58, padT = 14, padB = 26;
   const iw = w - padL - padR, ih = height - padT - padB;
@@ -79,7 +79,11 @@ function pnlChartSVG(data) {
   const grid = tickVals.map(tv =>
     `<line x1="${padL}" x2="${padL + iw}" y1="${Y(tv)}" y2="${Y(tv)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${Math.abs(tv) < 1e-6 ? "0" : "2 4"}"/><text x="${padL + iw + 8}" y="${Y(tv) + 3.5}" fill="var(--text-faint)" style="font:500 10px var(--mono)">${(tv >= 0 ? "" : "−") + "$" + Math.abs(Math.round(tv))}</text>`).join("");
   const xlab = data.map((d, i) => `<text x="${X(i)}" y="${height - 8}" text-anchor="middle" fill="var(--text-faint)" style="font:500 9.5px var(--mono)">${dayLabels[i] || i}</text>`).join("");
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}</svg>`;
+  // hover overlay builder (crosshair + dot + cumulative-P&L tooltip)
+  CHARTS.pnl = { W: w, n: data.length, X, build: (i) =>
+    `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(data[i].v).toFixed(1)}" r="3.5" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${Math.min(X(i) + 8, padL + iw - 78).toFixed(1)},${padT + 2})"><rect width="74" height="20" rx="4" fill="var(--bg-3)" stroke="var(--border-strong)"/><text x="8" y="14" fill="var(--text-hi)" style="font:600 11px var(--mono)">${money(data[i].v, { sign: true, dp: 0 })}</text></g>`
+  };
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 function ensembleChartSVG(d) {
@@ -121,7 +125,7 @@ function ensembleChartSVG(d) {
 
 function balanceChartSVG(curve, filledTrades) {
   const w = 720, height = 300;
-  if (!curve || curve.length < 2) return `<div style="padding:24px;color:var(--text-lo);text-align:center">No simulation curve.</div>`;
+  if (!curve || curve.length < 2) { CHARTS.bal = null; return `<div style="padding:24px;color:var(--text-lo);text-align:center">No simulation curve.</div>`; }
   const padL = 14, padR = 64, padT = 14, padB = 26;
   const iw = w - padL - padR, ih = height - padT - padB;
   const start = curve[0];
@@ -157,7 +161,43 @@ function balanceChartSVG(curve, filledTrades) {
     else label = "t" + i;
     return `<text x="${X(i)}" y="${height - 8}" text-anchor="middle" fill="var(--text-faint)" style="font:500 9.5px var(--mono)">${esc(label)}</text>`;
   }).join("");
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}</svg>`;
+  // hover overlay builder (crosshair + dot + per-trade tooltip)
+  const m2 = v => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  CHARTS.bal = { W: w, n: curve.length, X, build: (i) => {
+    const tradeAt = i > 0 ? ft[i - 1] : null;
+    const cumPnl = curve[i] - start;
+    const tw = 220, th = 88;
+    let tx = Math.min(X(i) + 10, padL + iw - tw - 2); if (tx < padL + 2) tx = padL + 2;
+    const ty = padT + 6;
+    let rows = `<text x="10" y="16" fill="var(--text-hi)" style="font:600 11px var(--mono)">${tradeAt ? esc(tradeAt.date + " · " + tradeAt.bracket) : "Starting bankroll"}</text>`;
+    if (tradeAt) {
+      // executed side: blend/union can flip the raw model side — match the trade table + the P&L numbers
+      const sideLbl = tradeAt.stratSide ? (tradeAt.stratSide === "BUY_YES" ? "YES" : "NO") : tradeAt.side;
+      rows += `<text x="10" y="32" fill="var(--text-mid)" style="font:500 10.5px var(--mono)">${esc(sideLbl)} @ ${tradeAt.entry}¢ · qty ${tradeAt.computedQty}</text>`;
+    }
+    rows += `<text x="10" y="${tradeAt ? 50 : 32}" fill="var(--text-lo)" style="font:500 10px var(--mono)">BALANCE</text><text x="78" y="${tradeAt ? 50 : 32}" fill="var(--text-hi)" style="font:600 11px var(--mono)">$${m2(curve[i])}</text>`;
+    if (tradeAt) rows += `<text x="10" y="66" fill="var(--text-lo)" style="font:500 10px var(--mono)">TRADE P&amp;L</text><text x="78" y="66" fill="${tradeAt.computedPnl >= 0 ? "var(--pos)" : "var(--neg)"}" style="font:600 11px var(--mono)">${tradeAt.computedPnl >= 0 ? "+" : "−"}$${m2(Math.abs(tradeAt.computedPnl))}</text><text x="10" y="80" fill="var(--text-lo)" style="font:500 10px var(--mono)">CUMULATIVE</text><text x="78" y="80" fill="${cumPnl >= 0 ? "var(--pos)" : "var(--neg)"}" style="font:600 11px var(--mono)">${cumPnl >= 0 ? "+" : "−"}$${m2(Math.abs(cumPnl))}</text>`;
+    return `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(curve[i]).toFixed(1)}" r="4" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${tx.toFixed(1)},${ty})"><rect width="${tw}" height="${th}" rx="5" fill="var(--bg-3)" stroke="var(--border-strong)"/>${rows}</g>`;
+  } };
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
+}
+
+// Attach hover handlers to every chart with a data-chart attr. Called after each
+// render (innerHTML replacement drops old listeners, so re-wiring is clean).
+function wireCharts(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll("svg[data-chart]").forEach(svg => {
+    const key = svg.getAttribute("data-chart");
+    svg.addEventListener("mousemove", e => {
+      const ch = CHARTS[key]; if (!ch) return;
+      const rect = svg.getBoundingClientRect();
+      const px = (e.clientX - rect.left) * (ch.W / rect.width);
+      let best = 0, bd = 1e9;
+      for (let i = 0; i < ch.n; i++) { const dd = Math.abs(ch.X(i) - px); if (dd < bd) { bd = dd; best = i; } }
+      const ov = svg.querySelector(".cx"); if (ov) ov.innerHTML = ch.build(best);
+    });
+    svg.addEventListener("mouseleave", () => { const ov = svg.querySelector(".cx"); if (ov) ov.innerHTML = ""; });
+  });
 }
 
 function edgeCell(edge) {
@@ -489,10 +529,13 @@ function BTMetric(label, value, sub, tone) {
 // ====================================================================
 let LIVE = null;
 let BT = null;            // current city's backtest payload
-let BT_CITIES = [];       // [{code,label}]
+let BT_CITIES = [];       // [{code,label,lat,lon}]
 let activeTab = "live";
 let liveTimer = null;
 const autoedCities = new Set();
+const bestByCity = {};    // code -> {strategy,edge,sharpe,n} | null (computed, no edge) | undefined (not yet)
+const CHARTS = {};        // chart key -> {W,n,X,build(i)} for hover overlays
+let bestSweepStarted = false;
 const bt = {              // backtest control state
   platform: "Kalshi", cityCode: null, date: null,
   strategy: "raw", bracketEdge: 0.10, simEdge: 0.10, minEntry: 0,
@@ -651,6 +694,7 @@ function renderLive() {
     signalsTable(d.signals) +
     `<div class="grid g-2">${ordersTable(d.orders)}<div class="grid" style="grid-template-rows:auto auto;gap:14px">${openOrders(d.openOrdersTbl)}${recentFills(d.fills)}</div></div>` +
     cronAlerts(d) + paramsExpander(d);
+  wireCharts(root);
 }
 
 // ====================================================================
@@ -685,12 +729,21 @@ function usMapSVG(selected) {
     const on = c.code === selected;
     const r = on ? 7 : 5;
     const fill = on ? "var(--dial)" : "var(--teal)";
-    return `<g class="mapdot" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)}) — click to load best backtest</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/><circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/><text x="${(x + 9).toFixed(1)}" y="${(y + 3.5).toFixed(1)}" fill="${on ? "var(--text-hi)" : "var(--text-lo)"}" style="font:${on ? "600" : "500"} 10px var(--mono)">${esc(c.code.replace(/^K/, ""))}</text></g>`;
+    const best = bestByCity[c.code];
+    const lx = (x + 9).toFixed(1);
+    // code label nudges up to make room for the Sharpe sub-line once known
+    const codeY = (y + (best !== undefined ? 0.5 : 3.5)).toFixed(1);
+    const codeTxt = `<text x="${lx}" y="${codeY}" fill="${on ? "var(--text-hi)" : "var(--text-lo)"}" style="font:${on ? "600" : "500"} 10px var(--mono)">${esc(c.code.replace(/^K/, ""))}</text>`;
+    let subTxt = "";
+    if (best) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="${on ? "var(--dial)" : "var(--text-faint)"}" style="font:500 8.5px var(--mono)">Sh ${best.sharpe.toFixed(1)}</text>`;
+    else if (best === null) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="var(--text-faint)" style="font:500 8.5px var(--mono)">—</text>`;
+    const tip = best ? ` — best Sharpe ${best.sharpe.toFixed(2)} (${best.strategy} ≥${(best.edge * 100).toFixed(0)}%, n=${best.n})` : (best === null ? " — too few trades" : "");
+    return `<g class="mapdot" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)})${esc(tip)} — click to load</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/><circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/>${codeTxt}${subTxt}</g>`;
   }).join("");
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polygon points="${pts}" fill="rgba(103,184,166,0.05)" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round"/>${dots}</svg>`;
 }
 function locationMap(d) {
-  return `<div class="panel"><div class="panel-h"><h3>Select a location</h3><span class="meta">click a city → loads its best backtest · ${esc(d.city)} selected</span></div><div style="padding:10px 12px"><div class="chart-wrap">${usMapSVG(bt.cityCode)}</div></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Select a location</h3><span class="meta">click a city → loads its best backtest · dots: best Sharpe (trailing 365d, as of today)</span></div><div style="padding:10px 12px"><div class="chart-wrap" id="locmap">${usMapSVG(bt.cityCode)}</div></div></div>`;
 }
 
 // ====================================================================
@@ -832,6 +885,7 @@ function renderBacktest() {
     tradeDetailTable(sim) +
     strategyComparison(d.strat || []) +
   `</div>`;
+  wireCharts(root);
 }
 
 // ====================================================================
@@ -859,11 +913,50 @@ function btSetEdgeCap(v) { bt.edgeCap = +v; renderBacktest(); }
 function autoLoadBest() {
   if (!BT || !BT.trades || !BT.trades.length) return;
   if (autoedCities.has(BT.code)) return;
-  const best = findBestParams(BT.trades);
+  const best = (BT.code in bestByCity) ? bestByCity[BT.code] : findBestParams(BT.trades);
   autoedCities.add(BT.code);
   if (best) { bt.strategy = best.strategy; bt.simEdge = best.edge; bt.bracketEdge = best.edge; }
   else { bt.strategy = BT.blend ? "blend" : "raw"; }
+  // Reproduce findBestParams' swept config exactly so the rendered Sharpe matches
+  // the map dot label (it sweeps unit-500 / market / no caps).
   bt.sizing = "unit"; bt.amount = 500; bt.exec = "market";
+  bt.maxSignals = 0; bt.edgeCap = 0;
+}
+
+// Cache a city's best (strategy, edge, Sharpe) for the map labels + auto-load.
+// Only seed from the TODAY-anchored window so every dot's label is computed over
+// the same trailing-365d-as-of-today window (the sweep also forces date=""). A
+// load made under an explicit older date is left for the sweep to populate
+// canonically, so labels never silently reflect a different date than each other.
+function recordBest(p) {
+  if (!p || !p.code || p.code in bestByCity) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (p.date && p.date !== today) return;
+  bestByCity[p.code] = (p.trades && p.trades.length) ? findBestParams(p.trades) : null;
+}
+
+// Lazy background pass: fetch every city once, compute its best with the SAME
+// findBestParams the dashboard uses, and update the map's Sharpe labels as each
+// result lands. Runs at most once per session; server 5min cache keeps it cheap.
+async function sweepBest() {
+  if (bestSweepStarted) return;
+  bestSweepStarted = true;
+  for (const c of BT_CITIES) {
+    if (c.code in bestByCity) continue;
+    try {
+      const q = new URLSearchParams({ city: c.code, date: "", sizing: "unit", amount: 500, depth: 500, edge: 0.10 });
+      const r = await fetch("/api/backtest?" + q.toString());
+      const p = await r.json();
+      bestByCity[c.code] = (p.trades && p.trades.length) ? findBestParams(p.trades) : null;
+    } catch (e) { bestByCity[c.code] = null; }
+    refreshMapLabels();
+  }
+}
+
+// Re-render only the map (Sharpe labels) without disturbing the rest of the tab.
+function refreshMapLabels() {
+  const el = document.getElementById("locmap");
+  if (el) el.innerHTML = usMapSVG(bt.cityCode);
 }
 
 // ====================================================================
@@ -903,8 +996,10 @@ async function loadBacktest() {
     const r = await fetch("/api/backtest?" + q.toString());
     BT = await r.json();
     if (!bt.date) bt.date = BT.date;
+    recordBest(BT);
     autoLoadBest();
     renderBacktest();
+    sweepBest();
   } catch (e) {
     const root = document.getElementById("backtest-root");
     root.innerHTML = `<div class="wrap"><div class="loading">Failed to load backtest: ${esc(String(e))}</div></div>`;
@@ -938,6 +1033,7 @@ function switchTab(name) {
     stopLivePolling();
     if (rl) rl.textContent = "backtest";
     if (!BT) loadBacktest();
+    else sweepBest();
   }
 }
 
