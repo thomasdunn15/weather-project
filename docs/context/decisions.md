@@ -4,7 +4,7 @@
 
 ## TL;DR
 - Models: GEFS + ECMWF/IFS for breadth (81 members), **HRRR added per-city only where it backtests better** (Chicago yes, NYC no). 00Z init (12Z tested → no edge).
-- Venue: **Kalshi** (CFTC-regulated, resolves on CF6, live-traded). **Polymarket is research/dashboard-only** (not fungible with Kalshi, no historical-price API).
+- Venue: **Kalshi first** (CFTC-regulated, resolves on CF6, live-traded). **Polymarket is a planned future second venue** (research client/snapshots exist; not yet traded) — not rejected.
 - Method: **EMOS** (raw ensembles are biased/under-dispersed) + **Benter blend** (the single biggest win).
 - Product: **daily-HIGH** temp contracts (lows tested → "decisively negative"); resolution source is **CF6** (not ASOS).
 
@@ -15,12 +15,12 @@
 | ECMWF / IFS | ~50 | "Generally the most accurate operational model"; combining models beats any single one → 81-member multi-model ensemble for EMOS. |
 | HRRR | 1 (deterministic) | Added **per-city by backtest**: Chicago combined→combined_hrrr gave **+$11.12/trade (+43%, p 0.013→0.003)**; for NYC it was noise. So Chicago=`combined_hrrr`, Miami/others=`combined`. |
 - **00Z init:** standard, gives lead time before the trade window; **12Z was tested and showed no edge after fees**, so the project pivoted to 00Z.
-- **Why not GFS / NAM / RAP** — *(inferred)* never evaluated/recorded; GFS is redundant with GEFS, NAM/RAP are short-range mesoscale. Not documented as rejected.
+- **Other models (GFS, NAM, RAP, …):** the GEFS+ECMWF baseline was an **initial recommendation, not an exhaustive model-selection study** (user, 2026-06-19). Evaluating whether NAM/RAP/others improve forecast accuracy is **open future research** — tracked in [../backlog.md](../backlog.md).
 
 ## Trading venue: Kalshi vs Polymarket
 - **Kalshi (live):** CFTC-regulated event exchange; daily-high contracts resolve on the **NWS CF6** report (matches our observation source exactly).
 - **Polymarket (research-only):** client + snapshot/backfill scripts + `scripts/analysis/cross_platform_arb.py` exist, but it is **not traded**. Reasons in-repo: its Chicago market is **KMDW (Midway), not KORD (O'Hare)** — ~14 mi apart, highs differ 1–3°F, so contracts are **not fungible**; and Polymarket has **no historical-price endpoint** (only forward snapshots), which hurts backtest realism.
-- **Why Kalshi was chosen over Polymarket for live** — *(inferred)*: regulatory clarity + CF6 resolution match + Kalshi came first (Polymarket integration landed 2026-06-08, after live trading was already on Kalshi). Not explicitly stated.
+- **Kalshi first, Polymarket planned** (user, 2026-06-19): Kalshi was the **starting** venue (CFTC-regulated, CF6 resolution); **Polymarket is intended as a future second venue, not rejected** — the research client/snapshots already exist. Integration blockers to solve first: Polymarket Chicago = **KMDW ≠ KORD** (non-fungible) and **no historical-price API** (only forward snapshots). Tracked in [../backlog.md](../backlog.md).
 
 ## Method: EMOS + Benter blend
 - **EMOS** (rolling 45-day non-homogeneous Gaussian regression): raw ensembles are biased and under-dispersed; EMOS corrects mean + spread. Window 45d chosen empirically (30–90d sweep didn't change annual CRPS — not load-bearing).

@@ -30,6 +30,15 @@ date, idea, evidence that prompted it. Nothing here is a commitment.
 - **2026-06-09 · Cross-platform arb (Kalshi vs Polymarket US).** Needs KMDW
   price history from the forward snapshots; revisit once a few weeks have
   accumulated.
+- **2026-06-19 · Evaluate additional NWP models (NAM, RAP, GFS, …).** The
+  GEFS+ECMWF(+HRRR) ensemble was an initial recommendation, not an exhaustive
+  model-selection study (user, 2026-06-19). Test whether adding short-range /
+  regional models improves daily-high forecast accuracy and EMOS calibration —
+  backtest CRPS/Brier before any live use.
+- **2026-06-19 · Add Polymarket as a trading venue (not just arb).** User wants
+  to trade Polymarket in the future, not only run the cross-platform-arb study.
+  Blockers to solve first: Polymarket Chicago = KMDW ≠ KORD (non-fungible) and
+  no historical-price API (only forward snapshots accumulating).
 
 ## Evaluated and rejected
 

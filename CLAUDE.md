@@ -44,15 +44,14 @@ FastAPI + vanilla-JS dashboard. Postgres/TimescaleDB `weather` holds all data.
 - **Live trading is real money.** `scripts/live_trade.py --live` places orders; treat it with care.
 - Commit/push only when asked; end commit messages with the `Co-Authored-By: Claude` trailer.
 
-## Still unconfirmed (minor — inferred only)
-The former gaps are now documented: deployment/prod → [docs/context/deployment.md](docs/context/deployment.md),
-failure recovery → [docs/context/runbook.md](docs/context/runbook.md), rationale →
-[docs/context/decisions.md](docs/context/decisions.md), goals/capital →
-[docs/context/goals-metrics.md](docs/context/goals-metrics.md). A few rationale points remain
-*inferred only* (not written down) — confirm with the user before relying on them:
-- Why GFS/NAM/RAP were never evaluated (only GEFS + ECMWF/IFS + HRRR).
-- The explicit reason Kalshi was chosen over Polymarket for live trading (regulatory + CF6 + first-mover — inferred).
-- Why Chicago & Miami were the first live cities (geographic diversity — inferred).
+## Gaps now documented; future directions
+Former gaps are covered in docs/context/: deployment/prod → [deployment.md](docs/context/deployment.md),
+failure recovery → [runbook.md](docs/context/runbook.md), rationale → [decisions.md](docs/context/decisions.md),
+goals/capital → [goals-metrics.md](docs/context/goals-metrics.md).
 
-Operational note: deployment.md flags real gaps with no current solution — **no DB backups, no WAL, no
-log rotation, no persistent dashboard service**. Address before scaling.
+**Future directions (user-confirmed, tracked in [docs/backlog.md](docs/backlog.md)):**
+- Evaluate additional NWP models (NAM/RAP/GFS/…) for accuracy — the GEFS+ECMWF baseline was an initial recommendation, not an exhaustive study.
+- Add **Polymarket** as a second trading venue (Kalshi was just the starting point; not rejected).
+- Ops hardening — **DB backups, WAL, log rotation, persistent dashboard service** (none exist yet; acknowledged as future work). See [deployment.md](docs/context/deployment.md).
+
+Still *inferred only* (minor): why Chicago & Miami were the first live cities.
