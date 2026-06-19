@@ -16,6 +16,8 @@ Run:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 from datetime import date, datetime
@@ -27,11 +29,27 @@ from fastapi.staticfiles import StaticFiles
 
 from dashboard.data_live import get_live_data, _live_trade_config
 from dashboard.data_backtest import fetch_city_payload, list_cities
+from dashboard.kalshi_ws import service as live_service
 from dashboard.ttl_cache import ttl_cache
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="weather-project dashboard", docs_url=None, redoc_url=None)
+
+@contextlib.asynccontextmanager
+async def lifespan(app: "FastAPI"):
+    # Launch the read-only Kalshi WebSocket live-mark service. It self-heals and
+    # degrades gracefully (no key / no socket → dashboard uses DB prices).
+    task = asyncio.create_task(live_service.run())
+    try:
+        yield
+    finally:
+        live_service._stop = True
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+app = FastAPI(title="weather-project dashboard", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -41,10 +59,11 @@ def _json(payload) -> Response:
     return Response(json.dumps(payload, default=str), media_type="application/json")
 
 
-@ttl_cache(15)
+@ttl_cache(2)
 def _live_payload() -> dict:
-    """Live telemetry, recomputed at most every 15s — matches the former
-    @st.fragment(run_every=15s) cadence and is friendly to Kalshi rate limits."""
+    """Live telemetry, recomputed at most every 2s. Marks come from the WS
+    service (continuous, cent-accurate); cash/orders are live REST. The 2s cache
+    bounds DB/REST work while the browser polls at the same cadence."""
     return get_live_data(_live_trade_config())
 
 

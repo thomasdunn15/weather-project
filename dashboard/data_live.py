@@ -51,6 +51,15 @@ def get_live_data(cfg: dict) -> dict:
     agg_daily_kill = cfg.get("AGG_DAILY_LOSS", 150.0)
     agg_cum_kill = cfg.get("AGG_CUM_KILL", 500.0)
 
+    # Live WS marks (cent-accurate top-of-book for held tickers). Empty/degraded
+    # snapshot → mark-to-market falls back to the DB prices snapshot transparently.
+    try:
+        from dashboard.kalshi_ws import live_snapshot
+        live = live_snapshot()
+    except Exception:
+        live = {"connected": False, "marks": {}, "age_ms": None}
+    live_marks = live.get("marks", {})
+
     # Kalshi balance + open orders (best-effort: skip on auth error)
     balance = 0.0
     open_orders_count = 0
@@ -167,7 +176,7 @@ def get_live_data(cfg: dict) -> dict:
     # market). Used by both the per-city cards AND the bottom Positions panel.
     # Must be computed BEFORE cities_payload since cities use the per-city
     # rollup for the unrealized column.
-    positions_rows = _open_positions(today)
+    positions_rows = _open_positions(today, live_marks=live_marks)
 
     # Per-city: aggregate position-level unrealized into per-city totals.
     per_city_unreal = {}
@@ -293,6 +302,12 @@ def get_live_data(cfg: dict) -> dict:
         "env": "LIVE",
         "killArmed": cum_realized > -agg_cum_kill,
         "asOf": datetime.now().strftime("today %H:%M ET"),
+        "live": {
+            "connected": bool(live.get("connected")),
+            "ageMs": live.get("age_ms"),
+            "marks": len(live_marks),
+            "source": "websocket" if live.get("connected") else "rest",
+        },
         "balance": total_account_value,         # NOW total = cash + portfolio
         "cashBalance": round(balance, 2),       # cash component (free / settled)
         "portfolioValue": portfolio_value,      # mark-to-market position value
@@ -352,14 +367,21 @@ def _fmt_age(ts: str | None) -> str:
         return "—"
 
 
-def _open_positions(today: date) -> list[dict]:
+def _open_positions(today: date, live_marks: dict | None = None) -> list[dict]:
     """Open positions = filled or partial_resting trades for today that haven't
-    settled yet. Marks to market using the latest price snapshot.
+    settled yet. Marks to market using the live WS feed when available, else the
+    latest DB price snapshot.
     Aggregates multiple orders on the same (ticker, side) into one position
     (weighted-average entry price).
-    Returns list of {ticker, city, bracket, side, qty, avg, mark, unreal, unrealPct}.
+    Returns list of {ticker, city, bracket, side, qty, avg, mark, unreal, unrealPct, live}.
+
+    live_marks: optional {ticker: (yes_bid_cents, yes_ask_cents, ts)} from the
+    Kalshi WebSocket service. When present for a ticker it OVERRIDES the DB
+    snapshot — the DB `prices` table is a 5-min cron that freezes after a market
+    closes, so the WS mark is both fresher and cent-accurate.
     """
     rows = []
+    live_marks = live_marks or {}
     try:
         with get_connection() as conn, conn.cursor() as cur:
             # Aggregate by (ticker, side): SUM fill_count, weighted avg fill_price
@@ -394,6 +416,12 @@ def _open_positions(today: date) -> list[dict]:
                 for tk, yb, ya in cur.fetchall():
                     if yb is not None and ya is not None:
                         marks[tk] = (int(yb), int(ya))
+
+        # Overlay LIVE WS marks (cent-accurate, never frozen) over the DB snapshot.
+        live_used = set()
+        for tk, (yb, ya, _ts) in live_marks.items():
+            marks[tk] = (int(yb), int(ya))
+            live_used.add(tk)
 
         for ticker, side, qty, fill_px_yes_eq, station_id, bt, sl, sh in trade_rows:
             qty = int(qty)
@@ -443,6 +471,7 @@ def _open_positions(today: date) -> list[dict]:
                 "mark": int(display_mark_yes_eq),
                 "unreal": round(unreal_cents / 100.0, 2),
                 "unrealPct": round(unreal_pct, 1),
+                "live": ticker in live_used,
             })
     except Exception:
         pass

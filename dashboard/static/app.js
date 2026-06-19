@@ -635,8 +635,9 @@ function aggRisk(d) {
 function positionsTable(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="8" style="padding:20px 12px">No open positions — all flat.</td></tr>`
-    : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.avg}¢</td><td class="hi">${r.mark}¢</td><td class="${cls(r.unreal)}">${money(r.unreal)}</td><td class="${cls(r.unreal)}">${pct(r.unrealPct)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Current positions</h3><span class="meta">mark = side-adjusted bid · ${rows.length} open</span></div><div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Unreal</th><th>%</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+    : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.avg}¢</td><td class="hi">${r.mark}¢${r.live ? ` <span title="live WS mark" style="color:var(--pos)">●</span>` : ""}</td><td class="${cls(r.unreal)}">${money(r.unreal)}</td><td class="${cls(r.unreal)}">${pct(r.unrealPct)}</td></tr>`).join("");
+  const liveN = rows.filter(r => r.live).length;
+  return `<div class="panel"><div class="panel-h"><h3>Current positions</h3><span class="meta">mark = side-adjusted bid · ${rows.length} open${liveN ? ` · ${liveN} live ●` : ""}</span></div><div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Unreal</th><th>%</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function signalsTable(rows) {
@@ -980,6 +981,7 @@ async function loadLive() {
     const eb = document.getElementById("env-badge");
     if (eb) { eb.textContent = LIVE.env || "LIVE"; eb.className = "env-badge" + (String(LIVE.env).toUpperCase() === "LIVE" ? " live" : ""); }
     renderLive();
+    updateLiveIndicator();
   } catch (e) {
     const root = document.getElementById("live-root");
     if (root && !LIVE) root.innerHTML = `<div class="loading">Failed to load live data: ${esc(String(e))}</div>`;
@@ -1016,7 +1018,23 @@ function tickClocks() {
   }
 }
 
-function startLivePolling() { if (!liveTimer) liveTimer = setInterval(loadLive, 15000); }
+function startLivePolling() { if (!liveTimer) liveTimer = setInterval(loadLive, 2000); }
+
+// Reflect the WS live-mark service status in the topbar pill.
+function updateLiveIndicator() {
+  const lab = document.getElementById("refresh-label");
+  const dot = document.querySelector(".refresh-pill .dot");
+  const lv = (LIVE && LIVE.live) || { connected: false, marks: 0, ageMs: null };
+  if (lab) {
+    if (lv.connected) {
+      const age = lv.ageMs != null ? Math.round(lv.ageMs / 1000) + "s" : "—";
+      lab.textContent = `ws · ${lv.marks} live · ${age}`;
+    } else {
+      lab.textContent = "rest · 2s";
+    }
+  }
+  if (dot) dot.style.background = lv.connected ? "var(--pos)" : "var(--warn)";
+}
 function stopLivePolling() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
 
 function switchTab(name) {
@@ -1028,7 +1046,7 @@ function switchTab(name) {
   const rl = document.getElementById("refresh-label");
   if (name === "live") {
     startLivePolling();
-    if (rl) rl.textContent = "live · 15s";
+    if (rl) rl.textContent = "live";
   } else {
     stopLivePolling();
     if (rl) rl.textContent = "backtest";

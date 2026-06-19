@@ -1594,6 +1594,7 @@ dependencies = [
     { name = "rich" },
     { name = "scipy" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
     { name = "xarray" },
 ]
 
@@ -1617,6 +1618,7 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0.0" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.47.0" },
+    { name = "websockets", specifier = ">=16.0" },
     { name = "xarray", specifier = ">=2025.0" },
 ]
 
