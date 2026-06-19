@@ -1,7 +1,7 @@
 # Chicago resume — conservative parameters pre-commitment
 
 **Status:** ACTIVE as of 2026-06-07 (REVISED same day before first cron fire)
-**Replaces:** docs/halt_decision_2026-06-06.md (Chicago portion)
+**Replaces:** docs/decisions/halt-2026-06-06.md (Chicago portion)
 **Duration:** 30 days minimum — no parameter changes until 2026-07-07.
 **Miami:** REMAINS HALTED. halt/KMIA file in place.
 

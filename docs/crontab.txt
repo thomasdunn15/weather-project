@@ -99,18 +99,18 @@
 # (See git log for full context.)
 # 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --live >> /var/log/weather/live_trade.log 2>&1
 #
-# CHICAGO + MIAMI live trading (approved 2026-06-04 per docs/chicago_miami_live_precommit.md).
+# CHICAGO + MIAMI live trading (approved 2026-06-04 per docs/decisions/precommits/chicago-miami-live.md).
 # Different decision times per city — Chicago 14:46 UTC (default), Miami 15:30 UTC
 # (per intraday-paper time-of-day analysis).
 # HALT 2026-06-06, partial RESUME 2026-06-07.
-# Chicago re-enabled with conservative parameters per docs/chicago_resume_2026-06-07_precommit.md
+# Chicago re-enabled with conservative parameters per docs/decisions/precommits/chicago-resume-2026-06-07.md
 #   - filter: edge>=25% (was 10%) — only Bonferroni-passing cell (lifetime t=4.64, p=0.0000057)
 #   - sizing: Amount $25/trade with 500 contract cap (down from Unit 200)
 #   - cumulative kill: $200 (down from $500)
 #   - 30-day window with NO parameter changes — re-evaluate 2026-07-07
 # Chicago: KORD with UNION strategy (raw 25% OR blend 10%), unit 500 contracts.
 # Miami:   KMIA with BLEND-only at 10% edge,  unit 500 contracts (KORD parity).
-# See docs/miami_resume_2026-06-10_precommit.md and chicago_resume_2026-06-07
+# See docs/decisions/precommits/miami-resume-2026-06-10.md and chicago_resume_2026-06-07
 # for the no-tuning windows + bail criteria.
 #
 # PRE-TRADE FORECAST VERIFICATION (added 2026-06-11): re-run GEFS, IFS, HRRR

@@ -151,7 +151,7 @@ class TestEvenSplitStake:
 
 
 # ---------------------------------------------------------------------------
-# frozen-config invariants (docs/config_freeze_2026-06-12.md)
+# frozen-config invariants (docs/decisions/config-freeze-2026-06-12.md)
 # ---------------------------------------------------------------------------
 
 class TestFrozenConfig:

@@ -320,6 +320,6 @@ All numbers in this document come from the project's PostgreSQL database
 
 - `scripts/dashboard.py` — interactive view of all backtest panels
 - `scripts/backfill_paper_trades.py` — regenerates the paper-trade table
-- `docs/edge_test_protocol.md` — pre-registered evaluation protocol
+- `docs/decisions/edge-test-protocol.md` — pre-registered evaluation protocol
 - `src/weather_markets/emos.py` — EMOS implementation
 - `src/weather_markets/aggregation.py` — ensemble combination logic

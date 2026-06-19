@@ -1,7 +1,7 @@
 # Miami-only live trading with Amount $ sizing — pre-commitment
 
 **Status:** ACTIVE as of 2026-06-06
-**Replaces:** docs/chicago_miami_live_precommit.md (Chicago portion suspended; Miami sizing changed)
+**Replaces:** docs/decisions/precommits/chicago-miami-live.md (Chicago portion suspended; Miami sizing changed)
 **Duration:** 30 days minimum — no parameter changes until 2026-07-06.
 
 This doc locks in **every parameter** that drives real-money trading for the

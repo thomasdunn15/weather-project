@@ -1,4 +1,4 @@
-"""LIVE trading cron entry point (multi-city, per docs/chicago_miami_live_precommit.md).
+"""LIVE trading cron entry point (multi-city, per docs/decisions/precommits/chicago-miami-live.md).
 
 Fires once per day per city at the city's pre-committed decision time. Computes
 that day's signals using the same logic as paper_trade_log.py, then places
@@ -49,7 +49,7 @@ from weather_markets.stations import get as get_station
 
 
 # ====================================================================
-# PRE-COMMITTED PARAMETERS — see docs/chicago_miami_live_precommit.md
+# PRE-COMMITTED PARAMETERS — see docs/decisions/precommits/chicago-miami-live.md
 # ====================================================================
 
 EDGE_THRESHOLD = 0.10        # DEFAULT — per-city cfg['edge_threshold'] overrides
@@ -60,7 +60,7 @@ MODELS_LIST_DEFAULT = ["gefs", "ifs"]  # DEFAULT — per-city cfg['models'] over
 # Per-city config. Constants here MUST NOT be edited mid-window — see pre-commit doc.
 #
 # REVISION 2026-06-07: Chicago resumes after halt with tighter, smaller config.
-# Per docs/chicago_resume_2026-06-07_precommit.md:
+# Per docs/decisions/precommits/chicago-resume-2026-06-07.md:
 #   - filter: edge>=25% (up from 10% — only Bonferroni-surviving cell)
 #   - sizing: Amount $25/trade with 500 contract cap
 #   - cumulative kill: $200 (down from $500)
@@ -117,7 +117,7 @@ CITY_CONFIG = {
     },
     "KMIA": {
         "city_name": "Miami",
-        # RESUMED 2026-06-10 per docs/miami_resume_2026-06-10_precommit.md.
+        # RESUMED 2026-06-10 per docs/decisions/precommits/miami-resume-2026-06-10.md.
         # Original halt (2026-06-04) was based on RAW strategy showing t=-0.49
         # over the prior 90 days. Rolling 90-day BLEND backtest at 10% edge
         # shows consistent profitability across all 7 windows (t=+4.10 to

@@ -17,7 +17,7 @@ first, write a new pre-commit doc, then change.** Never change while live.
 
 ## Why this exists
 
-The pre-committed cross-city test (docs/cross_city_precommit.md, 2026-06-04
+The pre-committed cross-city test (docs/decisions/precommits/cross-city.md, 2026-06-04
 verdict) produced:
 
 | City | Verdict | Mean (limit) | t-stat | n |

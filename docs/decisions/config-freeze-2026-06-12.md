@@ -29,7 +29,7 @@ Aggregate: daily $300, cumulative kill $1,000.
 1. **Only safety bugs justify changes** — wrong data being traded on,
    broken order placement, broken reconciliation. Not strategy ideas, not
    one bad day, not a better backtest number.
-2. **Strategy ideas go to [backlog.md](backlog.md)**, dated, with the
+2. **Strategy ideas go to [backlog.md](../backlog.md)**, dated, with the
    evidence that prompted them. They get evaluated together on 2026-07-10.
 3. **Halts are allowed** (risk-limit or discretionary). Resume only with
    the same frozen params.
