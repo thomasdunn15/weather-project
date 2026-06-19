@@ -20,8 +20,12 @@ FastAPI + vanilla-JS dashboard. Postgres/TimescaleDB `weather` holds all data.
 - [docs/context/architecture.md](docs/context/architecture.md) — pipeline + module/scripts map
 - [docs/context/data-model.md](docs/context/data-model.md) — the `weather` schema (7 tables, units)
 - [docs/context/strategy.md](docs/context/strategy.md) — EMOS → edge → blend → sizing/risk; CITY_CONFIG
+- [docs/context/decisions.md](docs/context/decisions.md) — why these models/venue/method (rationale)
+- [docs/context/goals-metrics.md](docs/context/goals-metrics.md) — capital ($3,050), risk limits, expansion bar
 - [docs/context/dashboard.md](docs/context/dashboard.md) — API payload→UI contract, live WS, sim parity
 - [docs/context/operations.md](docs/context/operations.md) — crons, trading-day timeline, kill switches
+- [docs/context/deployment.md](docs/context/deployment.md) — host/cron/Postgres prod reality + ops gaps
+- [docs/context/runbook.md](docs/context/runbook.md) — failure recovery: auto-handled vs human
 - [docs/context/conventions.md](docs/context/conventions.md) — the hard rules (also below)
 - [docs/context/glossary.md](docs/context/glossary.md) — domain terms
 
@@ -34,19 +38,21 @@ FastAPI + vanilla-JS dashboard. Postgres/TimescaleDB `weather` holds all data.
 - **Secrets never shared/committed:** `~/.kalshi/key.pem`, `.env` (chmod 600, gitignored), `DATABASE_URL`,
   `POLYMARKET_SECRET`. `Research.md` is gitignored (local-only).
 - **DB:** `psql -d weather` (local peer auth, no password).
+- **Capital base:** $3,050 deployed starting capital (the dashboard returnPct denominator) — see [docs/context/goals-metrics.md](docs/context/goals-metrics.md). Goal = prove positive edge after fees (no fixed return/Sharpe target).
 - **Tests:** `uv run pytest`. The JS↔Python sim must stay in parity (`tests/test_sim_parity.py`) — edit
   `dashboard/static/app.js` and `dashboard/sim_python.py` together.
 - **Live trading is real money.** `scripts/live_trade.py --live` places orders; treat it with care.
 - Commit/push only when asked; end commit messages with the `Co-Authored-By: Claude` trailer.
 
-## Open questions (NOT yet documented — to fill in together)
-These are real gaps; don't invent answers — ask the user:
-- **Deployment / prod:** where do the crons actually run, how is the box provisioned, how does the live
-  env reach Postgres, backup/restore, log rotation, what runs the dashboard in prod.
-- **Decision rationale:** *why* GEFS+ECMWF+HRRR (not GFS/NAM/RAP)? Why Kalshi over Polymarket
-  (`src/weather_markets/polymarket.py` exists but isn't traded)?
-- **Goals / metrics / capital:** the real account capital base (the dashboard hardcodes 3050 for
-  returnPct), target return/Sharpe, drawdown tolerance, city-expansion criteria.
-- **Failure runbook:** recovery steps for common incidents (missing model run, Kalshi auth/rate-limit,
-  disk-full, stuck fills, settlement mismatch). `scripts/check_pipeline_health.py` + `alerts.py` exist
-  but the response playbook isn't written.
+## Still unconfirmed (minor — inferred only)
+The former gaps are now documented: deployment/prod → [docs/context/deployment.md](docs/context/deployment.md),
+failure recovery → [docs/context/runbook.md](docs/context/runbook.md), rationale →
+[docs/context/decisions.md](docs/context/decisions.md), goals/capital →
+[docs/context/goals-metrics.md](docs/context/goals-metrics.md). A few rationale points remain
+*inferred only* (not written down) — confirm with the user before relying on them:
+- Why GFS/NAM/RAP were never evaluated (only GEFS + ECMWF/IFS + HRRR).
+- The explicit reason Kalshi was chosen over Polymarket for live trading (regulatory + CF6 + first-mover — inferred).
+- Why Chicago & Miami were the first live cities (geographic diversity — inferred).
+
+Operational note: deployment.md flags real gaps with no current solution — **no DB backups, no WAL, no
+log rotation, no persistent dashboard service**. Address before scaling.

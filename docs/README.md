@@ -11,8 +11,12 @@ Authored from the code + live DB; kept current. Uniform template (TL;DR → tabl
 | [context/architecture.md](context/architecture.md) | End-to-end pipeline + module/scripts map |
 | [context/data-model.md](context/data-model.md) | The `weather` Postgres schema (7 tables, exact columns/units) |
 | [context/strategy.md](context/strategy.md) | EMOS → edge → Benter blend → sizing/execution/risk; CITY_CONFIG |
+| [context/decisions.md](context/decisions.md) | Why these models / venue / method (rationale; inferred items flagged) |
+| [context/goals-metrics.md](context/goals-metrics.md) | Capital base ($3,050), risk limits, objective, expansion bar, realized perf |
 | [context/dashboard.md](context/dashboard.md) | FastAPI endpoints, payload→UI contract, live WS marks, sim parity |
 | [context/operations.md](context/operations.md) | Cron schedule, trading-day timeline, kill switches, how to run |
+| [context/deployment.md](context/deployment.md) | Host/cron/Postgres prod reality + ops gaps (no backups/logrotate/service) |
+| [context/runbook.md](context/runbook.md) | Failure recovery: auto-handled vs human, per-incident playbook |
 | [context/conventions.md](context/conventions.md) | Hard rules: uv, tmux, crontab, freeze, secrets, tests |
 | [context/glossary.md](context/glossary.md) | Domain terms (EMOS, edge, blend, T-series, hypertable, …) |
 
