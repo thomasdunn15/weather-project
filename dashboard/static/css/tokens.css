@@ -1,0 +1,142 @@
+/* =====================================================================
+   ISOBAR — dark thermal-glass design system · TOKENS
+   weather · kalshi trading desk. Zero-build, hand-written.
+   Cascade order: tokens → shell → components → live → backtest → responsive.
+   This file owns: :root design tokens, the thermal ramp, motion tokens,
+   base reset/body, numeric helpers, and the shared motion keyframes.
+   ===================================================================== */
+
+:root {
+  /* ---- surface scale (deep slate-navy, faintly cool) ---- */
+  --bg-0: #090D15;     /* app background (deepest) */
+  --bg-1: #111826;     /* panels / cards */
+  --bg-2: #182032;     /* raised: table headers, chips */
+  --bg-3: #20293D;     /* hover / inputs / track */
+  --bg-inset: #06090F;
+  --glass: rgba(255,255,255,0.045);   /* backdrop-filter: blur(14px) on topbar/hero/modal */
+
+  /* ---- ink scale (3 weights + faint) ---- */
+  --text-hi:    #EAF0FB;
+  --text-mid:   #8E9CB4;
+  --text-lo:    #58657E;
+  --text-faint: #3E495E;
+
+  /* ---- hairlines ---- */
+  --border:        rgba(180,200,230,0.08);
+  --border-strong: rgba(180,200,230,0.16);
+
+  /* ---- money semantics (conventional green = up/YES, red = down/NO) ---- */
+  --up:   #2FD08A;  --yes: #2FD08A;
+  --down: #F4476B;  --no:  #F4476B;
+  --up-dim:    rgba(47,208,138,0.13);
+  --down-dim:  rgba(244,71,107,0.13);
+  --up-line:   rgba(47,208,138,0.32);
+  --down-line: rgba(244,71,107,0.32);
+
+  /* ---- THERMAL RAMP — forecast / temperature visuals ONLY (the ★ signature) ---- */
+  --cold:      #3E7BFA;   /* low temp / cold bracket */
+  --cool:      #38BDF8;
+  --temperate: #5EE6C0;
+  --warm:      #FBBF24;
+  --hot:       #F97316;
+  --extreme:   #EF5350;   /* record heat */
+
+  /* ---- accent: cyan→amber duotone (active tab, focus, signature glow) ---- */
+  --accent:   #38BDF8;
+  --accent-2: #FBBF24;
+
+  /* ---- legacy aliases: keep untouched live/backtest renderer bodies resolving
+         until E2/E3 migrate to --up/--down/--accent. Do not remove this block
+         without migrating every var(--pos|--neg|--warn|--dial|--teal) call site. */
+  --pos: var(--up);            --neg: var(--down);
+  --pos-dim: var(--up-dim);    --neg-dim: var(--down-dim);
+  --pos-line: var(--up-line);  --neg-line: var(--down-line);
+  --warn:      #FBBF24;
+  --warn-dim:  rgba(251,191,36,0.13);
+  --warn-line: rgba(251,191,36,0.32);
+  --dial: var(--accent);       /* risk dial fill + selected map dot → brand cyan */
+  --teal: #3C6E7E;             /* muted steel-cyan: unselected map dots */
+  --rose: var(--down);
+
+  /* ---- type ---- */
+  --ui:      'Inter', system-ui, -apple-system, sans-serif;
+  --mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --display: 'Space Grotesk', var(--ui);
+  /* type scale (px): 46 hero · 30 · 24 · 18 · 15 · 13 · 11 eyebrow-caps(.14em) · 9.5 micro */
+
+  /* ---- radius ---- */
+  --r-sm: 6px;
+  --r:    10px;
+  --r-lg: 16px;
+  /* pills use 100px directly at call sites */
+
+  /* ---- elevation: glass blur + soft shadow + 1px inset hairline + cyan glow ---- */
+  --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 30px rgba(0,0,0,0.5);
+  --glow:   0 0 0 1px var(--border-strong), 0 0 24px rgba(56,189,248,0.16);
+
+  /* ---- MOTION tokens (mirror app.js LOAD_MS/TICK_MS for the JS-driven ramp) ---- */
+  --dur-0: 90ms;  --dur-1: 140ms;  --dur-2: 220ms;  --dur-3: 360ms;
+  --dur-4: 560ms; --dur-draw: 720ms;
+  --tab-xfade: 180ms; --stagger: 45ms;
+  --ease-out:  cubic-bezier(.22,1,.36,1);
+  --ease-soft: cubic-bezier(.40,0,.20,1);
+  --ease-in:   cubic-bezier(.40,0,1,1);
+  --press:     cubic-bezier(.34,1.56,.64,1);
+  --flash-tint-pos: rgba(47,208,138,0.22);   /* derived from --up @22% */
+  --flash-tint-neg: rgba(244,71,107,0.22);   /* derived from --down @22% */
+}
+
+* { box-sizing: border-box; }
+
+html { color-scheme: dark; }
+html, body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* faint cyan horizon glow so the near-black doesn't read as a pure void
+   (the ISOBAR horizon sweep) */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(56,189,248,0.05), transparent 60%);
+  pointer-events: none; z-index: 0;
+}
+
+.app { position: relative; z-index: 1; min-height: 100vh; padding-bottom: 56px; }
+
+/* ---------- loading / empty ---------- */
+.loading { padding: 40px; text-align: center; color: var(--text-lo); font: 500 12px var(--ui); }
+
+/* ---------- numeric helpers ---------- */
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.pos  { color: var(--up); }
+.neg  { color: var(--down); }
+.warn { color: var(--warn); }
+.muted{ color: var(--text-lo); }
+
+/* ---------- shared motion keyframes ---------- */
+@keyframes rise    { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes dot-breathe {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: .55; transform: scale(.82); }
+}
+
+/* ---------- reduced motion: neutralize all animation/transition ----------
+   Mirrors app.js (rampClock/countUp jump to final value when RM.matches). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  svg[data-chart] path { stroke-dashoffset: 0 !important; }
+  .chart-fill-reveal { transform: none !important; }
+}

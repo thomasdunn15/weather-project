@@ -1,0 +1,19 @@
+/* =====================================================================
+   ISOBAR · BACKTEST TAB — owned by the Backtest-tab agent (E3).
+   Intentionally empty stub created by the foundation pass (E1).
+
+   Put the BACKTEST-tab component styles here, retokenized to ISOBAR. Moved OUT
+   of the old monolithic style.css for E3 to re-author against the new tokens:
+     .controls / .sim-controls / .ctrl (+ .cl) / select / input
+     .seg (+ button .on/:disabled)
+     .bt-metrics / .fc-stats (the metric grids)
+     .ens-note (+ .sw)            ← update the legend swatches to the THERMAL ramp:
+                                     bars + EMOS curve now use --cold→--extreme (a
+                                     gradient), not --bg-3 / --warn. Resolved marker
+                                     stays --up. See ensembleChartSVG in app.js.
+     .mapdot (+ .md hover) / .bt-backfilling
+   Tokens to use: --accent (active seg/focus), thermal ramp (--cold/--cool/
+   --temperate/--warm/--hot/--extreme), --up/--down, --text-*, --bg-*, --border*,
+   --r*, --shadow, motion vars. Chart draw-on hooks (.chart-line /
+   .chart-fill-reveal) are wired in components.css + the app.js builders.
+   ===================================================================== */

@@ -7,6 +7,15 @@
    React app.jsx so tests/test_sim_parity.py stays green).
    ===================================================================== */
 
+/* ---------- animation timing (tunable; user-signed-off prototype values) ----------
+   Override note: LOAD_MS was bumped 1600 → 2400 (1600 read too fast). */
+const LOAD_MS = 2400;   // entrance count-up from 0 — the hero "moment"
+const TICK_MS = 400;    // live-poll prev→new tween
+const easeOutExpo  = t => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);   // load easing
+const easeOutCubic = t => 1 - Math.pow(1 - t, 3);                  // tick easing
+const easeOutQuint = t => 1 - Math.pow(1 - t, 5);                  // softer tick alt
+const RM = matchMedia('(prefers-reduced-motion: reduce)');
+
 /* ---------- formatters (ported from components.jsx) ---------- */
 function money(v, opts) {
   opts = opts || {};
@@ -33,6 +42,63 @@ function esc(s) {
 }
 let _uid = 0;
 
+/* ---------- animation engine (shared; E2/E3 consume these) ----------
+   rampClock = ONE requestAnimationFrame loop off a single performance.now()
+   start, so all hero numbers AND the chart draw finish on the SAME frame.
+   E2 calls it once on first paint:
+     rampClock(LOAD_MS, easeOutExpo, e => { heroNumber = target * e (formatted);
+                                            pnl-chart draw progress = e; });
+   countUp drives INDIVIDUAL live ticks (TICK_MS) from the PREVIOUS value via
+   prevLive — never from 0. snapshot(d) flattens a /api/live payload to the
+   scalar set E2 diffs across polls. */
+function rampClock(durationMs, easeFn, onFrame, onDone) {
+  easeFn = easeFn || (t => t);
+  if (RM.matches || document.hidden) {          // reduced-motion / background tab → jump to end
+    if (onFrame) onFrame(1);
+    if (onDone) onDone();
+    return;
+  }
+  const start = performance.now();
+  function frame(now) {
+    const t = Math.min(1, (now - start) / durationMs);
+    if (onFrame) onFrame(easeFn(t));
+    if (t < 1) requestAnimationFrame(frame);
+    else if (onDone) onDone();
+  }
+  requestAnimationFrame(frame);
+}
+
+// Tween one element's text. mode "load" = 0→to over LOAD_MS (easeOutExpo);
+// "update" = from→to over TICK_MS (easeOutCubic). Honors reduced-motion/hidden
+// (sets the final text instantly). CSS uses tabular-nums so width never jitters.
+function countUp(el, fromVal, toVal, fmtFn, mode) {
+  if (!el) return;
+  fmtFn = fmtFn || (v => String(v));
+  mode = mode || "update";
+  const from = mode === "load" ? 0 : (fromVal == null ? toVal : fromVal);
+  if (from === toVal) { el.textContent = fmtFn(toVal); return; }
+  const dur  = mode === "load" ? LOAD_MS : TICK_MS;
+  const ease = mode === "load" ? easeOutExpo : easeOutCubic;
+  rampClock(dur, ease,
+    e  => { el.textContent = fmtFn(from + (toVal - from) * e); },
+    () => { el.textContent = fmtFn(toVal); });
+}
+
+// Flatten a /api/live payload to the scalar values E2's diff pass compares
+// (prevLive → LIVE) to decide which numbers tick and which way they flash.
+function snapshot(d) {
+  if (!d) return null;
+  const t = d.today || {}, c = d.cumulative || {};
+  const marks = {};
+  (d.positions || []).forEach(p => { marks[p.ticker] = p.mark; });
+  return {
+    balance: d.balance, cash: d.cashBalance, portfolio: d.portfolioValue,
+    todayTotal: t.total, todayRealized: t.realized, todayUnrealized: t.unrealized,
+    cumTotal: c.total, cumReturn: c.returnPct, winRate: c.winRate, nSettled: c.nSettled,
+    marks,
+  };
+}
+
 /* ---------- chart math (erf/normPdf used by the ensemble chart) ---------- */
 function erf(x) {
   const t = 1 / (1 + 0.3275911 * Math.abs(x));
@@ -53,7 +119,7 @@ function sparkSVG(data, color) {
   const line = data.map((d, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(d.v).toFixed(1)}`).join(" ");
   const area = `${line} L${w},${h} L0,${h} Z`;
   const last = vals[vals.length - 1];
-  const c = color || (last >= 0 ? "var(--pos)" : "var(--neg)");
+  const c = color || (last >= 0 ? "var(--up)" : "var(--down)");
   const gid = "sg" + (++_uid);
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.22"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#${gid})"/><path d="${line}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
@@ -72,7 +138,7 @@ function pnlChartSVG(data) {
   const tickVals = Array.from({ length: 5 }, (_, i) => min + (span * i) / 4);
   const zeroY = Y(0);
   const last = vals[vals.length - 1];
-  const c = last >= 0 ? "var(--pos)" : "var(--neg)";
+  const c = last >= 0 ? "var(--up)" : "var(--down)";
   const line = data.map((d, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(1)},${Y(d.v).toFixed(1)}`).join(" ");
   const area = `${line} L${X(data.length - 1)},${zeroY} L${X(0)},${zeroY} Z`;
   const dayLabels = ["6d", "5d", "4d", "3d", "2d", "1d", "yest", "today"];
@@ -83,7 +149,7 @@ function pnlChartSVG(data) {
   CHARTS.pnl = { W: w, n: data.length, X, build: (i) =>
     `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(data[i].v).toFixed(1)}" r="3.5" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${Math.min(X(i) + 8, padL + iw - 78).toFixed(1)},${padT + 2})"><rect width="74" height="20" rx="4" fill="var(--bg-3)" stroke="var(--border-strong)"/><text x="8" y="14" fill="var(--text-hi)" style="font:600 11px var(--mono)">${money(data[i].v, { sign: true, dp: 0 })}</text></g>`
   };
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="pnlrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)" clip-path="url(#pnlrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 function ensembleChartSVG(d) {
@@ -100,6 +166,9 @@ function ensembleChartSVG(d) {
   d.members.forEach(m => { const b = Math.round(m); if (bins[b] !== undefined) bins[b]++; });
   const maxCount = Math.max(...Object.values(bins), 1);
   const barW = iw / (hi - lo) * 0.82;
+  // THERMAL RAMP gradient (cold→hot mapped across the temperature axis) — the ★ signature.
+  const gid = "thm" + (++_uid);
+  const thermalDef = `<defs><linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="${padL}" y1="0" x2="${padL + iw}" y2="0"><stop offset="0" stop-color="var(--cold)"/><stop offset="0.28" stop-color="var(--cool)"/><stop offset="0.5" stop-color="var(--temperate)"/><stop offset="0.72" stop-color="var(--warm)"/><stop offset="0.9" stop-color="var(--hot)"/><stop offset="1" stop-color="var(--extreme)"/></linearGradient></defs>`;
   const pdfPeak = (d.emosSigma > 0) ? normPdf(d.emosMu, d.emosMu, d.emosSigma) : 1;
   let curve = "";
   if (d.emosSigma > 0) {
@@ -109,18 +178,25 @@ function ensembleChartSVG(d) {
       const yv = (normPdf(t, d.emosMu, d.emosSigma) / pdfPeak) * (maxCount * 0.92);
       pts.push(`${i === 0 ? "M" : "L"}${X(t).toFixed(1)},${(padT + ih - (yv / maxCount) * ih).toFixed(1)}`);
     }
-    curve = `<path d="${pts.join(" ")}" fill="none" stroke="var(--warn)" stroke-width="2"/>`;
+    curve = `<path d="${pts.join(" ")}" fill="none" stroke="url(#${gid})" stroke-width="2"/>`;
   }
   const boundaries = [...new Set((d.brackets || []).flatMap(b => [b.lo, b.hi]).filter(v => v > lo && v < hi && Math.abs(v) < 90))];
-  const bnd = boundaries.map(bv => `<line x1="${X(bv + 0.5)}" x2="${X(bv + 0.5)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border)" stroke-width="1" stroke-dasharray="2 4"/>`).join("");
-  const bars = Object.entries(bins).map(([t, c]) => c > 0 ? `<rect x="${X(+t) - barW / 2}" y="${padT + ih - (c / maxCount) * ih}" width="${barW}" height="${(c / maxCount) * ih}" rx="1.5" fill="var(--bg-3)"/>` : "").join("");
+  const bnd = boundaries.map(bv => `<line x1="${X(bv + 0.5)}" x2="${X(bv + 0.5)}" y1="${padT}" y2="${padT + ih}" stroke="url(#${gid})" stroke-opacity="0.5" stroke-width="1" stroke-dasharray="2 4"/>`).join("");
+  const bars = Object.entries(bins).map(([t, c]) => c > 0 ? `<rect x="${X(+t) - barW / 2}" y="${padT + ih - (c / maxCount) * ih}" width="${barW}" height="${(c / maxCount) * ih}" rx="1.5" fill="url(#${gid})"/>` : "").join("");
+  // faint thermal bands behind the histogram, one per finite bracket region.
+  const bracketFills = (d.brackets || []).map(b => {
+    if (b.lo == null || b.hi == null) return "";
+    const x0 = X(Math.max(b.lo, lo) - 0.5), x1 = X(Math.min(b.hi, hi) + 0.5);
+    if (!(x1 > x0)) return "";
+    return `<rect x="${x0.toFixed(1)}" y="${padT}" width="${(x1 - x0).toFixed(1)}" height="${ih}" fill="url(#${gid})" opacity="0.05"/>`;
+  }).join("");
   const mean = d.ensMean > 0 ? `<line x1="${X(d.ensMean)}" x2="${X(d.ensMean)}" y1="${padT}" y2="${padT + ih}" stroke="var(--text-lo)" stroke-width="1" stroke-dasharray="3 3"/>` : "";
   let obs = "";
   if (d.observed > 0) {
-    obs = `<line x1="${X(d.observed)}" x2="${X(d.observed)}" y1="${padT - 2}" y2="${padT + ih}" stroke="var(--pos)" stroke-width="2"/><g transform="translate(${Math.min(X(d.observed) + 6, padL + iw - 70)},${padT + 4})"><rect width="64" height="18" rx="4" fill="var(--pos-dim)" stroke="var(--pos-line)"/><text x="7" y="13" fill="var(--pos)" style="font:600 10px var(--mono)">obs ${d.observed}°</text></g>`;
+    obs = `<line x1="${X(d.observed)}" x2="${X(d.observed)}" y1="${padT - 2}" y2="${padT + ih}" stroke="var(--up)" stroke-width="2"/><g transform="translate(${Math.min(X(d.observed) + 6, padL + iw - 70)},${padT + 4})"><rect width="64" height="18" rx="4" fill="var(--up-dim)" stroke="var(--up-line)"/><text x="7" y="13" fill="var(--up)" style="font:600 10px var(--mono)">obs ${d.observed}°</text></g>`;
   }
   const xlab = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).filter(t => t % 2 === 0).map(t => `<text x="${X(t)}" y="${height - 9}" text-anchor="middle" class="chart-axis-x">${t}°</text>`).join("");
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}">${bnd}${bars}${curve}${mean}${obs}${xlab}</svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}">${thermalDef}${bracketFills}${bnd}${bars}${curve}${mean}${obs}${xlab}</svg>`;
 }
 
 function balanceChartSVG(curve, filledTrades) {
@@ -144,7 +220,7 @@ function balanceChartSVG(curve, filledTrades) {
   const X = i => padL + (i / (curve.length - 1)) * iw;
   const Y = v => padT + (1 - (v - min) / span) * ih;
   const last = curve[curve.length - 1];
-  const c = last >= start ? "var(--pos)" : "var(--neg)";
+  const c = last >= start ? "var(--up)" : "var(--down)";
   const line = curve.map((v, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
   const tickVals = []; for (let v = min; v <= max + step * 0.01; v += step) tickVals.push(v);
   const grid = tickVals.map(tv => {
@@ -176,10 +252,10 @@ function balanceChartSVG(curve, filledTrades) {
       rows += `<text x="10" y="32" fill="var(--text-mid)" style="font:500 10.5px var(--mono)">${esc(sideLbl)} @ ${tradeAt.entry}¢ · qty ${tradeAt.computedQty}</text>`;
     }
     rows += `<text x="10" y="${tradeAt ? 50 : 32}" fill="var(--text-lo)" style="font:500 10px var(--mono)">BALANCE</text><text x="78" y="${tradeAt ? 50 : 32}" fill="var(--text-hi)" style="font:600 11px var(--mono)">$${m2(curve[i])}</text>`;
-    if (tradeAt) rows += `<text x="10" y="66" fill="var(--text-lo)" style="font:500 10px var(--mono)">TRADE P&amp;L</text><text x="78" y="66" fill="${tradeAt.computedPnl >= 0 ? "var(--pos)" : "var(--neg)"}" style="font:600 11px var(--mono)">${tradeAt.computedPnl >= 0 ? "+" : "−"}$${m2(Math.abs(tradeAt.computedPnl))}</text><text x="10" y="80" fill="var(--text-lo)" style="font:500 10px var(--mono)">CUMULATIVE</text><text x="78" y="80" fill="${cumPnl >= 0 ? "var(--pos)" : "var(--neg)"}" style="font:600 11px var(--mono)">${cumPnl >= 0 ? "+" : "−"}$${m2(Math.abs(cumPnl))}</text>`;
+    if (tradeAt) rows += `<text x="10" y="66" fill="var(--text-lo)" style="font:500 10px var(--mono)">TRADE P&amp;L</text><text x="78" y="66" fill="${tradeAt.computedPnl >= 0 ? "var(--up)" : "var(--down)"}" style="font:600 11px var(--mono)">${tradeAt.computedPnl >= 0 ? "+" : "−"}$${m2(Math.abs(tradeAt.computedPnl))}</text><text x="10" y="80" fill="var(--text-lo)" style="font:500 10px var(--mono)">CUMULATIVE</text><text x="78" y="80" fill="${cumPnl >= 0 ? "var(--up)" : "var(--down)"}" style="font:600 11px var(--mono)">${cumPnl >= 0 ? "+" : "−"}$${m2(Math.abs(cumPnl))}</text>`;
     return `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(curve[i]).toFixed(1)}" r="4" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${tx.toFixed(1)},${ty})"><rect width="${tw}" height="${th}" rx="5" fill="var(--bg-3)" stroke="var(--border-strong)"/>${rows}</g>`;
   } };
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="balrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)" clip-path="url(#balrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 // Attach hover handlers to every chart with a data-chart attr. Called after each
@@ -203,7 +279,7 @@ function wireCharts(rootEl) {
 function edgeCell(edge) {
   const positive = edge >= 0;
   const w = Math.min(100, Math.abs(edge) / 0.4 * 100);
-  return `<span class="edge-cell"><span class="${positive ? "pos" : "neg"}">${(edge >= 0 ? "+" : "−") + (Math.abs(edge) * 100).toFixed(0) + "%"}</span><span class="edge-bar"><span style="width:${w / 2}%;${positive ? "left" : "right"}:50%;background:${positive ? "var(--pos)" : "var(--neg)"}"></span></span></span>`;
+  return `<span class="edge-cell"><span class="${positive ? "pos" : "neg"}">${(edge >= 0 ? "+" : "−") + (Math.abs(edge) * 100).toFixed(0) + "%"}</span><span class="edge-bar"><span style="width:${w / 2}%;${positive ? "left" : "right"}:50%;background:${positive ? "var(--up)" : "var(--down)"}"></span></span></span>`;
 }
 
 // ====================================================================
@@ -528,6 +604,8 @@ function BTMetric(label, value, sub, tone) {
 // STATE
 // ====================================================================
 let LIVE = null;
+let prevLive = null;       // previous /api/live payload — E2 diffs snapshot(prevLive) vs snapshot(LIVE)
+let liveIntroDone = false; // gates the one-shot entrance ramp (rampClock) on first live paint
 let BT = null;            // current city's backtest payload
 let BT_CITIES = [];       // [{code,label,lat,lon}]
 let activeTab = "live";

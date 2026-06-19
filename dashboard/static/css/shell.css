@@ -1,0 +1,103 @@
+/* =====================================================================
+   ISOBAR · SHELL — topbar, brand, tab bar, layout grid, panel primitive.
+   Owns the static chrome that wraps both tabs (live + backtest).
+   ===================================================================== */
+
+/* ---------- topbar (glass) ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 18px;
+  height: 52px; padding: 0 18px;
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 9px; }
+.brand .glyph {
+  width: 18px; height: 18px; border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));   /* cyan→amber duotone */
+  box-shadow: 0 0 12px rgba(56,189,248,0.45);
+  align-self: center;
+}
+.brand .name { font-family: var(--display); font-weight: 700; font-size: 14px; letter-spacing: 0.04em; }
+.brand .sub  { font-size: 11px; color: var(--text-lo); letter-spacing: 0.18em; text-transform: uppercase; }
+
+.env-badge {
+  font: 600 10px/1 var(--mono); letter-spacing: 0.14em;
+  padding: 4px 7px; border-radius: var(--r-sm);
+  border: 1px solid var(--warn-line); color: var(--warn); background: var(--warn-dim);
+}
+.env-badge.live { border-color: var(--up-line); color: var(--up); background: var(--up-dim); }
+
+.topbar .spacer { flex: 1; }
+
+.clock { font: 500 12px/1 var(--mono); color: var(--text-mid); display: flex; align-items: center; gap: 8px; }
+.clock .utc { color: var(--text-lo); }
+
+.refresh-pill {
+  display: flex; align-items: center; gap: 7px;
+  font: 500 11px/1 var(--ui); color: var(--text-lo);
+  padding: 5px 9px; border: 1px solid var(--border); border-radius: 100px;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--up); box-shadow: 0 0 0 0 var(--up); }
+.dot.live { animation: pulse 2.4s ease-out infinite; }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(47,208,138,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(47,208,138,0); }
+  100% { box-shadow: 0 0 0 0 rgba(47,208,138,0); }
+}
+
+/* ---------- tab bar (animated underline + press) ---------- */
+.tabbar {
+  display: flex; gap: 2px; padding: 0 18px;
+  border-bottom: 1px solid var(--border); background: var(--bg-0);
+  position: sticky; top: 52px; z-index: 20;
+}
+.tabbar button {
+  font: 600 13px/1 var(--ui); color: var(--text-lo); background: transparent; border: 0;
+  padding: 13px 14px; cursor: pointer; position: relative;
+  transition: color var(--dur-1) var(--ease-soft), transform var(--dur-1) var(--press);
+}
+.tabbar button:hover { color: var(--text-mid); }
+.tabbar button:active { transform: scale(0.96); }
+.tabbar button.on { color: var(--text-hi); }
+.tabbar button::after {
+  content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px;
+  background: var(--accent); border-radius: 2px 2px 0 0;
+  box-shadow: 0 0 8px var(--accent);
+  transform: scaleX(0); transform-origin: center;
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.tabbar button.on::after { transform: scaleX(1); }
+
+/* ---------- View-Transitions cross-fade for tab swaps ----------
+   The trigger (wrapping the tab toggle in document.startViewTransition) is
+   owned by the tab agents — switchTab's logic is intentionally untouched here,
+   so this is inert until they opt in. Progressive enhancement only. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) { animation-duration: var(--tab-xfade); }
+}
+
+/* ---------- layout grid ---------- */
+.wrap { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; max-width: 1640px; margin: 0 auto; }
+.grid { display: grid; gap: 14px; }
+.g-3 { grid-template-columns: repeat(3, 1fr); }
+.g-2 { grid-template-columns: 1fr 1fr; }
+
+/* ---------- panel primitive ---------- */
+.panel { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
+.panel-h { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.panel-h h3 { margin: 0; font: 600 11px/1 var(--ui); letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-mid); white-space: nowrap; }
+.panel-h .meta { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--text-lo); }
+.panel-b { padding: 14px; }
+
+.section-label { font: 600 11px/1 var(--ui); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-lo); margin: 4px 2px -2px; }
+
+/* ---------- skeleton shimmer (loading placeholder) ---------- */
+.skeleton {
+  background: linear-gradient(100deg, var(--bg-2) 30%, var(--bg-3) 50%, var(--bg-2) 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s var(--ease-soft) infinite;
+  border-radius: var(--r-sm);
+}

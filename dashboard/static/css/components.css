@@ -1,0 +1,91 @@
+/* =====================================================================
+   ISOBAR · COMPONENTS — shared primitives used by BOTH tabs.
+   Tables, side/status/outcome pills, edge cells, chart wrappers, and the
+   chart draw-on hooks the tab agents drive from app.js's shared rampClock.
+   ===================================================================== */
+
+/* ---------- numeric width-stability: tabular figures so a digit roll or a
+   new comma can never reflow a row (E2/E3 hero numbers + metric values) ---------- */
+.mono, .hero .v, .hero .v.sm, .mv, .num,
+table.dt td, table.dt th { font-variant-numeric: tabular-nums; }
+
+/* ---------- data tables ---------- */
+table.dt { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+table.dt thead th {
+  position: sticky; top: 0; z-index: 5; background: var(--bg-2);
+  font: 600 9.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo);
+  text-align: right; padding: 9px 12px; border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+table.dt tbody td .edge-cell, table.dt tbody td .edge-bar { isolation: isolate; z-index: 1; }
+table.dt thead th.l { text-align: left; }
+table.dt tbody td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--border); color: var(--text-mid); white-space: nowrap; }
+table.dt tbody td.l { text-align: left; }
+table.dt tbody td.hi { color: var(--text-hi); }
+table.dt tbody tr:hover td { background: var(--bg-2); }
+table.dt tbody tr:last-child td { border-bottom: 0; }
+
+/* chosen-row highlight (backtest strategy comparison) — a .dt table modifier */
+table.dt tbody tr.chosen td { background: var(--up-dim); }
+table.dt tbody tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--up); }
+.chosen-tag { font: 600 8.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--up); border: 1px solid var(--up-line); border-radius: 100px; padding: 2px 6px; margin-left: 7px; }
+
+.tbl-scroll { max-height: 320px; overflow: auto; }
+.tbl-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+.tbl-scroll::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 6px; border: 2px solid var(--bg-1); }
+.tbl-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- side pill (YES/NO) ---------- */
+.side { font: 600 9.5px/1 var(--mono); letter-spacing: 0.04em; padding: 3px 6px; border-radius: var(--r-sm); }
+.side.yes { color: var(--yes); background: var(--up-dim); }
+.side.no  { color: var(--no);  background: var(--down-dim); }
+
+/* ---------- order/fill status pill — keep EVERY data-valued variant ---------- */
+.pill-status { font: 600 9.5px/1 var(--ui); letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 7px; border-radius: 100px; border: 1px solid var(--border-strong); color: var(--text-lo); }
+.pill-status.filled { color: var(--up); border-color: var(--up-line); }
+.pill-status.resting { color: var(--warn); border-color: var(--warn-line); }
+.pill-status.unfilled { color: var(--text-lo); }
+.pill-status.placed { color: var(--text-mid); border-color: var(--border-strong); }
+.pill-status.skipped, .pill-status.filtered, .pill-status.below-min,
+.pill-status.no-blend, .pill-status.anti-stack { color: var(--text-faint); }
+.pill-status.missed, .pill-status.pending { color: var(--warn); border-color: var(--warn-line); }
+
+/* ---------- outcome pill (resolved YES/NO, WIN/LOSS) ---------- */
+.outcome { font: 600 9.5px/1 var(--mono); letter-spacing: 0.06em; padding: 3px 7px; border-radius: var(--r-sm); }
+.outcome.yes { color: var(--up); background: var(--up-dim); }
+.outcome.no  { color: var(--text-lo); background: var(--bg-3); }
+
+/* ---------- edge cell + signed bar ---------- */
+.edge-cell { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.edge-bar { width: 34px; height: 4px; border-radius: 2px; background: var(--bg-3); overflow: hidden; position: relative; }
+.edge-bar > span { position: absolute; top: 0; bottom: 0; }
+
+/* ---------- chart wrappers + legend ---------- */
+.chart-wrap { width: 100%; }
+.chart-wrap svg { width: 100%; height: auto; display: block; }
+.chart-legend { display: flex; gap: 16px; align-items: center; font: 500 11px/1 var(--mono); color: var(--text-lo); }
+.chart-legend .sw { width: 14px; height: 2px; display: inline-block; vertical-align: middle; margin-right: 6px; }
+.chart-axis-x { font: 500 10px var(--mono); fill: var(--text-faint); }
+
+/* interactive charts (hover crosshair) */
+svg[data-chart] { cursor: crosshair; }
+
+/* ---------- chart draw-on ----------
+   Primary path: E2/E3 drive the reveal from the shared rampClock in app.js —
+     .chart-line       = the single measurable stroke path; they read
+                         path.getTotalLength() and tween stroke-dashoffset → 0.
+     .chart-fill-reveal = the clipPath rect; they set transform: scaleX(e),
+                         GPU-composited (no per-frame attribute writes).
+   Defaults below leave both fully shown. The `.draw` sentinel offers a no-JS
+   CSS fallback for the same effect. */
+.chart-fill-reveal { transform-box: fill-box; transform-origin: left center; }
+
+@keyframes chart-draw  { to { stroke-dashoffset: 0; } }
+@keyframes fill-reveal { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+svg[data-chart].draw .chart-line {
+  stroke-dasharray: var(--draw-len, 1200);
+  stroke-dashoffset: var(--draw-len, 1200);
+  animation: chart-draw var(--dur-draw) var(--ease-out) forwards;
+}
+svg[data-chart].draw .chart-fill-reveal {
+  animation: fill-reveal var(--dur-draw) var(--ease-out) forwards;
+}

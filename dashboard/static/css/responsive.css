@@ -1,0 +1,21 @@
+/* =====================================================================
+   ISOBAR · RESPONSIVE — breakpoint overrides. Loaded LAST so these win.
+   Targets classes owned by shell/live/backtest; cascade resolves globally.
+   ===================================================================== */
+
+@media (max-width: 1180px) {
+  .bt-metrics { grid-template-columns: repeat(3, 1fr); }
+  .fc-stats { grid-template-columns: repeat(2, 1fr); }
+  .hero { grid-template-columns: 1fr 1fr; }
+  .hero > div:nth-child(2) { border-right: 0; }
+  .g-3 { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .ctrl select, .ctrl input { font-size: 16px; }   /* defeat iOS auto-zoom */
+  .hero { grid-template-columns: 1fr; }
+  .hero > div { border-right: 0; }
+  .grid { grid-template-columns: 1fr !important; }
+  .bt-metrics { grid-template-columns: repeat(2, 1fr); }
+  .wrap { padding: 12px; }
+}

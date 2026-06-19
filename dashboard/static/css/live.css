@@ -1,0 +1,19 @@
+/* =====================================================================
+   ISOBAR · LIVE TAB — owned by the Live-tab agent (E2).
+   Intentionally empty stub created by the foundation pass (E1).
+
+   Put the LIVE-tab component styles here, retokenized to ISOBAR. Moved OUT of
+   the old monolithic style.css for E2 to re-author against the new tokens:
+     .hero / .hero .k / .v / .v.sm / .sub / .tag-pill / .spark
+     .status-strip / .chip (+ .ico .ok/.warn/.err, @keyframes pulse-red)
+     .alert (+ .bang / .body / .t / .d / .ts)
+     .city (+ .ch / .nm / .code / .model / .badge.active/.halted / .cbody / .cfoot / .activity / .halt-note)
+     .dial / .dial .inner            (conic risk dial)
+     .riskrow / .bar (+ .ok/.warn/.err) / .aggm
+     details.params / .logline
+   Tokens to use: --up/--down/--warn, --accent, --text-hi/mid/lo/faint,
+   --bg-1/2/3, --border(-strong), --r/--r-sm/--r-lg, --shadow, --glow, motion
+   vars (--dur-*, --ease-*, --press), flash tints (--flash-tint-pos/neg).
+   Engine hooks in app.js: rampClock / countUp / snapshot / prevLive /
+   liveIntroDone (entrance "moment" + per-tick tweens).
+   ===================================================================== */
