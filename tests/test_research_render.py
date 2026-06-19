@@ -28,6 +28,11 @@ def test_html_path_maps_md_dir_to_html_dir():
     assert html_path_for(md_path) == Path("docs/research/html/2026-06-19-foo.html")
 
 
+def test_render_escapes_title_special_chars():
+    html_out = render_markdown("# x\n\nbody\n", title="Model & Market < > test")
+    assert "<title>Model &amp; Market &lt; &gt; test</title>" in html_out
+
+
 def test_main_writes_html_using_h1_as_title(tmp_path):
     md_dir = tmp_path / "docs" / "research" / "md"
     md_dir.mkdir(parents=True)

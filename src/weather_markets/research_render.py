@@ -8,6 +8,7 @@ Usage (always via uv, per CLAUDE.md):
 
 from __future__ import annotations
 
+import html as _html
 import sys
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def render_markdown(md_text: str, *, title: str) -> str:
         md_text,
         extensions=["tables", "fenced_code", "toc", "sane_lists"],
     )
-    return _HTML_TEMPLATE.format(title=title, css=_CSS, body=body)
+    return _HTML_TEMPLATE.format(title=_html.escape(title), css=_CSS, body=body)
 
 
 def html_path_for(md_path: Path) -> Path:
