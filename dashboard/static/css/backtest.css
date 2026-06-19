@@ -1,19 +1,165 @@
 /* =====================================================================
    ISOBAR · BACKTEST TAB — owned by the Backtest-tab agent (E3).
-   Intentionally empty stub created by the foundation pass (E1).
+   Re-authored against the ISOBAR tokens (the old monolithic .controls /
+   .seg / .ctrl / .bt-metrics / .fc-stats / .ens-note / .mapdot /
+   .bt-backfilling rules were dropped by the foundation pass).
 
-   Put the BACKTEST-tab component styles here, retokenized to ISOBAR. Moved OUT
-   of the old monolithic style.css for E3 to re-author against the new tokens:
-     .controls / .sim-controls / .ctrl (+ .cl) / select / input
-     .seg (+ button .on/:disabled)
-     .bt-metrics / .fc-stats (the metric grids)
-     .ens-note (+ .sw)            ← update the legend swatches to the THERMAL ramp:
-                                     bars + EMOS curve now use --cold→--extreme (a
-                                     gradient), not --bg-3 / --warn. Resolved marker
-                                     stays --up. See ensembleChartSVG in app.js.
-     .mapdot (+ .md hover) / .bt-backfilling
-   Tokens to use: --accent (active seg/focus), thermal ramp (--cold/--cool/
-   --temperate/--warm/--hot/--extreme), --up/--down, --text-*, --bg-*, --border*,
-   --r*, --shadow, motion vars. Chart draw-on hooks (.chart-line /
-   .chart-fill-reveal) are wired in components.css + the app.js builders.
+   Reads ONLY shared tokens (tokens.css) + shared primitives (components.css,
+   shell.css). Owns: the run controls, the ★ thermal bracket ladder, the metric
+   grids, the ensemble legend, the Benter-blend mini panel, the clickable US
+   map, and the city·date entrance-animation classes (driven from app.js).
    ===================================================================== */
+
+/* ---------- run controls (top bar + sim bar) ---------- */
+.controls { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; padding: 14px 16px; }
+.sim-controls { border-bottom: 1px solid var(--border); background: var(--bg-2); }
+.ctrl { display: flex; flex-direction: column; gap: 6px; }
+.ctrl > .cl { font: 600 9.5px/1 var(--ui); letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-lo); }
+
+.ctrl select, .ctrl input {
+  font: 500 12.5px/1 var(--mono); color: var(--text-hi);
+  background: var(--bg-inset); border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm); padding: 8px 10px; outline: none;
+  transition: border-color var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
+}
+.ctrl select:focus, .ctrl input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,0.16); }
+.ctrl input[type=number] { width: 78px; }
+.ctrl input[type=date] { color-scheme: dark; }
+
+/* ---------- segmented control (cyan-active, mono) ---------- */
+.seg { display: inline-flex; gap: 2px; background: var(--bg-inset); padding: 3px; border-radius: var(--r); border: 1px solid var(--border); }
+.seg button {
+  position: relative; font: 600 11px/1 var(--mono); color: var(--text-lo);
+  background: transparent; border: 0; cursor: pointer; padding: 7px 11px; border-radius: var(--r-sm);
+  transition: color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft), transform var(--dur-0) var(--press);
+}
+.seg button:hover { color: var(--text-mid); }
+.seg button:active { transform: scale(0.96); }
+.seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.seg button.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-3));
+  box-shadow: 0 0 12px rgba(56,189,248,0.18);
+}
+.seg button.on::after {
+  content: ""; position: absolute; left: 8px; right: 8px; bottom: 3px; height: 2px;
+  background: var(--accent); border-radius: 2px; box-shadow: 0 0 8px var(--accent);
+}
+
+/* ---------- big metric grid (6-up; responsive.css collapses it) ---------- */
+.bt-metrics { display: grid; grid-template-columns: repeat(6, 1fr); }
+.bt-metrics .m { padding: 16px; border-right: 1px solid var(--border); }
+.bt-metrics .m:last-child { border-right: 0; }
+.bt-metrics .m .ml { font: 600 9.5px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
+.bt-metrics .m .mv { font: 600 24px/1 var(--mono); margin-top: 9px; }
+.bt-metrics .m .ms { font: 500 10.5px/1 var(--mono); color: var(--text-faint); margin-top: 7px; }
+
+/* ---------- forecast stat row (4-up; responsive.css collapses it) ---------- */
+.fc-stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+.fc-stats .m { padding: 14px 16px; border-right: 1px solid var(--border); }
+.fc-stats .m:last-child { border-right: 0; }
+.fc-stats .m .ml { font: 600 9.5px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
+.fc-stats .m .mv { font: 600 26px/1 var(--mono); margin-top: 9px; color: var(--text-hi); }
+.fc-stats .m .mv small { font-size: 14px; color: var(--text-lo); }
+.fc-stats .m .ms { font: 500 10.5px/1 var(--mono); color: var(--text-faint); margin-top: 7px; }
+
+/* ---------- ensemble chart legend (thermal swatches set inline in app.js) ---------- */
+.ens-note { display: flex; gap: 18px; flex-wrap: wrap; font: 500 11px/1 var(--mono); color: var(--text-lo); padding: 0 16px 14px; }
+.ens-note .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+
+/* =====================================================================
+   ★ THE BRACKET LADDER — a vertical thermal probability ladder.
+   Rows ordered hottest→coldest top-to-bottom; each rung tinted on the
+   thermal ramp by its temperature (--tc set inline). The track fill width =
+   the strategy-selected model/blend P; the white tick = the market price, so
+   the gap between fill-edge and tick reads as the trading edge.
+   ===================================================================== */
+.ladder { display: flex; flex-direction: column; }
+.rung {
+  display: grid; grid-template-columns: 118px 1fr 52px 92px 118px 56px;
+  align-items: center; gap: 12px; padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.rung:last-child { border-bottom: 0; }
+.rung:not(.rung-head):hover { background: var(--bg-2); }
+
+.rung-head {
+  background: var(--bg-2); border-bottom: 1px solid var(--border-strong);
+  padding-top: 10px; padding-bottom: 10px;
+}
+.rung-head > * { font: 600 9.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo); text-align: right; }
+.rung-head .rung-label, .rung-head .rung-track-h { text-align: left; }
+
+.rung-label { display: flex; align-items: center; gap: 8px; font: 600 12px/1 var(--mono); color: var(--text-mid); white-space: nowrap; }
+.rung.fires .rung-label { color: var(--text-hi); }
+.rung-dot { width: 9px; height: 9px; border-radius: 2px; flex: none; background: var(--tc, var(--temperate)); box-shadow: 0 0 8px var(--tc, var(--temperate)); }
+
+.rung-track { position: relative; height: 18px; border-radius: 5px; background: var(--bg-inset); border: 1px solid var(--border); overflow: visible; }
+.rung-fill {
+  position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px 0 0 5px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--tc) 45%, transparent), var(--tc));
+  transform-box: fill-box; transform-origin: left center;
+}
+.rung.fires .rung-fill { box-shadow: 0 0 11px -1px var(--tc); }
+.rung-mkt { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-hi); border-radius: 1px; }
+.rung-mkt::after {
+  content: ""; position: absolute; top: -5px; left: -2px;
+  border: 3px solid transparent; border-top-color: var(--text-hi);
+}
+.rung-prob { text-align: right; font: 600 12px/1 var(--mono); color: var(--text-hi); }
+.rung-edge { text-align: right; }
+.rung-sig { text-align: left; }
+.rung-res { text-align: right; }
+.ladder-empty { padding: 16px 14px; font: 500 12px var(--mono); }
+
+/* ---------- Benter-blend mini panel (free win — data already in payload) ---------- */
+.blend-panel .blend-body { display: flex; flex-direction: column; gap: 12px; }
+.blend-split { display: flex; height: 30px; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--border); font: 600 10px/1 var(--ui); letter-spacing: 0.04em; }
+.blend-seg { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--bg-0); }
+.blend-seg.market { background: linear-gradient(90deg, var(--cool), var(--accent)); }
+.blend-seg.model  { background: linear-gradient(90deg, var(--accent-2), var(--warm)); }
+.blend-coefs { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--text-mid); }
+.blend-coefs sub { font-size: 0.7em; }
+.blend-coefs .neg { color: var(--down); }
+.blend-coefs small { color: var(--down); opacity: 0.8; }
+
+/* ---------- clickable US map (thermal/Sharpe dots) ---------- */
+.us-outline { filter: drop-shadow(0 0 7px rgba(56,189,248,0.08)); }
+.mapdot { cursor: pointer; }
+.mapdot text { pointer-events: none; }
+.mapdot .md {
+  transform-box: fill-box; transform-origin: center;
+  transition: transform var(--dur-2) var(--ease-out), filter var(--dur-2) var(--ease-out);
+}
+.mapdot:hover .md { transform: scale(1.32); filter: drop-shadow(0 0 7px var(--accent)); }
+.mapdot:hover text { fill: var(--text-hi); }
+.mapdot.sel .md { filter: drop-shadow(0 0 8px var(--accent)); }
+.mapdot .sel-ring { opacity: 0.9; }
+.mapdot.pop .md { animation: dot-pop var(--dur-3) var(--press); }
+.mapdot.pulse .md { animation: dot-pulse var(--dur-4) var(--ease-soft); }
+@keyframes dot-pop   { 0% { transform: scale(1); } 45% { transform: scale(1.6); } 100% { transform: scale(1); } }
+@keyframes dot-pulse {
+  0%   { filter: drop-shadow(0 0 0 rgba(56,189,248,0)); }
+  35%  { filter: drop-shadow(0 0 8px rgba(56,189,248,0.95)); }
+  100% { filter: drop-shadow(0 0 0 rgba(56,189,248,0)); }
+}
+
+/* ---------- backfilling notice ---------- */
+.bt-backfilling {
+  padding: 14px 16px; margin: 8px 0; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warm) 10%, transparent);
+  border: 1px solid var(--warn-line); color: var(--warm); font: 500 12px/1.5 var(--mono);
+}
+
+/* =====================================================================
+   ENTRANCE ANIMATION — applied by app.js ONLY on a city·date change while
+   the Backtest tab is visible. Param/slider tweaks render with no .reveal
+   class, so they snap to final state (no thrash). Honors reduced-motion
+   (tokens.css neutralizes all animation/transition).
+   ===================================================================== */
+.reveal { opacity: 0; transform: translateY(10px); }
+.reveal.in { animation: rise var(--dur-3) var(--ease-out) both; animation-delay: var(--rd, 0ms); }
+/* the ladder fills sweep up from zero as their panel reveals (staggered by rung) */
+.reveal .rung-fill { transform: scaleX(0); }
+.reveal.in .rung-fill { transform: scaleX(1); transition: transform var(--dur-4) var(--ease-out); transition-delay: calc(var(--ri, 0) * 40ms); }
