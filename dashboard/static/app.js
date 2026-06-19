@@ -629,19 +629,19 @@ function liveHero(d) {
   return `<div class="hero">
     <div>
       <div class="k">Today's P&amp;L</div>
-      <div class="v ${cls(t.total)}">${money(t.total)}</div>
-      <div class="sub"><span>realized <b class="${cls(t.realized)}">${money(t.realized)}</b></span><span>unrealized <b class="${cls(t.unrealized)}">${money(t.unrealized)}</b></span><span><b>${t.trades}</b> trades · <b>${t.open}</b> open</span></div>
+      <div class="v ${cls(t.total)}" id="hero-today">${money(t.total)}</div>
+      <div class="sub"><span>realized <b class="${cls(t.realized)}" id="hero-today-real">${money(t.realized)}</b></span><span>unrealized <b class="${cls(t.unrealized)}" id="hero-today-unreal">${money(t.unrealized)}</b></span><span><b>${t.trades}</b> trades · <b>${t.open}</b> open</span></div>
     </div>
     <div>
       <div class="k">Cumulative P&amp;L <span class="tag-pill">since first live trade</span></div>
-      <div class="v ${cls(c.total)}">${money(c.total)}</div>
-      <div class="sub"><span>return <b class="${cls(c.returnPct)}">${pct(c.returnPct)}</b></span><span>win rate <b>${(c.winRate * 100).toFixed(0)}%</b></span><span><b>${c.nSettled}</b> settled</span></div>
+      <div class="v ${cls(c.total)}" id="hero-cum">${money(c.total)}</div>
+      <div class="sub"><span>return <b class="${cls(c.returnPct)}" id="hero-cum-ret">${pct(c.returnPct)}</b></span><span>win rate <b id="hero-winrate">${(c.winRate * 100).toFixed(0)}%</b></span><span><b>${c.nSettled}</b> settled</span></div>
       <div class="spark">${sparkSVG(d.series)}</div>
     </div>
     <div>
       <div class="k">Account balance</div>
-      <div class="v sm" style="color:var(--text-hi)">${moneyPlain(d.balance)}</div>
-      <div class="sub"><span>cash <b>${moneyPlain(d.cashBalance)}</b></span><span>portfolio <b>${moneyPlain(d.portfolioValue)}</b></span></div>
+      <div class="v sm" id="hero-balance" style="color:var(--text-hi)">${moneyPlain(d.balance)}</div>
+      <div class="sub"><span>cash <b id="hero-cash">${moneyPlain(d.cashBalance)}</b></span><span>portfolio <b id="hero-portfolio">${moneyPlain(d.portfolioValue)}</b></span></div>
     </div>
   </div>`;
 }
@@ -657,12 +657,18 @@ function formatCountdown(d) {
 function statusStrip(d) {
   const killOk = d.killArmed;
   const liveCities = d.cities.filter(c => c.status === "active").length;
+  const lv = d.live || {};
+  const src = lv.source || "—";
+  // contract said 'ws/rest/db' but the payload returns 'websocket'; key the dot
+  // off lv.connected (matches the topbar pill) rather than an exact source string.
+  const srcIco = lv.connected ? "ok" : src === "rest" ? "warn" : "";
   return `<div class="status-strip">
-    <div class="chip"><span class="ico ${killOk ? "ok" : "err"}"></span><span class="txt"><span class="l">Kill switch</span><span class="d" style="color:${killOk ? "var(--pos)" : "var(--neg)"}">${killOk ? "ARMED" : "TRIGGERED"}</span></span></div>
+    <div class="chip"><span class="ico ${killOk ? "ok" : "err"}"></span><span class="txt"><span class="l">Kill switch</span><span class="d" style="color:${killOk ? "var(--up)" : "var(--down)"}">${killOk ? "ARMED" : "TRIGGERED"}</span></span></div>
     <div class="chip"><span class="ico ${d.nextCron.inMin === null ? "err" : "ok"}"></span><span class="txt"><span class="l">Next cron · ${esc(d.nextCron.label)}</span><span class="d">${esc(d.nextCron.at)} ${d.nextCron.inMin !== null ? `<small>· in <span id="cron-countdown">${formatCountdown(d)}</span></small>` : ""}</span></span></div>
     <div class="chip"><span class="ico ${d.openOrders.count > 0 ? "ok" : ""}"></span><span class="txt"><span class="l">Open orders</span><span class="d">${d.openOrders.count} resting <small>· ${d.openOrders.contracts.toLocaleString()} contracts</small></span></span></div>
     <div class="chip"><span class="ico ${d.hrrr.status === "ok" ? "ok" : "warn"}"></span><span class="txt"><span class="l">HRRR data</span><span class="d" style="color:${d.hrrr.status === "ok" ? "var(--text-hi)" : "var(--warn)"}">${d.hrrr.status === "ok" ? "fresh" : "stale"} <small>· ${esc(d.hrrr.age)} ago</small></span></span></div>
     <div class="chip"><span class="ico ok"></span><span class="txt"><span class="l">Positions</span><span class="d">${d.positions.length} open <small>· ${liveCities}/${d.cities.length} cities live</small></span></span></div>
+    <div class="chip"><span class="ico ${srcIco}"></span><span class="txt"><span class="l">Live feed</span><span class="d">${esc(src)}<small>${lv.marks != null ? ` · ${lv.marks} marks` : ""}</small></span></span></div>
   </div>`;
 }
 
@@ -680,7 +686,7 @@ function riskBar(name, used, limit) {
 function dialHTML(used, limit) {
   const r = Math.min(1, limit ? used / limit : 0);
   const pctv = Math.round(r * 100);
-  const col = r >= 0.8 ? "var(--neg)" : r >= 0.5 ? "var(--warn)" : "var(--dial)";
+  const col = r >= 0.8 ? "var(--extreme)" : r >= 0.5 ? "var(--warm)" : "var(--temperate)";
   return `<span class="dial" title="${pctv}% of cumulative kill used" style="background:conic-gradient(${col} ${pctv}%, var(--bg-3) 0)"><span class="inner">${pctv}%</span></span>`;
 }
 
@@ -713,7 +719,7 @@ function aggRisk(d) {
 function positionsTable(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="8" style="padding:20px 12px">No open positions — all flat.</td></tr>`
-    : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.avg}¢</td><td class="hi">${r.mark}¢${r.live ? ` <span title="live WS mark" style="color:var(--pos)">●</span>` : ""}</td><td class="${cls(r.unreal)}">${money(r.unreal)}</td><td class="${cls(r.unreal)}">${pct(r.unrealPct)}</td></tr>`).join("");
+    : rows.map(r => `<tr data-pos-ticker="${esc(r.ticker)}"><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.avg}¢</td><td class="hi" data-mark-ticker="${esc(r.ticker)}">${r.mark}¢${r.live ? ` <span class="live-dot" title="live WS mark">●</span>` : ""}</td><td class="${cls(r.unreal)}">${money(r.unreal)}</td><td class="${cls(r.unreal)}">${pct(r.unrealPct)}</td></tr>`).join("");
   const liveN = rows.filter(r => r.live).length;
   return `<div class="panel"><div class="panel-h"><h3>Current positions</h3><span class="meta">mark = side-adjusted bid · ${rows.length} open${liveN ? ` · ${liveN} live ●` : ""}</span></div><div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Unreal</th><th>%</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
@@ -767,13 +773,113 @@ function renderLive() {
     `<div class="section-label">Per-city · realized + unrealized + risk</div>` +
     `<div class="grid g-3">${d.cities.map(cityCard).join("")}${aggRisk(d)}</div>` +
     `<div class="grid" style="grid-template-columns:1.45fr 1fr">` +
-      `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--pos)" : "var(--neg)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
+      `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
       positionsTable(d.positions) +
     `</div>` +
     signalsTable(d.signals) +
     `<div class="grid g-2">${ordersTable(d.orders)}<div class="grid" style="grid-template-rows:auto auto;gap:14px">${openOrders(d.openOrdersTbl)}${recentFills(d.fills)}</div></div>` +
     cronAlerts(d) + paramsExpander(d);
   wireCharts(root);
+  animateLiveDeltas(d);
+}
+
+// ====================================================================
+// DIFF-DRIVEN LIVE MOTION — called at the END of renderLive (one call).
+// FIRST paint: one rampClock drives every hero number 0→target AND the P&L
+// chart draw-on, so they land on the same frame (the entrance "moment").
+// EVERY poll after: only values that actually moved tween prev→new (TICK_MS)
+// and get a bg-tint flash; unchanged numbers never animate (no twitch).
+// prevLive holds the previous snapshot(); RM/hidden → instant, values still set.
+// ====================================================================
+const HERO_FIELDS = [
+  { id: "hero-today",        key: "todayTotal",      fmt: money },
+  { id: "hero-today-real",   key: "todayRealized",   fmt: money },
+  { id: "hero-today-unreal", key: "todayUnrealized", fmt: money },
+  { id: "hero-cum",          key: "cumTotal",        fmt: money },
+  { id: "hero-cum-ret",      key: "cumReturn",       fmt: pct },              // server % — never /3050
+  { id: "hero-winrate",      key: "winRate",         fmt: v => (v * 100).toFixed(0) + "%" },
+  { id: "hero-balance",      key: "balance",         fmt: moneyPlain },
+  { id: "hero-cash",         key: "cash",            fmt: moneyPlain },
+  { id: "hero-portfolio",    key: "portfolio",       fmt: moneyPlain },
+];
+
+// WAAPI background flash; tints mirror --flash-tint-pos/neg (rgba @0.22) inlined,
+// since var() doesn't resolve inside element.animate() keyframes. Skipped under RM.
+function flashValue(el, up) {
+  if (!el || RM.matches) return;
+  const rgb = up ? "47,208,138" : "244,71,107";
+  el.animate(
+    [{ backgroundColor: `rgba(${rgb},0.22)` }, { backgroundColor: `rgba(${rgb},0)` }],
+    { duration: 600, easing: "cubic-bezier(.22,1,.36,1)" }
+  );
+}
+
+function animateLiveDeltas(d) {
+  const root = document.getElementById("live-root");
+  if (!root) return;
+  const snap = snapshot(d);
+
+  // ---- FIRST PAINT: synchronized entrance moment ----
+  if (!liveIntroDone) {
+    root.classList.add("intro");                                   // E1 staggered rise reveal
+    const tgs = HERO_FIELDS
+      .map(h => ({ el: document.getElementById(h.id), to: snap[h.key], fmt: h.fmt }))
+      .filter(x => x.el && x.to != null);
+    tgs.forEach(x => { x.el.textContent = x.fmt(0); });            // seed 0 → no flash of final value
+    const svg  = root.querySelector('svg[data-chart="pnl"]');
+    const line = svg && svg.querySelector(".chart-line");
+    const fill = svg && svg.querySelector(".chart-fill-reveal");
+    let len = 0;
+    if (line) { len = line.getTotalLength(); line.style.strokeDasharray = len; }
+    rampClock(LOAD_MS, easeOutExpo,
+      e => {
+        tgs.forEach(x => { x.el.textContent = x.fmt(x.to * e); });
+        if (line) line.style.strokeDashoffset = len * (1 - e);
+        if (fill) fill.style.transform = "scaleX(" + e + ")";
+      },
+      () => {
+        tgs.forEach(x => { x.el.textContent = x.fmt(x.to); });     // pin exact targets
+        if (line) line.style.strokeDashoffset = 0;
+        if (fill) fill.style.transform = "scaleX(1)";
+      });
+    liveIntroDone = true;
+    prevLive = snap;
+    return;
+  }
+
+  // ---- SUBSEQUENT POLLS ----
+  root.classList.remove("intro");                                  // before paint → reveal never re-fires
+  if (RM.matches || document.hidden) { prevLive = snap; return; }
+
+  // hero numbers: tween + flash ONLY the ones that moved (|Δ| ≥ 0.01)
+  HERO_FIELDS.forEach(h => {
+    const el = document.getElementById(h.id);
+    const nv = snap[h.key], ov = prevLive ? prevLive[h.key] : null;
+    if (!el || nv == null || ov == null || Math.abs(nv - ov) < 0.01) return;
+    countUp(el, ov, nv, h.fmt, "update");
+    flashValue(el, nv >= ov);
+  });
+
+  // positions: flash the mark CELL on a WS mark move; row-enter for new tickers
+  const pMarks = (prevLive && prevLive.marks) ? prevLive.marks : null;
+  (d.positions || []).forEach(p => {
+    const nv = snap.marks[p.ticker];
+    const ov = pMarks ? pMarks[p.ticker] : undefined;
+    if (ov === undefined) {                                        // ticker new this poll
+      if (pMarks) {
+        const tr = root.querySelector('tr[data-pos-ticker="' + p.ticker + '"]');
+        if (tr) tr.animate(
+          [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
+          { duration: 360, easing: "cubic-bezier(.22,1,.36,1)" });
+      }
+      return;
+    }
+    if (nv == null || nv === ov) return;
+    const td = root.querySelector('td[data-mark-ticker="' + p.ticker + '"]');
+    if (td) flashValue(td, nv >= ov);
+  });
+
+  prevLive = snap;
 }
 
 // ====================================================================
