@@ -799,27 +799,49 @@ function projXY(lon, lat, W, H, pad) {
   const y = pad + ((b.latMax - lat) / (b.latMax - b.latMin)) * (H - 2 * pad);
   return [x, y];
 }
+// best-Sharpe → thermal color (a dot "warms up" as the sweep finds edge).
+// undefined (not swept yet) / null (too few trades) → muted steel.
+function btSharpeColor(best) {
+  if (!best) return "var(--teal)";
+  const s = best.sharpe;
+  return s >= 2 ? "var(--extreme)" : s >= 1.5 ? "var(--hot)" : s >= 1 ? "var(--warm)"
+       : s >= 0.5 ? "var(--temperate)" : s >= 0.25 ? "var(--cool)" : "var(--cold)";
+}
+// One-shot map animation gating. Every refreshMapLabels/render re-inserts the
+// SVG, and a CSS keyframe on a freshly-inserted node plays exactly once — so we
+// TAG a dot with `pop`/`pulse` only when the selection or the global Sharpe
+// leader actually changes. Re-renders with no change emit no class → no thrash.
+let _mapSel = null;
+let _mapLeader = null;
 function usMapSVG(selected) {
   const W = 720, H = 420, pad = 16;
+  const popCode = (selected !== _mapSel) ? selected : null;       // selection pop
+  _mapSel = selected;
+  let leader = null, leadSh = -Infinity;                          // current Sharpe leader
+  for (const code in bestByCity) { const b = bestByCity[code]; if (b && b.sharpe > leadSh) { leadSh = b.sharpe; leader = code; } }
+  const pulseCode = (leader && leader !== _mapLeader) ? leader : null;
+  _mapLeader = leader;
   const pts = US_OUTLINE.map(([lo, la]) => { const [x, y] = projXY(lo, la, W, H, pad); return `${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
   const dots = BT_CITIES.map(c => {
     if (c.lon == null || c.lat == null) return "";
     const [x, y] = projXY(c.lon, c.lat, W, H, pad);
     const on = c.code === selected;
-    const r = on ? 7 : 5;
-    const fill = on ? "var(--dial)" : "var(--teal)";
     const best = bestByCity[c.code];
-    const lx = (x + 9).toFixed(1);
+    const r = on ? 7 : 5;
+    const fill = btSharpeColor(best);                            // thermal/Sharpe scale
+    const lx = (x + 11).toFixed(1);
     // code label nudges up to make room for the Sharpe sub-line once known
     const codeY = (y + (best !== undefined ? 0.5 : 3.5)).toFixed(1);
     const codeTxt = `<text x="${lx}" y="${codeY}" fill="${on ? "var(--text-hi)" : "var(--text-lo)"}" style="font:${on ? "600" : "500"} 10px var(--mono)">${esc(c.code.replace(/^K/, ""))}</text>`;
     let subTxt = "";
-    if (best) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="${on ? "var(--dial)" : "var(--text-faint)"}" style="font:500 8.5px var(--mono)">Sh ${best.sharpe.toFixed(1)}</text>`;
+    if (best) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="${on ? "var(--accent)" : "var(--text-faint)"}" style="font:500 8.5px var(--mono)">Sh ${best.sharpe.toFixed(1)}</text>`;
     else if (best === null) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="var(--text-faint)" style="font:500 8.5px var(--mono)">—</text>`;
     const tip = best ? ` — best Sharpe ${best.sharpe.toFixed(2)} (${best.strategy} ≥${(best.edge * 100).toFixed(0)}%, n=${best.n})` : (best === null ? " — too few trades" : "");
-    return `<g class="mapdot" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)})${esc(tip)} — click to load</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/><circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/>${codeTxt}${subTxt}</g>`;
+    const klass = "mapdot" + (on ? " sel" : "") + (c.code === popCode ? " pop" : "") + (c.code === pulseCode ? " pulse" : "");
+    const ring = on ? `<circle class="sel-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 4}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>` : "";
+    return `<g class="${klass}" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)})${esc(tip)} — click to load</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/>${ring}<circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/>${codeTxt}${subTxt}</g>`;
   }).join("");
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polygon points="${pts}" fill="rgba(103,184,166,0.05)" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round"/>${dots}</svg>`;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polygon class="us-outline" points="${pts}" fill="rgba(56,189,248,0.04)" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round"/>${dots}</svg>`;
 }
 function locationMap(d) {
   return `<div class="panel"><div class="panel-h"><h3>Select a location</h3><span class="meta">click a city → loads its best backtest · dots: best Sharpe (trailing 365d, as of today)</span></div><div style="padding:10px 12px"><div class="chart-wrap" id="locmap">${usMapSVG(bt.cityCode)}</div></div></div>`;
@@ -868,39 +890,73 @@ function simControls() {
   </div>`;
 }
 
+// ★ THE BRACKET LADDER — a vertical thermal probability ladder. Rows are
+// ordered hottest→coldest top-to-bottom and tinted on the thermal ramp by their
+// temperature; the track fill width = the strategy-selected model/blend P and
+// the white tick = the market price, so the fill→tick gap reads as the edge.
+// Signal-selection logic (raw / blend / union) is preserved verbatim from the
+// old table so the displayed signals stay in lockstep with jsComputeSim.
 function edgeByBracketTable(d) {
   const brackets = d.brackets || [];
   const union = bt.strategy === "union";
+  const blend = bt.strategy === "blend";
   const meta = union
-    ? `UNION signal: raw ≥ ${(bt.bracketEdge * 100).toFixed(0)}% OR blend ≥ ${(bt.bracketEdge * 40).toFixed(0)}% · set in top bar`
-    : `${bt.strategy === "blend" ? "BLEND" : "RAW"} signal fires when |edge| ≥ ${(bt.bracketEdge * 100).toFixed(0)}% · set in top bar (independent of P&L sim)`;
-  const head = union
-    ? `<th class="l">Bracket</th><th>Model P</th><th>Blend P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Resolved</th>`
-    : `<th class="l">Bracket</th><th>${bt.strategy === "blend" ? "Blend P" : "Model P"}</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Resolved</th>`;
-  let body;
+    ? `union · raw ≥ ${(bt.bracketEdge * 100).toFixed(0)}% OR blend ≥ ${(bt.bracketEdge * 40).toFixed(0)}% · fill = model/blend P, tick = market`
+    : `${blend ? "blend" : "raw"} · fires when |edge| ≥ ${(bt.bracketEdge * 100).toFixed(0)}% · fill = ${blend ? "blend" : "model"} P, tick = market`;
   if (brackets.length === 0) {
-    body = `<tr><td class="l muted" colspan="${union ? 7 : 6}" style="padding:16px 12px">No brackets for ${esc(bt.date || "")}.</td></tr>`;
-  } else {
-    body = brackets.map(b => {
-      if (union) {
-        const rawEdge = b.modelP - b.mktP;
-        const blendEdge = (b.blendP != null) ? (b.blendP - b.mktP) : null;
-        const rawFires = Math.abs(rawEdge) >= bt.bracketEdge;
-        const blendFires = blendEdge != null && Math.abs(blendEdge) >= (bt.bracketEdge * 0.4);
-        const fires = rawFires || blendFires;
-        const e = rawFires ? rawEdge : blendEdge;
-        const side = (e || 0) > 0 ? "YES" : "NO";
-        const tag = rawFires && blendFires ? "both" : rawFires ? "raw" : blendFires ? "blend" : "";
-        return `<tr><td class="l hi">${esc(b.label)}</td><td>${(b.modelP * 100).toFixed(0)}%</td><td>${b.blendP != null ? (b.blendP * 100).toFixed(0) + "%" : "—"}</td><td>${(b.mktP * 100).toFixed(0)}%</td><td>${edgeCell(e || 0)}</td><td>${fires ? `<span class="side ${side === "YES" ? "yes" : "no"}">BUY ${side} <small style="opacity:.6;margin-left:4px">${tag}</small></span>` : `<span class="muted">—</span>`}</td><td><span class="outcome ${b.resolved === "YES" ? "yes" : "no"}">${esc(b.resolved)}</span></td></tr>`;
-      }
-      const probSel = (bt.strategy === "blend" && b.blendP != null) ? b.blendP : b.modelP;
-      const e = probSel - b.mktP;
-      const fires = Math.abs(e) >= bt.bracketEdge;
-      const side = e > 0 ? "YES" : "NO";
-      return `<tr><td class="l hi">${esc(b.label)}</td><td>${(probSel * 100).toFixed(0)}%</td><td>${(b.mktP * 100).toFixed(0)}%</td><td>${edgeCell(e)}</td><td>${fires ? `<span class="side ${side === "YES" ? "yes" : "no"}">BUY ${side}</span>` : `<span class="muted">—</span>`}</td><td><span class="outcome ${b.resolved === "YES" ? "yes" : "no"}">${esc(b.resolved)}</span></td></tr>`;
-    }).join("");
+    return `<div class="panel"><div class="panel-h"><h3>Bracket ladder</h3><span class="meta">${esc(meta)}</span></div><div class="ladder-empty muted">No brackets for ${esc(bt.date || "")}.</div></div>`;
   }
-  return `<div class="panel"><div class="panel-h"><h3>Edge by bracket</h3><span class="meta">${esc(meta)}</span></div><table class="dt"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  const ramp = ["var(--cold)", "var(--cool)", "var(--temperate)", "var(--warm)", "var(--hot)", "var(--extreme)"];
+  // representative temperature per bracket — ignore the open-ended sentinel side
+  // (≤X has lo≈−99, ≥X has hi≈99) so the thermal ramp spreads over the real range.
+  // Mirrors ensembleChartSVG's |v|<90 boundary filter.
+  const mids = brackets.map(b => {
+    const loFin = b.lo != null && b.lo > -90, hiFin = b.hi != null && b.hi < 90;
+    if (loFin && hiFin) return (b.lo + b.hi) / 2;
+    if (hiFin) return b.hi;          // ≤hi (open below)
+    if (loFin) return b.lo;          // ≥lo (open above)
+    return 0;
+  });
+  const minMid = Math.min(...mids), midSpan = (Math.max(...mids) - minMid) || 1;
+  const order = brackets.map((_, i) => i).sort((a, c) => mids[c] - mids[a]);   // hottest first
+  const rows = order.map((i, k) => {
+    const b = brackets[i];
+    const tc = ramp[Math.round(((mids[i] - minMid) / midSpan) * (ramp.length - 1))];
+    let probSel, e, fires, tag = "";
+    if (union) {
+      const rawEdge = b.modelP - b.mktP;
+      const blendEdge = (b.blendP != null) ? (b.blendP - b.mktP) : null;
+      const rawFires = Math.abs(rawEdge) >= bt.bracketEdge;
+      const blendFires = blendEdge != null && Math.abs(blendEdge) >= (bt.bracketEdge * 0.4);
+      fires = rawFires || blendFires;
+      e = rawFires ? rawEdge : (blendFires ? blendEdge : rawEdge);
+      probSel = rawFires ? b.modelP : (blendFires ? b.blendP : b.modelP);
+      tag = rawFires && blendFires ? "both" : rawFires ? "raw" : blendFires ? "blend" : "";
+    } else {
+      probSel = (blend && b.blendP != null) ? b.blendP : b.modelP;
+      e = probSel - b.mktP;
+      fires = Math.abs(e) >= bt.bracketEdge;
+    }
+    const side = (e || 0) > 0 ? "YES" : "NO";
+    const fillPct = Math.max(0, Math.min(100, (probSel || 0) * 100));
+    const mktPct = Math.max(0, Math.min(100, (b.mktP || 0) * 100));
+    const sig = fires
+      ? `<span class="side ${side === "YES" ? "yes" : "no"}">BUY ${side}${tag ? ` <small style="opacity:.6">${tag}</small>` : ""}</span>`
+      : `<span class="muted">—</span>`;
+    return `<div class="rung${fires ? " fires" : ""}" style="--tc:${tc};--ri:${k}">
+      <div class="rung-label"><span class="rung-dot"></span>${esc(b.label)}</div>
+      <div class="rung-track" title="model/blend ${fillPct.toFixed(0)}% · market ${mktPct.toFixed(0)}%"><div class="rung-fill" style="width:${fillPct.toFixed(1)}%"></div><div class="rung-mkt" style="left:${mktPct.toFixed(1)}%"></div></div>
+      <div class="rung-prob">${fillPct.toFixed(0)}%</div>
+      <div class="rung-edge">${edgeCell(e || 0)}</div>
+      <div class="rung-sig">${sig}</div>
+      <div class="rung-res"><span class="outcome ${b.resolved === "YES" ? "yes" : "no"}">${esc(b.resolved)}</span></div>
+    </div>`;
+  }).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Bracket ladder</h3><span class="meta">${esc(meta)}</span></div>
+    <div class="ladder">
+      <div class="rung rung-head"><div class="rung-label">Bracket °F</div><div class="rung-track-h">${blend ? "blend" : "model"} P  ·  ▮ market</div><div class="rung-prob">P</div><div class="rung-edge">Edge</div><div class="rung-sig">Signal</div><div class="rung-res">Res</div></div>
+      ${rows}
+    </div></div>`;
 }
 
 function tradeDetailTable(sim) {
@@ -926,6 +982,100 @@ function strategyComparison(strat) {
   return `<div class="panel"><div class="panel-h"><h3>Strategy comparison</h3><span class="meta">${esc(BT.city)} · head-to-head model variants · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%</span></div><table class="dt"><thead><tr><th class="l">Model variant</th><th>Final balance</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Win rate</th><th>Brier</th><th>Trades</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
+// FREE WIN — Benter blend breakdown (data already in the payload: blend{}).
+// Shows the market-vs-model share of the blended probability + the logit
+// coefficients. β_model can be NEGATIVE (model anti-informative) → flagged red.
+function blendPanel(d) {
+  const bl = d.blend;
+  if (!bl) return "";
+  const fmtB = v => (v == null ? "—" : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2));
+  const hasShare = typeof bl.marketShare === "number" && isFinite(bl.marketShare);
+  const mkt = hasShare ? Math.max(0, Math.min(1, bl.marketShare)) : 0;
+  const mdl = 1 - mkt;
+  const split = hasShare
+    ? `<div class="blend-split" title="share of the blended probability driven by each source"><div class="blend-seg market" style="width:${(mkt * 100).toFixed(1)}%">market ${(mkt * 100).toFixed(0)}%</div><div class="blend-seg model" style="width:${(mdl * 100).toFixed(1)}%">model ${(mdl * 100).toFixed(0)}%</div></div>`
+    : "";
+  const betaModelNeg = bl.betaModel != null && bl.betaModel < 0;
+  return `<div class="panel blend-panel"><div class="panel-h"><h3>Benter blend</h3><span class="meta">logit weights · n=${bl.nTrain != null ? bl.nTrain : "—"}</span></div>
+    <div class="panel-b blend-body">${split}<div class="blend-coefs mono"><span>α ${fmtB(bl.alpha)}</span><span>β<sub>market</sub> ${fmtB(bl.betaMarket)}</span><span class="${betaModelNeg ? "neg" : ""}">β<sub>model</sub> ${fmtB(bl.betaModel)}${betaModelNeg ? " <small>anti-informative</small>" : ""}</span></div></div>
+  </div>`;
+}
+
+// ---- entrance animations (city·date change only) ----------------------------
+// changed=true (new city/date while the Backtest tab is visible) → panels
+// scroll-reveal, the balance chart draws on, and the metrics count up. Param /
+// slider tweaks pass changed=false → everything snaps to FINAL state, so a slider
+// drag never thrashes. RM (reduced-motion) collapses to final state too.
+let _btLastKey = null;
+const _btPrevVals = {};
+
+// Tween one metric cell to its already-rendered final value, preserving the
+// cell's exact final innerHTML (countUp() writes textContent, which would strip
+// the fc-stats °F <small> markup — so we drive rampClock ourselves here).
+function btCountEl(el, from, to, fmt) {
+  if (!el) return;
+  const finalHTML = el.innerHTML;
+  if (from == null || from === to || RM.matches || typeof to !== "number" || !isFinite(to)) { el.innerHTML = finalHTML; return; }
+  el.innerHTML = fmt(from);                                  // pre-paint at previous value (no flash)
+  rampClock(TICK_MS, easeOutCubic,
+    e => { el.innerHTML = fmt(from + (to - from) * e); },
+    () => { el.innerHTML = finalHTML; });                    // restore exact final
+}
+
+// Draw-on for the balance curve via the shared rampClock + E1's chart hooks
+// (.chart-line stroke-dashoffset → 0, .chart-fill-reveal scaleX 0 → 1).
+function btDrawBalance(svg) {
+  if (!svg || RM.matches) return;
+  const line = svg.querySelector(".chart-line");
+  const fill = svg.querySelector(".chart-fill-reveal");
+  if (!line) return;
+  let len; try { len = line.getTotalLength(); } catch (e) { return; }
+  line.style.strokeDasharray = len; line.style.strokeDashoffset = len;
+  if (fill) fill.style.transform = "scaleX(0)";
+  rampClock(720, easeOutCubic,                               // 720ms == --dur-draw
+    e => { line.style.strokeDashoffset = len * (1 - e); if (fill) fill.style.transform = "scaleX(" + e + ")"; },
+    () => { line.style.strokeDashoffset = 0; if (fill) fill.style.transform = "scaleX(1)"; });
+}
+
+function btEnterAnimations(root, changed, d, sim) {
+  // metric count-up specs — refresh the prev-value cache on EVERY render so a
+  // later city change tweens from the last shown value; animate only on change.
+  const bm = [...root.querySelectorAll(".bt-metrics .mv")];
+  const fc = [...root.querySelectorAll(".fc-stats .mv")];
+  const deg = v => (Math.round(v * 10) / 10) + "<small>°F</small>";
+  const degI = v => Math.round(v) + "<small>°F</small>";
+  const specs = [
+    [bm[0], "final", sim.final, moneyPlain],
+    [bm[2], "sharpe", sim.sharpe, v => v.toFixed(2)],
+    [bm[3], "maxdd", sim.maxDDDollars, money],
+    [bm[4], "missed", sim.missed, v => String(Math.round(v))],
+    [fc[0], "members", d.nMembers, v => String(Math.round(v))],
+    [fc[1], "ensMean", d.ensMean, deg],
+    [fc[2], "ensSpread", d.ensSpread, deg],
+    [fc[3], "observed", d.observed, degI],
+  ];
+  const doAnim = changed && activeTab === "backtest" && !RM.matches;
+  for (const [el, k, to, fmt] of specs) {
+    const from = _btPrevVals[k];
+    _btPrevVals[k] = to;
+    if (doAnim) btCountEl(el, from, to, fmt);
+  }
+  if (!doAnim) return;
+  btDrawBalance(root.querySelector('svg[data-chart="bal"]'));
+  // scroll-reveal each direct child of .wrap as it enters the viewport
+  const wrap = root.querySelector(".wrap");
+  if (!wrap) return;
+  const panels = [...wrap.children];
+  panels.forEach((el, i) => { el.classList.add("reveal"); el.style.setProperty("--rd", (i * 45) + "ms"); });
+  const reveal = el => el.classList.add("in");
+  if (!("IntersectionObserver" in window)) { panels.forEach(reveal); return; }
+  const io = new IntersectionObserver((entries, obs) => {
+    entries.forEach(ent => { if (ent.isIntersecting) { reveal(ent.target); obs.unobserve(ent.target); } });
+  }, { threshold: 0.06 });
+  panels.forEach(el => io.observe(el));
+  setTimeout(() => panels.forEach(reveal), 1500);              // safety net: never leave a panel hidden
+}
+
 function renderBacktest() {
   const root = document.getElementById("backtest-root");
   if (!BT) { root.innerHTML = `<div class="wrap"><div class="loading">Loading backtest…</div></div>`; return; }
@@ -935,6 +1085,9 @@ function renderBacktest() {
     depthCap: Number(bt.depth) || 0, execution: bt.exec, startingBankroll: bt.bankroll,
     strategy: bt.strategy, maxSignals: Number(bt.maxSignals) || 0, edgeCap: Number(bt.edgeCap) || 0,
   });
+  const btKey = (d.code || "") + "|" + (bt.date || "");
+  const changed = btKey !== _btLastKey;          // new city/date vs. a param/slider tweak
+  _btLastKey = btKey;
   const noData = (!d.trades || d.trades.length === 0);
   const backfilling = noData ? `<div class="bt-backfilling">⏳ ${esc(d.city)}: backtest data is still backfilling (forecast history for this city's traded dates hasn't finished downloading). Best-results will load automatically once it's ready — no action needed.</div>` : "";
   const simMeta = `${esc(d.city)} · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%${bt.minEntry ? " · entry ≥ " + bt.minEntry + "¢" : ""}`;
@@ -943,10 +1096,11 @@ function renderBacktest() {
     locationMap(d) +
     `<div class="section-label">Forecast — combined GEFS + ECMWF ensemble · ${esc(d.city)} · ${esc(bt.date || "")}</div>` +
     `<div class="grid" style="grid-template-columns:1.5fr 1fr">` +
-      `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:var(--bg-3)"></span>member daily highs</span><span><span class="sw" style="background:var(--warn)"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--pos)"></span>resolved high ${d.observed}°</span></div></div>` +
+      `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--cool),var(--temperate),var(--warm),var(--hot),var(--extreme))"></span>member highs (thermal)</span><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--temperate),var(--hot),var(--extreme));height:4px"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--up)"></span>resolved high ${d.observed}°</span></div></div>` +
       `<div class="panel" style="display:flex;flex-direction:column"><div class="panel-h"><h3>Forecast summary</h3></div><div class="fc-stats" style="border-bottom:1px solid var(--border)">${BTMetric("Members", d.nMembers)}${BTMetric("Ens. mean", `${d.ensMean}<small>°F</small>`)}${BTMetric("Ens. spread", `${d.ensSpread}<small>°F</small>`)}${BTMetric("Resolved", `${d.observed}<small>°F</small>`)}</div><div style="padding:16px;display:flex;flex-direction:column;gap:14px;flex:1"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:600 11px/1 var(--ui);letter-spacing:.12em;text-transform:uppercase;color:var(--text-lo)">EMOS post-processed</span><span class="mono" style="font-size:18px;color:var(--text-hi)">μ ${d.emosMu}° · σ ${d.emosSigma}°</span></div><div class="mono" style="font-size:11.5px;line-height:1.7;color:var(--text-lo)">Rolling 45-day fit corrects ensemble under-dispersion. Bracket probabilities below integrate this Gaussian; edge = model − market mid.</div></div></div>` +
     `</div>` +
     edgeByBracketTable(d) +
+    blendPanel(d) +
     `<div class="section-label">P&amp;L simulation — tweak the run parameters below</div>` +
     `<div class="panel"><div class="panel-h"><h3>Simulation results</h3><span class="meta">${simMeta}</span></div>` +
       backfilling + simControls() +
@@ -959,12 +1113,13 @@ function renderBacktest() {
         BTMetric("Filtered / total", `${sim.n || 0} / ${sim.total || 0}`, "filled / passed filter") +
       `</div>` +
       `<div style="padding:12px 12px 4px"><div class="chart-wrap">${balanceChartSVG(sim.curve || [bt.bankroll, bt.bankroll], (sim.tradeRecords || []).filter(t => t.fill === "filled"))}</div></div>` +
-      `<div class="panel-b" style="padding-top:4px"><div class="chart-legend"><span><span class="sw" style="background:${(sim.ret || 0) >= 0 ? "var(--pos)" : "var(--neg)"}"></span>balance curve · start $${(sim.curve || [1000])[0].toLocaleString()} → $${(sim.final || 0).toLocaleString()}</span></div></div>` +
+      `<div class="panel-b" style="padding-top:4px"><div class="chart-legend"><span><span class="sw" style="background:${(sim.ret || 0) >= 0 ? "var(--up)" : "var(--down)"}"></span>balance curve · start $${(sim.curve || [1000])[0].toLocaleString()} → $${(sim.final || 0).toLocaleString()}</span></div></div>` +
     `</div>` +
     tradeDetailTable(sim) +
     strategyComparison(d.strat || []) +
   `</div>`;
   wireCharts(root);
+  btEnterAnimations(root, changed, d, sim);
 }
 
 // ====================================================================
