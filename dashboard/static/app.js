@@ -604,7 +604,7 @@ function BTMetric(label, value, sub, tone) {
 // STATE
 // ====================================================================
 let LIVE = null;
-let prevLive = null;       // previous /api/live payload — E2 diffs snapshot(prevLive) vs snapshot(LIVE)
+let prevLive = null;       // previous snapshot() result — animateLiveDeltas diffs it vs snapshot(d) directly (never re-snapshot)
 let liveIntroDone = false; // gates the one-shot entrance ramp (rampClock) on first live paint
 let BT = null;            // current city's backtest payload
 let BT_CITIES = [];       // [{code,label,lat,lon}]
