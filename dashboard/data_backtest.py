@@ -299,7 +299,7 @@ def fetch_city_payload(
         "ensSpread": ens_spread,
         "emosMu": emos_mu,
         "emosSigma": emos_sigma,
-        "observed": observed if observed is not None else (int(ens_mean) if ens_mean else 0),
+        "observed": observed,        # None when the day isn't resolved yet
         "brackets": brackets_payload,
         "sim": sim_results,
         "trades": trades_payload,

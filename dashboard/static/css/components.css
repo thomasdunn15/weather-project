@@ -70,22 +70,10 @@ table.dt tbody tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--up); }
 svg[data-chart] { cursor: crosshair; }
 
 /* ---------- chart draw-on ----------
-   Primary path: E2/E3 drive the reveal from the shared rampClock in app.js —
-     .chart-line       = the single measurable stroke path; they read
-                         path.getTotalLength() and tween stroke-dashoffset → 0.
+   E2/E3 drive the reveal from the shared rampClock in app.js —
+     .chart-line        = the single measurable stroke path; they read
+                          path.getTotalLength() and tween stroke-dashoffset → 0.
      .chart-fill-reveal = the clipPath rect; they set transform: scaleX(e),
-                         GPU-composited (no per-frame attribute writes).
-   Defaults below leave both fully shown. The `.draw` sentinel offers a no-JS
-   CSS fallback for the same effect. */
+                          GPU-composited (no per-frame attribute writes).
+   The JS path is the only path, so no CSS keyframe fallback is needed. */
 .chart-fill-reveal { transform-box: fill-box; transform-origin: left center; }
-
-@keyframes chart-draw  { to { stroke-dashoffset: 0; } }
-@keyframes fill-reveal { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-svg[data-chart].draw .chart-line {
-  stroke-dasharray: var(--draw-len, 1200);
-  stroke-dashoffset: var(--draw-len, 1200);
-  animation: chart-draw var(--dur-draw) var(--ease-out) forwards;
-}
-svg[data-chart].draw .chart-fill-reveal {
-  animation: fill-reveal var(--dur-draw) var(--ease-out) forwards;
-}
