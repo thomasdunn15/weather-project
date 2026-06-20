@@ -158,8 +158,17 @@ function ensembleChartSVG(d) {
     return `<div style="padding:24px;color:var(--text-lo);text-align:center">No ensemble data for ${esc(d.date)}.</div>`;
   const padL = 16, padR = 16, padT = 16, padB = 30;
   const iw = w - padL - padR, ih = height - padT - padB;
-  const lo = Math.floor(Math.min(...d.members, d.observed || d.ensMean) - 1.5);
-  const hi = Math.ceil(Math.max(...d.members, d.observed || d.ensMean) + 1.5);
+  // FIX 1: d.observed is truthful now — null EXACTLY when the day isn't resolved
+  // (every bracket then reads "PEND"), a real high otherwise. So `observed != null`
+  // IS the resolution signal, and it stays correct even on resolved dates that have
+  // no bracket/contract rows (where a brackets-only check would wrongly hide a real
+  // high — failing the regression guard). Centering falls back to ensMean via `??`
+  // when unresolved (the `??` keeps a genuine 0° observed from being swallowed) —
+  // never for the resolved-high label or the green line below.
+  const resolved = d.observed != null;
+  const center = d.observed ?? d.ensMean;
+  const lo = Math.floor(Math.min(...d.members, center) - 1.5);
+  const hi = Math.ceil(Math.max(...d.members, center) + 1.5);
   const X = t => padL + ((t - lo) / (hi - lo)) * iw;
   const bins = {};
   for (let t = lo; t <= hi; t++) bins[t] = 0;
@@ -192,7 +201,10 @@ function ensembleChartSVG(d) {
   }).join("");
   const mean = d.ensMean > 0 ? `<line x1="${X(d.ensMean)}" x2="${X(d.ensMean)}" y1="${padT}" y2="${padT + ih}" stroke="var(--text-lo)" stroke-width="1" stroke-dasharray="3 3"/>` : "";
   let obs = "";
-  if (d.observed > 0) {
+  // Only draw the green observed line on a genuinely resolved day. On PEND days
+  // d.observed is null (resolved===false) — drawing would place the line at
+  // X(null)=NaN and imply a high that doesn't exist yet.
+  if (resolved) {
     obs = `<line x1="${X(d.observed)}" x2="${X(d.observed)}" y1="${padT - 2}" y2="${padT + ih}" stroke="var(--up)" stroke-width="2"/><g transform="translate(${Math.min(X(d.observed) + 6, padL + iw - 70)},${padT + 4})"><rect width="64" height="18" rx="4" fill="var(--up-dim)" stroke="var(--up-line)"/><text x="7" y="13" fill="var(--up)" style="font:600 10px var(--mono)">obs ${d.observed}°</text></g>`;
   }
   const xlab = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).filter(t => t % 2 === 0).map(t => `<text x="${X(t)}" y="${height - 9}" text-anchor="middle" class="chart-axis-x">${t}°</text>`).join("");
@@ -1068,11 +1080,30 @@ function tradeDetailTable(sim) {
   return `<div class="panel"><div class="panel-h"><h3>Trade-by-trade detail</h3><span class="meta">every paper trade · ${bt.strategy === "union" ? "UNION" : bt.strategy === "blend" ? "BLEND" : "RAW"} signal · qty/P&L reflect (${esc(bt.sizing)}, $${Number(bt.amount).toLocaleString()}/trade, cap ${bt.depth})</span></div><div class="tbl-scroll" style="max-height:280px"><table class="dt"><thead><tr><th class="l">Date</th><th class="l">Bracket</th><th>Side</th><th>${bt.strategy === "blend" ? "Blend P" : "Model P"}</th><th>Market P</th><th>Edge</th><th>Entry</th><th>Qty</th><th>Fill</th><th>Result</th><th>P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
+// Honest per-strategy Brier on the YES outcome over this strategy's filled,
+// resolved trades — replaces the server's hardcoded 0.20 placeholder. stratP is
+// the YES probability the strategy assigned; the realized YES outcome is derived
+// from the side taken and whether it won. null when nothing filled.
+function stratBrier(sim) {
+  const fr = (sim.tradeRecords || []).filter(t => t.fill === "filled" && t.stratWon != null && t.stratP != null);
+  if (!fr.length) return null;
+  const sse = fr.reduce((s, t) => {
+    const yesOutcome = (t.stratWon === (t.stratSide === "BUY_YES")) ? 1 : 0;
+    return s + (t.stratP - yesOutcome) ** 2;
+  }, 0);
+  return sse / fr.length;
+}
+
 function strategyComparison(strat) {
   let body;
   if (!strat || strat.length === 0) body = `<tr><td class="l muted" colspan="8" style="padding:16px 12px">No strategy comparison data.</td></tr>`;
-  else body = strat.map(s => `<tr class="${s.chosen ? "chosen" : ""}"><td class="l hi">${esc(s.name)}${s.chosen ? `<span class="chosen-tag">live</span>` : ""}</td><td class="hi">${moneyPlain(s.final)}</td><td class="${cls(s.ret)}">${pct(s.ret)}</td><td class="${s.sharpe >= 1 ? "pos" : ""}">${s.sharpe.toFixed(2)}</td><td class="neg">${pct(s.maxDD)}</td><td>${(s.win * 100).toFixed(0)}%</td><td>${s.brier.toFixed(3)}</td><td>${s.n}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Strategy comparison</h3><span class="meta">${esc(BT.city)} · head-to-head model variants · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%</span></div><table class="dt"><thead><tr><th class="l">Model variant</th><th>Final balance</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Win rate</th><th>Brier</th><th>Trades</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  else body = strat.map(s => {
+    if (s.available === false) {
+      return `<tr><td class="l hi">${esc(s.name)}</td><td class="muted" colspan="7" style="text-align:center">no blend model for this city</td></tr>`;
+    }
+    return `<tr class="${s.chosen ? "chosen" : ""}"><td class="l hi">${esc(s.name)}${s.chosen ? `<span class="chosen-tag">active</span>` : ""}</td><td class="hi">${moneyPlain(s.final)}</td><td class="${cls(s.ret)}">${pct(s.ret)}</td><td class="${s.sharpe >= 1 ? "pos" : ""}">${s.sharpe.toFixed(2)}</td><td class="neg">${pct(s.maxDD)}</td><td>${(s.win * 100).toFixed(0)}%</td><td>${s.brier != null ? s.brier.toFixed(3) : "—"}</td><td>${s.n}</td></tr>`;
+  }).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Strategy comparison</h3><span class="meta">${esc(BT.city)} · raw vs blend vs union · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}% · matches sim controls</span></div><table class="dt"><thead><tr><th class="l">Model variant</th><th>Final balance</th><th>Return</th><th>Sharpe</th><th>Max DD</th><th>Win rate</th><th>Brier</th><th>Trades</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 // FREE WIN — Benter blend breakdown (data already in the payload: blend{}).
@@ -1218,6 +1249,11 @@ function renderBacktest() {
   const root = document.getElementById("backtest-root");
   if (!BT) { root.innerHTML = `<div class="wrap"><div class="loading">Loading backtest…</div></div>`; return; }
   const d = BT;
+  // FIX 1: observed is truthful now — null EXACTLY when unresolved — so it IS the
+  // resolution signal (and unlike a brackets-only check it still reports a real
+  // high on resolved dates that lack bracket rows). Gates every display of
+  // d.observed so a still-PEND day never shows a fabricated "resolved high".
+  const resolved = d.observed != null;
   // TWO independent sims off the FROZEN jsComputeSim (called here, never edited):
   //   simSig (signal strategy) → the trade-by-trade table, kept in lockstep with the ladder.
   //   simPnl (sim strategy)    → the equity curve + the headline chips, independently strategizable.
@@ -1230,6 +1266,23 @@ function renderBacktest() {
   };
   const simSig = jsComputeSim(d.trades || [], { ...baseParams, strategy: bt.strategy });
   const simPnl = (simStrat === bt.strategy) ? simSig : jsComputeSim(d.trades || [], { ...baseParams, strategy: simStrat });
+
+  // Strategy comparison — recomputed CLIENT-SIDE under the SAME controls as the
+  // Simulation panel (bankroll/sizing/edge/exec) so it's honestly apples-to-apples
+  // and live-updates with the controls, instead of a stale server snapshot whose
+  // numbers (fetch-time $1000 / 10% edge) contradicted the panel they sat beside.
+  // The `chosen` row is the active sim strategy → its numbers match the chips above.
+  const STRAT_LABELS = { raw: "Raw model", blend: "Benter blend", union: "Union (raw ∪ blend)" };
+  const stratRows = ["raw", "blend", "union"].map(strat => {
+    const avail = strat === "raw" || !!d.blend;
+    const r = avail ? jsComputeSim(d.trades || [], { ...baseParams, strategy: strat }) : null;
+    return {
+      name: STRAT_LABELS[strat], available: avail,
+      final: r ? r.final : null, ret: r ? r.ret : null, sharpe: r ? r.sharpe : null,
+      maxDD: r ? r.maxDD : null, win: r ? r.win : null, brier: r ? stratBrier(r) : null,
+      n: r ? r.filled : 0, chosen: strat === simStrat,
+    };
+  });
 
   const btKey = (d.code || "") + "|" + (bt.date || "");
   const changed = btKey !== _btLastKey;          // new city/date vs. a param/slider tweak
@@ -1245,7 +1298,11 @@ function renderBacktest() {
   const avgEdge = filledRecs.length ? filledRecs.reduce((s, t) => s + Math.abs(t.stratEdge != null ? t.stratEdge : t.edge), 0) / filledRecs.length : null;
   const avgEntry = filledRecs.length ? filledRecs.reduce((s, t) => s + (t.entry || 0), 0) / filledRecs.length : null;
   const simMeta = `${esc(d.city)} · ${esc(simStrat)} · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%`;
-  const ledger = `<div class="bt-ledger mono"><span><b>${simPnl.total || 0}</b> signals</span><span class="pos"><b>${simPnl.filled || 0}</b> filled</span><span class="${(simPnl.missed || 0) > 0 ? "warn" : "muted"}"><b>${simPnl.missed || 0}</b> missed</span><span class="muted"><b>${simPnl.pending || 0}</b> pending</span><span>avg edge <b>${avgEdge != null ? (avgEdge * 100).toFixed(0) + "%" : "—"}</b></span><span>avg entry <b>${avgEntry != null ? Math.round(avgEntry) + "¢" : "—"}</b></span></div>`;
+  // "filtered" = evaluated trades that didn't trade (below edge/min-entry, capped,
+  // no-blend, skipped). Surfacing it makes the breakdown reconcile:
+  // evaluated = filled + filtered + missed + pending.
+  const noTrade = Math.max(0, (simPnl.total || 0) - (simPnl.filled || 0) - (simPnl.missed || 0) - (simPnl.pending || 0));
+  const ledger = `<div class="bt-ledger mono"><span><b>${simPnl.total || 0}</b> evaluated</span><span class="pos"><b>${simPnl.filled || 0}</b> filled</span><span class="muted"><b>${noTrade}</b> filtered</span><span class="${(simPnl.missed || 0) > 0 ? "warn" : "muted"}"><b>${simPnl.missed || 0}</b> missed</span><span class="muted"><b>${simPnl.pending || 0}</b> pending</span><span>avg edge <b>${avgEdge != null ? (avgEdge * 100).toFixed(0) + "%" : "—"}</b></span><span>avg entry <b>${avgEntry != null ? Math.round(avgEntry) + "¢" : "—"}</b></span></div>`;
 
   const diag = [blendPanel(d), calibrationPanel(d)].filter(Boolean);
   const diagRow = diag.length === 2 ? `<div class="grid g-2">${diag.join("")}</div>` : diag.join("");
@@ -1254,8 +1311,8 @@ function renderBacktest() {
     controlsBar(d) +
     `<div class="section-label">Forecast · ${esc(d.city)} · ${esc(bt.date || "")} <span class="sl-sub">combined GEFS + ECMWF ensemble</span></div>` +
     `<div class="grid" style="grid-template-columns:1.5fr 1fr">` +
-      `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--cool),var(--temperate),var(--warm),var(--hot),var(--extreme))"></span>member highs (thermal)</span><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--temperate),var(--hot),var(--extreme));height:4px"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--up)"></span>resolved high ${d.observed}°</span></div></div>` +
-      `<div class="panel" style="display:flex;flex-direction:column"><div class="panel-h"><h3>Forecast summary</h3></div><div class="fc-stats" style="border-bottom:1px solid var(--border)">${BTMetric("Members", d.nMembers)}${BTMetric("Ens. mean", `${d.ensMean}<small>°F</small>`)}${BTMetric("Ens. spread", `${d.ensSpread}<small>°F</small>`)}${BTMetric("Resolved", `${d.observed}<small>°F</small>`)}</div><div style="padding:16px;display:flex;flex-direction:column;gap:14px;flex:1"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:600 11px/1 var(--ui);letter-spacing:.12em;text-transform:uppercase;color:var(--text-lo)">EMOS post-processed</span><span class="mono" style="font-size:18px;color:var(--text-hi)">μ ${d.emosMu}° · σ ${d.emosSigma}°</span></div><div class="mono" style="font-size:11.5px;line-height:1.7;color:var(--text-lo)">Rolling 45-day fit corrects ensemble under-dispersion. Bracket probabilities below integrate this Gaussian; edge = model − market mid.</div></div></div>` +
+      `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--cool),var(--temperate),var(--warm),var(--hot),var(--extreme))"></span>member highs (thermal)</span><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--temperate),var(--hot),var(--extreme));height:4px"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--up)"></span>resolved high ${resolved ? `${d.observed}°` : "—"}</span></div></div>` +
+      `<div class="panel" style="display:flex;flex-direction:column"><div class="panel-h"><h3>Forecast summary</h3></div><div class="fc-stats" style="border-bottom:1px solid var(--border)">${BTMetric("Members", d.nMembers)}${BTMetric("Ens. mean", `${d.ensMean}<small>°F</small>`)}${BTMetric("Ens. spread", `${d.ensSpread}<small>°F</small>`)}${BTMetric("Resolved", resolved ? `${d.observed}<small>°F</small>` : `<span class="muted">pending</span>`)}</div><div style="padding:16px;display:flex;flex-direction:column;gap:14px;flex:1"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:600 11px/1 var(--ui);letter-spacing:.12em;text-transform:uppercase;color:var(--text-lo)">EMOS post-processed</span><span class="mono" style="font-size:18px;color:var(--text-hi)">μ ${d.emosMu}° · σ ${d.emosSigma}°</span></div><div class="mono" style="font-size:11.5px;line-height:1.7;color:var(--text-lo)">Rolling 45-day fit corrects ensemble under-dispersion. Bracket probabilities below integrate this Gaussian; edge = model − market mid.</div></div></div>` +
     `</div>` +
     edgeByBracketTable(d) +
     diagRow +
@@ -1275,7 +1332,7 @@ function renderBacktest() {
       `<div class="panel-b" style="padding-top:4px"><div class="chart-legend"><span><span class="sw" style="background:${net >= 0 ? "var(--up)" : "var(--down)"}"></span>equity · $${(simPnl.curve || [bt.bankroll])[0].toLocaleString()} → $${(simPnl.final || 0).toLocaleString()}</span><span><span class="sw" style="background:var(--down);opacity:.4;height:8px"></span>drawdown (underwater)</span></div></div>` +
     `</div>` +
     tradeDetailTable(simSig) +
-    strategyComparison(d.strat || []) +
+    strategyComparison(stratRows) +
   `</div>`;
   wireCharts(root);
   btEnterAnimations(root, changed, d, simPnl);
