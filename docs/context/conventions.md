@@ -6,7 +6,7 @@
 - **Python via `uv run`** — never call `.venv/bin/python` directly. Mirror this in docstring examples.
 - **Long jobs in `tmux`**, output line-buffered so they survive detach/reattach (cloud-server workflow).
 - **Crontab:** edit `docs/crontab.txt`, then install with `crontab docs/crontab.txt`. Never edit the live crontab directly.
-- **Config freeze 2026-06-12 → 2026-07-10:** only safety/correctness changes to trading params. New ideas → [../backlog.md](../backlog.md). Re-eval decides KMDW model, walk-book sizing, backlog.
+- **Config freeze LIFTED 2026-06-20** (was 2026-06-12 → 2026-07-10). Trading-param changes are allowed again — validate on backtest/paper before live and log the rationale in [../decisions/](../decisions/). Backlog items (KMDW model, walk-book sizing, per-city params, narrow live universe) are now actionable.
 - **Secrets:** `~/.kalshi/key.pem` and `.env` are never shared or committed (`.env` is gitignored, chmod 600). `DATABASE_URL` and `POLYMARKET_SECRET` are sensitive.
 - **DB:** `psql -d weather` (local peer auth, no password sourcing needed).
 - **Tests:** `uv run pytest` (109+ tests). The JS↔Python sim parity test must stay green.

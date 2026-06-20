@@ -151,44 +151,6 @@ class TestEvenSplitStake:
 
 
 # ---------------------------------------------------------------------------
-# frozen-config invariants (docs/decisions/config-freeze-2026-06-12.md)
-# ---------------------------------------------------------------------------
-
-class TestFrozenConfig:
-    """Pin the frozen live config. If one of these fails, either the freeze
-    was deliberately lifted (update the test alongside the precommit doc) or
-    something drifted by accident (the bad case this exists to catch)."""
-
-    def test_kord(self):
-        c = live_trade.CITY_CONFIG["KORD"]
-        assert c["use_union"] is True
-        assert c["edge_threshold"] == 0.25
-        assert c["blend_edge_threshold"] == 0.10
-        assert c["smart_cross_edge_threshold"] == 0.40   # KORD execution unchanged
-        assert c["sizing_mode"] == "unit"
-        assert c["unit_contracts"] == 500
-        assert c["is_active"] is True
-
-    def test_kmia(self):
-        c = live_trade.CITY_CONFIG["KMIA"]
-        assert c["use_union"] is False
-        assert c["use_blend"] is True
-        assert c["blend_edge_threshold"] == 0.10         # edge filter UNCHANGED — same trades fire
-        assert c["smart_cross_edge_threshold"] == 0.10   # exec fix 2026-06-17: cross instead of miss fills
-        assert c["sizing_mode"] == "unit"
-        assert c["unit_contracts"] == 500
-        assert c["is_active"] is True
-
-    def test_execution_mode(self):
-        assert live_trade.EXECUTION_MODE == "smart"
-        assert live_trade.SMART_CROSS_EDGE_THRESHOLD == 0.40
-
-    def test_aggregate_limits(self):
-        assert live_trade.AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS == 300.0
-        assert live_trade.AGGREGATE_CUMULATIVE_KILL_DOLLARS == 1000.0
-
-
-# ---------------------------------------------------------------------------
 # integration smoke: the dry run must never crash
 # ---------------------------------------------------------------------------
 

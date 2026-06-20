@@ -33,8 +33,9 @@ FastAPI + vanilla-JS dashboard. Postgres/TimescaleDB `weather` holds all data.
 - **Python via `uv run`** — never `.venv/bin/python` directly.
 - **Long jobs in `tmux`**, line-buffered (cloud-server workflow).
 - **Crontab:** edit `docs/crontab.txt`, then `crontab docs/crontab.txt`. Never edit the live crontab directly.
-- **CONFIG FREEZE 2026-06-12 → 2026-07-10:** only safety/correctness changes to trading params; new
-  ideas go to [docs/backlog.md](docs/backlog.md). Risk-envelope numbers are immutable during live trading.
+- **Trading params are editable — config freeze LIFTED 2026-06-20** (it had run 2026-06-12 → 2026-07-10).
+  Change them deliberately: validate on backtest/paper first, log the rationale in [docs/decisions/](docs/decisions/),
+  and treat the risk-envelope limits (aggregate daily-loss / cumulative-kill) with extra care — live trading is real money.
 - **Secrets never shared/committed:** `~/.kalshi/key.pem`, `.env` (chmod 600, gitignored), `DATABASE_URL`,
   `POLYMARKET_SECRET`. `Research.md` is gitignored (local-only).
 - **DB:** `psql -d weather` (local peer auth, no password).

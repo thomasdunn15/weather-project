@@ -1,6 +1,6 @@
-# Strategy backlog — evaluate at config re-evaluation (next: 2026-07-10)
+# Strategy backlog — candidate ideas to validate before live
 
-Ideas land here instead of in the live code during a freeze. Each entry:
+Ideas land here to be validated (backtest/paper) before going into live code — the config freeze was lifted 2026-06-20. Each entry:
 date, idea, evidence that prompted it. Nothing here is a commitment.
 
 ## Open

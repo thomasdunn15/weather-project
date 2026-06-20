@@ -40,7 +40,7 @@ These numbers are **immutable during live trading** (see [conventions.md](conven
 - Chicago live **day-1: +$410** (3 winners) — explicitly treated as "one lucky day," not signal.
 - Miami paper edge **regime-flipped ~Feb 2026**: last-90-day win rate fell to ~37–38% (raw), which triggered the **2026-06-06 halt**; blend-only survived and was resumed 2026-06-10.
 - Backtest mean was **+3–5¢/trade** but did **not** clear Bonferroni — the unbiased forward estimate is closer to 0; live data is the real test.
-- Current state: **config freeze → 2026-07-10**; KORD + KMIA live on conservative params in their no-tune windows. More findings in memory (`project_*_finding`) and [../decisions/](../decisions/).
+- Current state: **config freeze lifted 2026-06-20** (params tunable again); KORD + KMIA live on conservative params. More findings in memory (`project_*_finding`) and [../decisions/](../decisions/).
 
 ## Sources
 - User confirmation (2026-06-19): capital $3,050; goal = prove edge.

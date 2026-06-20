@@ -7,7 +7,7 @@
 - Model_P comes from **EMOS** (rolling 45-day calibration of the ensemble) integrated over each Kalshi bracket.
 - A **Benter-style logistic blend** of model_P and market_P beats the raw model; backtests fit it **walk-forward** (no lookahead).
 - Sizing: unit / amount / kelly / scaling. Execution: market / post_inside_spread (~75% fill) / market_plus_*. Risk: edge threshold, daily-loss + cumulative kill, anti-stacking, edge cap.
-- **CONFIG IS FROZEN 2026-06-12 → 2026-07-10** — change only for safety/correctness; new ideas go to [../backlog.md](../backlog.md). See [../decisions/](../decisions/).
+- **Config freeze LIFTED 2026-06-20** (was 2026-06-12 → 2026-07-10) — trading-param changes are allowed again; validate before live and record the rationale in [../decisions/](../decisions/).
 
 ## Calibration → probabilities
 1. `aggregation.compute_combined_daily_highs(init, date, conn, station, models)` → ensemble member daily highs (`combined`=GEFS+IFS; `combined_hrrr`=+HRRR).
