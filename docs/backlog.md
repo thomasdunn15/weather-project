@@ -112,3 +112,23 @@ date, idea, evidence that prompted it. Nothing here is a commitment.
 - **2026-06-09 · Multi-bracket, Kelly, EMOS feature additions.** All null
   results vs single-bracket + blend baseline (see memory/project notes).
   Don't re-test on similar data.
+
+## Backtest tab v4 revamp — shipped + deferred (2026-06-20)
+
+Display-only revamp (branch `redesign/backtest-revamp`, `?v=4`). Shipped: retired
+the US map (redundant with the city select) → inline best-Sharpe stat; dropped the
+Polymarket toggle; tucked min-entry / max-signals / edge-cap / depth-cap behind an
+Advanced disclosure; net-edge / expectancy / fill-rate chips + ledger strip;
+equity-curve drawdown shading; a compact model-calibration panel; an **independent
+sim-strategy control** (curve + chips only, separate from the ladder's signal
+strategy); and a first-open entrance-animation fix. Deferred (not built):
+
+- **Per-city best-Sharpe in the city selector.** The old background `sweepBest()`
+  (one fetch per city) was removed with the map to spare the memory-constrained
+  box; only the selected city's Sharpe is computed now. A lazy, on-demand sweep
+  could annotate each `<option>` if wanted.
+- **Calibrate the blended/effective probability**, not just raw `modelP`. Current
+  calibration panel uses the raw model only; a blend-aware reliability view (and
+  Brier) is the bigger analytics item already noted in the frontend plan above.
+- **Paper-vs-live divergence + fill-quality monitor** — still open from the
+  frontend-optimization plan; out of scope for this display pass.

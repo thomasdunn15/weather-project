@@ -5,9 +5,11 @@
    .bt-backfilling rules were dropped by the foundation pass).
 
    Reads ONLY shared tokens (tokens.css) + shared primitives (components.css,
-   shell.css). Owns: the run controls, the ★ thermal bracket ladder, the metric
-   grids, the ensemble legend, the Benter-blend mini panel, the clickable US
-   map, and the city·date entrance-animation classes (driven from app.js).
+   shell.css). Owns: the compact run bar + inline best-Sharpe stat, the ★ thermal
+   bracket ladder, the metric grids + sim ledger, the ensemble legend, the
+   Benter-blend + model-calibration panels, the independent sim-strategy control,
+   the Advanced-filters disclosure, and the city·date entrance-animation classes
+   (driven from app.js). The clickable US map was retired in the v4 revamp.
    ===================================================================== */
 
 /* ---------- run controls (top bar + sim bar) ---------- */
@@ -124,26 +126,58 @@
 .blend-coefs .neg { color: var(--down); }
 .blend-coefs small { color: var(--down); opacity: 0.8; }
 
-/* ---------- clickable US map (thermal/Sharpe dots) ---------- */
-.us-outline { filter: drop-shadow(0 0 7px rgba(56,189,248,0.08)); }
-.mapdot { cursor: pointer; }
-.mapdot text { pointer-events: none; }
-.mapdot .md {
-  transform-box: fill-box; transform-origin: center;
-  transition: transform var(--dur-2) var(--ease-out), filter var(--dur-2) var(--ease-out);
+/* ---------- compact run bar + inline best-Sharpe stat ---------- */
+.controls.bt-runbar { padding: 12px 16px; gap: 12px 24px; }
+.city-row { display: flex; align-items: center; gap: 12px; }
+.bt-best {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 11px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-inset);
 }
-.mapdot:hover .md { transform: scale(1.32); filter: drop-shadow(0 0 7px var(--accent)); }
-.mapdot:hover text { fill: var(--text-hi); }
-.mapdot.sel .md { filter: drop-shadow(0 0 8px var(--accent)); }
-.mapdot .sel-ring { opacity: 0.9; }
-.mapdot.pop .md { animation: dot-pop var(--dur-3) var(--press); }
-.mapdot.pulse .md { animation: dot-pulse var(--dur-4) var(--ease-soft); }
-@keyframes dot-pop   { 0% { transform: scale(1); } 45% { transform: scale(1.6); } 100% { transform: scale(1); } }
-@keyframes dot-pulse {
-  0%   { filter: drop-shadow(0 0 0 rgba(56,189,248,0)); }
-  35%  { filter: drop-shadow(0 0 8px rgba(56,189,248,0.95)); }
-  100% { filter: drop-shadow(0 0 0 rgba(56,189,248,0)); }
-}
+.bt-best-k { font: 600 9px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
+.bt-best-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.bt-best-v { font: 600 14px/1 var(--mono); }
+.bt-best-s { font: 500 10px/1 var(--mono); color: var(--text-lo); }
+
+/* ---------- section-label sub-note (dim, lower-case context) ---------- */
+.sl-sub { text-transform: none; letter-spacing: 0.02em; font-weight: 500; color: var(--text-faint); margin-left: 7px; }
+
+/* ---------- independent sim-strategy control (docked in the P&L panel header) ---------- */
+.panel-h:has(.sim-strat) { flex-wrap: wrap; row-gap: 8px; }
+.sim-strat { display: inline-flex; align-items: center; gap: 10px; }
+.sim-strat-k { display: inline-flex; align-items: center; gap: 7px; font: 600 9px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mid); }
+.sim-strat-follow { font: 500 9px/1 var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-lo); border: 1px solid var(--border); border-radius: 100px; padding: 2px 7px; }
+.sim-strat-reset { font: 600 10px/1 var(--mono); color: var(--text-lo); background: transparent; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 9px; cursor: pointer; transition: color var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft); }
+.sim-strat-reset:hover { color: var(--accent); border-color: var(--border-strong); }
+
+/* ---------- Advanced filters disclosure (inside the sim controls) ---------- */
+.adv { flex-basis: 100%; border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 8px; }
+.adv summary { list-style: none; cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 9px; padding: 3px 0; font: 600 9.5px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); transition: color var(--dur-1) var(--ease-soft); }
+.adv summary:hover { color: var(--text-mid); }
+.adv summary::-webkit-details-marker { display: none; }
+.adv summary::before { content: "▸"; font-size: 9px; color: var(--text-lo); }
+.adv[open] summary::before { content: "▾"; }
+.adv-on { font: 500 9px/1 var(--mono); letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid var(--warn-line); border-radius: 100px; padding: 2px 7px; }
+.adv-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; padding: 10px 0 2px; }
+
+/* ---------- sim ledger strip (trade-count / fill breakdown · avg edge · avg entry) ---------- */
+.bt-ledger { display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--border); font: 500 11px/1 var(--mono); color: var(--text-lo); }
+.bt-ledger b { color: var(--text-hi); font-weight: 600; }
+.bt-ledger .pos b { color: var(--up); }
+.bt-ledger .warn b { color: var(--warn); }
+.bt-ledger .muted b { color: var(--text-mid); }
+
+/* ---------- model calibration (reliability bars: realized fill vs predicted tick) ---------- */
+.calib { padding: 8px 14px 12px; display: flex; flex-direction: column; gap: 6px; }
+.calib-row { display: grid; grid-template-columns: 66px 1fr 38px 32px 26px; align-items: center; gap: 10px; font: 500 11px/1 var(--mono); color: var(--text-mid); }
+.calib-head { font: 600 9px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo); padding-bottom: 2px; }
+.calib-head .calib-act, .calib-head .calib-gap, .calib-head .calib-n { text-align: right; }
+.calib-track { position: relative; height: 14px; border-radius: 4px; background: var(--bg-inset); border: 1px solid var(--border); overflow: visible; }
+.calib-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px 0 0 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 40%, transparent), var(--accent)); }
+.calib-pred { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-hi); border-radius: 1px; }
+.calib-pred::after { content: ""; position: absolute; top: -4px; left: -2px; border: 3px solid transparent; border-top-color: var(--text-hi); }
+.calib-act { text-align: right; color: var(--text-hi); }
+.calib-gap { text-align: right; }
+.calib-n { text-align: right; }
 
 /* ---------- backfilling notice ---------- */
 .bt-backfilling {

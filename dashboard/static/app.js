@@ -255,7 +255,14 @@ function balanceChartSVG(curve, filledTrades) {
     if (tradeAt) rows += `<text x="10" y="66" fill="var(--text-lo)" style="font:500 10px var(--mono)">TRADE P&amp;L</text><text x="78" y="66" fill="${tradeAt.computedPnl >= 0 ? "var(--up)" : "var(--down)"}" style="font:600 11px var(--mono)">${tradeAt.computedPnl >= 0 ? "+" : "−"}$${m2(Math.abs(tradeAt.computedPnl))}</text><text x="10" y="80" fill="var(--text-lo)" style="font:500 10px var(--mono)">CUMULATIVE</text><text x="78" y="80" fill="${cumPnl >= 0 ? "var(--up)" : "var(--down)"}" style="font:600 11px var(--mono)">${cumPnl >= 0 ? "+" : "−"}$${m2(Math.abs(cumPnl))}</text>`;
     return `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(curve[i]).toFixed(1)}" r="4" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${tx.toFixed(1)},${ty})"><rect width="${tw}" height="${th}" rx="5" fill="var(--bg-3)" stroke="var(--border-strong)"/>${rows}</g>`;
   } };
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="balrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)" clip-path="url(#balrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
+  // drawdown shading — the area between the running peak and the equity curve is
+  // time spent underwater. Shares the reveal clip so it sweeps in with the fill.
+  let pk = curve[0]; const peaks = curve.map(v => (pk = Math.max(pk, v)));
+  let dd = "";
+  for (let i = 0; i < curve.length; i++) dd += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(peaks[i]).toFixed(1) + " ";
+  for (let i = curve.length - 1; i >= 0; i--) dd += "L" + X(i).toFixed(1) + "," + Y(curve[i]).toFixed(1) + " ";
+  const ddPath = `<path d="${dd}Z" fill="var(--down)" opacity="0.1" clip-path="url(#balrev)"/>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="balrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)" clip-path="url(#balrev)"/>${ddPath}<path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 // Attach hover handlers to every chart with a data-chart attr. Called after each
@@ -613,10 +620,12 @@ let liveTimer = null;
 const autoedCities = new Set();
 const bestByCity = {};    // code -> {strategy,edge,sharpe,n} | null (computed, no edge) | undefined (not yet)
 const CHARTS = {};        // chart key -> {W,n,X,build(i)} for hover overlays
-let bestSweepStarted = false;
+let btIntroDone = false;  // gates the one-shot first-open entrance ramp on the Backtest tab
 const bt = {              // backtest control state
-  platform: "Kalshi", cityCode: null, date: null,
-  strategy: "raw", bracketEdge: 0.10, simEdge: 0.10, minEntry: 0,
+  cityCode: null, date: null,
+  strategy: "raw",        // SIGNAL strategy — drives the bracket ladder + trade table
+  simStrategy: null,      // PnL-SIM strategy — null = mirror the signal strategy until the user overrides it
+  bracketEdge: 0.10, simEdge: 0.10, minEntry: 0,
   sizing: "unit", amount: 500, depth: 500, exec: "market",
   bankroll: 3000, maxSignals: 0, edgeCap: 0,
 };
@@ -883,97 +892,53 @@ function animateLiveDeltas(d) {
 }
 
 // ====================================================================
-// CLICKABLE US MAP — click a city's location to load its best backtest.
-// Outline + dots share one lon/lat→xy projection so the dots land correctly.
+// CITY BEST-SHARPE — the one useful signal carried over from the retired US
+// map: a city "warms up" on the thermal ramp as its best backtest finds edge.
+// Drives the inline best-Sharpe stat next to the city selector.
+// undefined (not computed yet) / null (too few trades) → muted steel.
 // ====================================================================
-const US_BBOX = { lonMin: -125, lonMax: -66.5, latMin: 24, latMax: 49.5 };
-// Stylized lower-48 border (lon,lat), traced NW → west coast → south → Gulf →
-// east coast → northern border. Recognizable, not survey-accurate.
-const US_OUTLINE = [
-  [-123.5, 48.4], [-124.6, 42.0], [-124.2, 40.4], [-122.4, 37.8], [-120.6, 34.5],
-  [-117.3, 32.5], [-114.7, 32.7], [-111.0, 31.3], [-108.2, 31.3], [-106.5, 31.8],
-  [-103.0, 29.0], [-99.5, 27.5], [-97.1, 25.9], [-94.7, 29.3], [-93.0, 29.8],
-  [-90.0, 29.2], [-88.0, 30.3], [-84.0, 30.0], [-82.8, 27.8], [-81.0, 25.2],
-  [-80.1, 26.5], [-81.4, 30.7], [-80.9, 32.0], [-78.0, 33.9], [-75.9, 36.9],
-  [-75.0, 38.8], [-74.0, 40.5], [-71.1, 41.5], [-70.0, 43.5], [-67.0, 47.4],
-  [-71.5, 45.0], [-76.5, 43.6], [-79.0, 43.3], [-82.5, 41.7], [-83.0, 46.0],
-  [-87.5, 46.5], [-90.0, 46.7], [-95.0, 49.0], [-104.0, 49.0], [-116.0, 49.0],
-];
-function projXY(lon, lat, W, H, pad) {
-  const b = US_BBOX;
-  const x = pad + ((lon - b.lonMin) / (b.lonMax - b.lonMin)) * (W - 2 * pad);
-  const y = pad + ((b.latMax - lat) / (b.latMax - b.latMin)) * (H - 2 * pad);
-  return [x, y];
-}
-// best-Sharpe → thermal color (a dot "warms up" as the sweep finds edge).
-// undefined (not swept yet) / null (too few trades) → muted steel.
 function btSharpeColor(best) {
   if (!best) return "var(--teal)";
   const s = best.sharpe;
   return s >= 2 ? "var(--extreme)" : s >= 1.5 ? "var(--hot)" : s >= 1 ? "var(--warm)"
        : s >= 0.5 ? "var(--temperate)" : s >= 0.25 ? "var(--cool)" : "var(--cold)";
 }
-// One-shot map animation gating. Every refreshMapLabels/render re-inserts the
-// SVG, and a CSS keyframe on a freshly-inserted node plays exactly once — so we
-// TAG a dot with `pop`/`pulse` only when the selection or the global Sharpe
-// leader actually changes. Re-renders with no change emit no class → no thrash.
-let _mapSel = null;
-let _mapLeader = null;
-function usMapSVG(selected) {
-  const W = 720, H = 420, pad = 16;
-  const popCode = (selected !== _mapSel) ? selected : null;       // selection pop
-  _mapSel = selected;
-  let leader = null, leadSh = -Infinity;                          // current Sharpe leader
-  for (const code in bestByCity) { const b = bestByCity[code]; if (b && b.sharpe > leadSh) { leadSh = b.sharpe; leader = code; } }
-  const pulseCode = (leader && leader !== _mapLeader) ? leader : null;
-  _mapLeader = leader;
-  const pts = US_OUTLINE.map(([lo, la]) => { const [x, y] = projXY(lo, la, W, H, pad); return `${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
-  const dots = BT_CITIES.map(c => {
-    if (c.lon == null || c.lat == null) return "";
-    const [x, y] = projXY(c.lon, c.lat, W, H, pad);
-    const on = c.code === selected;
-    const best = bestByCity[c.code];
-    const r = on ? 7 : 5;
-    const fill = btSharpeColor(best);                            // thermal/Sharpe scale
-    const lx = (x + 11).toFixed(1);
-    // code label nudges up to make room for the Sharpe sub-line once known
-    const codeY = (y + (best !== undefined ? 0.5 : 3.5)).toFixed(1);
-    const codeTxt = `<text x="${lx}" y="${codeY}" fill="${on ? "var(--text-hi)" : "var(--text-lo)"}" style="font:${on ? "600" : "500"} 10px var(--mono)">${esc(c.code.replace(/^K/, ""))}</text>`;
-    let subTxt = "";
-    if (best) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="${on ? "var(--accent)" : "var(--text-faint)"}" style="font:500 8.5px var(--mono)">Sh ${best.sharpe.toFixed(1)}</text>`;
-    else if (best === null) subTxt = `<text x="${lx}" y="${(y + 11).toFixed(1)}" fill="var(--text-faint)" style="font:500 8.5px var(--mono)">—</text>`;
-    const tip = best ? ` — best Sharpe ${best.sharpe.toFixed(2)} (${best.strategy} ≥${(best.edge * 100).toFixed(0)}%, n=${best.n})` : (best === null ? " — too few trades" : "");
-    const klass = "mapdot" + (on ? " sel" : "") + (c.code === popCode ? " pop" : "") + (c.code === pulseCode ? " pulse" : "");
-    const ring = on ? `<circle class="sel-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r + 4}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>` : "";
-    return `<g class="${klass}" onclick="btSelectCity('${esc(c.code)}')"><title>${esc(c.label)} (${esc(c.code)})${esc(tip)} — click to load</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="transparent"/>${ring}<circle class="md" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="var(--bg-1)" stroke-width="${on ? 2 : 1.5}"/>${codeTxt}${subTxt}</g>`;
-  }).join("");
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polygon class="us-outline" points="${pts}" fill="rgba(56,189,248,0.04)" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round"/>${dots}</svg>`;
-}
-function locationMap(d) {
-  return `<div class="panel"><div class="panel-h"><h3>Select a location</h3><span class="meta">click a city → loads its best backtest · dots: best Sharpe (trailing 365d, as of today)</span></div><div style="padding:10px 12px"><div class="chart-wrap" id="locmap">${usMapSVG(bt.cityCode)}</div></div></div>`;
+// Inline best-Sharpe stat shown beside the city selector (replaces the map's
+// per-city Sharpe coloring). bestByCity[code] is seeded by recordBest() on load.
+function bestSharpeStat(code) {
+  const best = bestByCity[code];
+  if (best === undefined) return `<span class="bt-best"><span class="bt-best-k">best Sharpe</span><span class="bt-best-v muted">·</span></span>`;
+  if (best === null) return `<span class="bt-best"><span class="bt-best-k">best Sharpe</span><span class="bt-best-v muted" title="too few trades to score">n/a</span></span>`;
+  const col = btSharpeColor(best);
+  const tip = `best Sharpe ${best.sharpe.toFixed(2)} · ${best.strategy} ≥ ${(best.edge * 100).toFixed(0)}% · n=${best.n} (trailing 365d, as of today)`;
+  return `<span class="bt-best" title="${esc(tip)}"><span class="bt-best-k">best Sharpe</span><span class="bt-best-dot" style="background:${col};box-shadow:0 0 8px ${col}"></span><span class="bt-best-v mono" style="color:${col}">${best.sharpe.toFixed(2)}</span><span class="bt-best-s">${esc(best.strategy)} ≥${(best.edge * 100).toFixed(0)}%</span></span>`;
 }
 
 // ====================================================================
 // BACKTEST TAB render functions
 // ====================================================================
+// COMPACT RUN BAR — the "what am I looking at" context: city (+ its best-Sharpe
+// stat, carried over from the retired map), target date, the SIGNAL strategy
+// (drives the bracket ladder + trade table), and the ladder edge threshold.
 function controlsBar(d) {
   const blendAvailable = !!d.blend;
   const cityOpts = BT_CITIES.map(c => `<option value="${esc(c.code)}" ${c.code === bt.cityCode ? "selected" : ""}>${esc(c.label)} · ${esc(c.code)}</option>`).join("");
-  const platBtns = ["Kalshi", "Polymarket"].map(p => `<button class="${bt.platform === p ? "on" : ""}" onclick="btSetPlatform('${p}')">${p}</button>`).join("");
   const edgeOpts = [0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => `<option value="${v}" ${Math.abs(v - bt.bracketEdge) < 1e-9 ? "selected" : ""}>≥ ${(v * 100).toFixed(0)}%</option>`).join("");
-  return `<div class="panel"><div class="controls">
-    <div class="ctrl"><span class="cl">Platform</span><div class="seg">${platBtns}</div></div>
-    <div class="ctrl"><span class="cl">City</span><select onchange="btSelectCity(this.value)">${cityOpts}</select></div>
+  const strat = (id, label) => {
+    const dis = id !== "raw" && !blendAvailable;
+    return `<button class="${bt.strategy === id ? "on" : ""}" ${dis ? `disabled title="no blend model for this city"` : `onclick="btSetStrategy('${id}')"`}>${label}</button>`;
+  };
+  return `<div class="panel"><div class="controls bt-runbar">
+    <div class="ctrl"><span class="cl">City</span><div class="city-row"><select onchange="btSelectCity(this.value)">${cityOpts}</select>${bestSharpeStat(bt.cityCode)}</div></div>
     <div class="ctrl"><span class="cl">Target date</span><input type="date" value="${esc(bt.date || "")}" onchange="btSelectDate(this.value)"></div>
-    <div class="ctrl"><span class="cl">Strategy</span><div class="seg">
-      <button class="${bt.strategy === "raw" ? "on" : ""}" onclick="btSetStrategy('raw')">Raw Model</button>
-      <button class="${bt.strategy === "blend" ? "on" : ""}" ${blendAvailable ? "" : "disabled"} onclick="${blendAvailable ? "btSetStrategy('blend')" : ""}">Blend (Benter)</button>
-      <button class="${bt.strategy === "union" ? "on" : ""}" ${blendAvailable ? "" : "disabled"} onclick="${blendAvailable ? "btSetStrategy('union')" : ""}">Union (R + B)</button>
-    </div></div>
-    <div class="ctrl"><span class="cl">Edge filter</span><select onchange="btSetBracketEdge(this.value)">${edgeOpts}</select></div>
+    <div class="ctrl"><span class="cl" title="Raw model P, Benter blend, or their union — drives the bracket ladder + trade table below">Signal strategy</span><div class="seg">${strat("raw", "Raw")}${strat("blend", "Blend")}${strat("union", "Union")}</div></div>
+    <div class="ctrl"><span class="cl" title="A bracket fires when |model − market| clears this">Ladder edge</span><select onchange="btSetBracketEdge(this.value)">${edgeOpts}</select></div>
   </div></div>`;
 }
 
+// SIM RUN PARAMETERS — the daily-touched controls stay inline; the rare filters
+// (min entry, max signals/day, edge cap, depth cap) tuck behind an Advanced
+// disclosure that auto-opens if any of them is set off its default.
 function simControls() {
   const sizeBtns = ["unit", "amount", "kelly", "scaling"].map(s => `<button class="${bt.sizing === s ? "on" : ""}" onclick="btSetSizing('${s}')">${s}</button>`).join("");
   const simEdgeOpts = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70].map(v => `<option value="${v}" ${Math.abs(v - bt.simEdge) < 1e-9 ? "selected" : ""}>≥ ${(v * 100).toFixed(0)}%</option>`).join("");
@@ -983,17 +948,39 @@ function simControls() {
   const execOpts = [["market", "market — cross spread, 100% fill"], ["post_inside_spread", "post_inside_spread — 1¢ inside, ~75% fill"], ["market_plus_1", "market_plus_1 — ask + 1¢"], ["market_plus_2", "market_plus_2 — ask + 2¢"]].map(([v, l]) => `<option value="${v}" ${v === bt.exec ? "selected" : ""}>${l}</option>`).join("");
   const amtLabel = bt.sizing === "unit" ? "Contracts" : bt.sizing === "amount" ? "$ / trade" : "% bankroll";
   const amtStep = bt.sizing === "unit" ? "50" : bt.sizing === "amount" ? "5" : "1";
+  const advSet = bt.minEntry || bt.maxSignals || bt.edgeCap || Number(bt.depth) !== 500;
   return `<div class="controls sim-controls">
-    <div class="ctrl"><span class="cl">Bankroll</span><input type="number" value="${bt.bankroll}" step="100" min="100" onchange="btSetBankroll(this.value)"></div>
-    <div class="ctrl"><span class="cl">Edge filter</span><select onchange="btSetSimEdge(this.value)">${simEdgeOpts}</select></div>
-    <div class="ctrl"><span class="cl">Min entry</span><select onchange="btSetMinEntry(this.value)">${minEntryOpts}</select></div>
     <div class="ctrl"><span class="cl">Sizing</span><div class="seg">${sizeBtns}</div></div>
     <div class="ctrl"><span class="cl">${amtLabel}</span><input type="number" value="${bt.amount}" step="${amtStep}" onchange="btSetAmount(this.value)"></div>
-    <div class="ctrl" title="Anti-stacking: per-day, keep only top N signals by |edge|."><span class="cl">Max signals/day</span><select onchange="btSetMaxSignals(this.value)">${maxSigOpts}</select></div>
-    <div class="ctrl" title="Edge cap for sizing only."><span class="cl">Edge cap (size)</span><select onchange="btSetEdgeCap(this.value)">${edgeCapOpts}</select></div>
-    <div class="ctrl"><span class="cl">Execution</span><select onchange="btSetExec(this.value)">${execOpts}</select></div>
-    <div class="ctrl"><span class="cl">Depth cap</span><input type="number" value="${bt.depth}" step="50" onchange="btSetDepth(this.value)"></div>
+    <div class="ctrl"><span class="cl">Bankroll</span><input type="number" value="${bt.bankroll}" step="100" min="100" onchange="btSetBankroll(this.value)"></div>
+    <div class="ctrl"><span class="cl" title="Only simulate trades whose |edge| clears this">Sim edge</span><select onchange="btSetSimEdge(this.value)">${simEdgeOpts}</select></div>
+    <div class="ctrl"><span class="cl" title="Maker fill model — how the entry price is set and whether the order fills">Execution</span><select onchange="btSetExec(this.value)">${execOpts}</select></div>
+    <details class="adv" ${advSet ? "open" : ""}>
+      <summary><span class="adv-cap">Advanced</span>${advSet ? `<span class="adv-on">active</span>` : ""}</summary>
+      <div class="adv-row">
+        <div class="ctrl"><span class="cl" title="Skip trades cheaper than this entry">Min entry</span><select onchange="btSetMinEntry(this.value)">${minEntryOpts}</select></div>
+        <div class="ctrl"><span class="cl" title="Anti-stacking: per day, keep only the top N signals by |edge|">Max signals/day</span><select onchange="btSetMaxSignals(this.value)">${maxSigOpts}</select></div>
+        <div class="ctrl"><span class="cl" title="Cap the edge used for position sizing (sizing only)">Edge cap (size)</span><select onchange="btSetEdgeCap(this.value)">${edgeCapOpts}</select></div>
+        <div class="ctrl"><span class="cl" title="Max contracts available at the quoted price">Depth cap</span><input type="number" value="${bt.depth}" step="50" onchange="btSetDepth(this.value)"></div>
+      </div>
+    </details>
   </div>`;
+}
+
+// Independent SIM-strategy control, docked in the P&L panel header. Governs ONLY
+// the equity curve + the sim chips (a separate jsComputeSim call). null simStrategy
+// means "follow the signal strategy"; once the user picks here it stays locked,
+// with a one-click reset back to following.
+function simStrategyControl(d) {
+  const blendAvailable = !!d.blend;
+  const eff = bt.simStrategy || bt.strategy;
+  const following = bt.simStrategy === null;
+  const btn = (id, label) => {
+    const dis = id !== "raw" && !blendAvailable;
+    return `<button class="${eff === id ? "on" : ""}" ${dis ? `disabled title="no blend model for this city"` : `onclick="btSetSimStrategy('${id}')"`}>${label}</button>`;
+  };
+  const reset = following ? "" : `<button class="sim-strat-reset" title="follow the signal strategy again" onclick="btFollowSimStrategy()">↺ follow</button>`;
+  return `<div class="sim-strat" title="Strategy used for the simulation curve + chips only — independent of the ladder's signal strategy"><span class="sim-strat-k">Sim strategy${following ? `<span class="sim-strat-follow">follows signals</span>` : ""}</span><div class="seg">${btn("raw", "Raw")}${btn("blend", "Blend")}${btn("union", "Union")}</div>${reset}</div>`;
 }
 
 // ★ THE BRACKET LADDER — a vertical thermal probability ladder. Rows are
@@ -1107,6 +1094,41 @@ function blendPanel(d) {
   </div>`;
 }
 
+// MODEL CALIBRATION — reliability of the raw model probability over this city's
+// resolved trade history (data already in d.trades). Bins trades by modelP and
+// compares the predicted YES probability to the realized YES frequency, so a
+// fill that falls short of its market tick reads as miscalibration. Compact —
+// shares the diagnostics row with the Benter-blend panel.
+function calibrationPanel(d) {
+  const rs = (d.trades || []).filter(t => t.won !== null && t.modelP != null);
+  if (rs.length < 12) return "";                 // too little resolved history to be honest
+  const bands = [[0, 0.2], [0.2, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 1.0001]];
+  const agg = bands.map(([lo, hi]) => ({ lo, hi, n: 0, pred: 0, yes: 0 }));
+  rs.forEach(t => {
+    const p = t.modelP;
+    let bi = bands.findIndex(([lo, hi]) => p >= lo && p < hi);
+    if (bi < 0) bi = p >= 1 ? bands.length - 1 : 0;
+    const bracketYes = (t.side === "YES") ? !!t.won : !t.won;   // modelP pairs with the raw model side
+    agg[bi].n++; agg[bi].pred += p; agg[bi].yes += bracketYes ? 1 : 0;
+  });
+  const rows = agg.filter(g => g.n > 0).map(g => {
+    const pred = g.pred / g.n, act = g.yes / g.n, gap = act - pred;
+    const gapTone = Math.abs(gap) <= 0.08 ? "pos" : Math.abs(gap) <= 0.18 ? "warn" : "neg";
+    return `<div class="calib-row">
+      <span class="calib-band mono">${(g.lo * 100).toFixed(0)}–${(Math.min(g.hi, 1) * 100).toFixed(0)}%</span>
+      <span class="calib-track" title="predicted ${(pred * 100).toFixed(0)}% · realized ${(act * 100).toFixed(0)}%"><span class="calib-fill" style="width:${(act * 100).toFixed(1)}%"></span><span class="calib-pred" style="left:${(pred * 100).toFixed(1)}%"></span></span>
+      <span class="calib-act mono">${(act * 100).toFixed(0)}%</span>
+      <span class="calib-gap mono ${gapTone}">${gap >= 0 ? "+" : "−"}${Math.abs(gap * 100).toFixed(0)}</span>
+      <span class="calib-n mono muted">${g.n}</span>
+    </div>`;
+  }).join("");
+  return `<div class="panel calib-panel"><div class="panel-h"><h3>Model calibration</h3><span class="meta">raw model P vs realized · n=${rs.length}</span></div>
+    <div class="calib">
+      <div class="calib-row calib-head"><span class="calib-band">model P</span><span class="calib-track">realized ▮ predicted</span><span class="calib-act">real</span><span class="calib-gap">gap</span><span class="calib-n">n</span></div>
+      ${rows}
+    </div></div>`;
+}
+
 // ---- entrance animations (city·date change only) ----------------------------
 // changed=true (new city/date while the Backtest tab is visible) → panels
 // scroll-reveal, the balance chart draws on, and the metrics count up. Param /
@@ -1118,12 +1140,12 @@ const _btPrevVals = {};
 // Tween one metric cell to its already-rendered final value, preserving the
 // cell's exact final innerHTML (countUp() writes textContent, which would strip
 // the fc-stats °F <small> markup — so we drive rampClock ourselves here).
-function btCountEl(el, from, to, fmt) {
+function btCountEl(el, from, to, fmt, big) {
   if (!el) return;
   const finalHTML = el.innerHTML;
   if (from == null || from === to || RM.matches || typeof to !== "number" || !isFinite(to)) { el.innerHTML = finalHTML; return; }
   el.innerHTML = fmt(from);                                  // pre-paint at previous value (no flash)
-  rampClock(TICK_MS, easeOutCubic,
+  rampClock(big ? LOAD_MS : TICK_MS, big ? easeOutExpo : easeOutCubic,   // big = first-open "moment" (0→value, slow); else a quick prev→new tick
     e => { el.innerHTML = fmt(from + (to - from) * e); },
     () => { el.innerHTML = finalHTML; });                    // restore exact final
 }
@@ -1146,25 +1168,35 @@ function btDrawBalance(svg) {
 function btEnterAnimations(root, changed, d, sim) {
   // metric count-up specs — refresh the prev-value cache on EVERY render so a
   // later city change tweens from the last shown value; animate only on change.
+  // `sim` here is the PnL-sim (bt.simStrategy) that drives the headline chips.
   const bm = [...root.querySelectorAll(".bt-metrics .mv")];
   const fc = [...root.querySelectorAll(".fc-stats .mv")];
   const deg = v => (Math.round(v * 10) / 10) + "<small>°F</small>";
   const degI = v => Math.round(v) + "<small>°F</small>";
-  const specs = [
-    [bm[0], "final", sim.final, moneyPlain],
-    [bm[2], "sharpe", sim.sharpe, v => v.toFixed(2)],
-    [bm[3], "maxdd", sim.maxDDDollars, money],
-    [bm[4], "missed", sim.missed, v => String(Math.round(v))],
+  const pctI = v => Math.round(v) + "%";
+  const net = (sim.final || 0) - (Number(bt.bankroll) || 0);
+  const fm = (sim.filled || 0) + (sim.missed || 0);
+  const fillPct = fm > 0 ? (sim.filled / fm) * 100 : null;
+  const specs = [                                  // order MUST match the .bt-metrics cells in renderBacktest
+    [bm[0], "net", net, money],
+    [bm[1], "exp", sim.avg || 0, money],
+    [bm[2], "hit", (sim.win || 0) * 100, pctI],
+    [bm[3], "sharpe", sim.sharpe || 0, v => v.toFixed(2)],
+    [bm[4], "maxdd", sim.maxDDDollars || 0, money],
+    [bm[5], "fill", fillPct, pctI],
     [fc[0], "members", d.nMembers, v => String(Math.round(v))],
     [fc[1], "ensMean", d.ensMean, deg],
     [fc[2], "ensSpread", d.ensSpread, deg],
     [fc[3], "observed", d.observed, degI],
   ];
-  const doAnim = changed && activeTab === "backtest" && !RM.matches;
+  const onBacktest = activeTab === "backtest";
+  const doAnim = changed && onBacktest && !RM.matches;
+  const firstReveal = doAnim && !btIntroDone;       // first VISIBLE animated paint → count from 0 (the "moment")
+  if (onBacktest) btIntroDone = true;               // mark tab as shown (gates switchTab's one-time reveal force)
   for (const [el, k, to, fmt] of specs) {
-    const from = _btPrevVals[k];
+    const from = firstReveal ? 0 : _btPrevVals[k];
     _btPrevVals[k] = to;
-    if (doAnim) btCountEl(el, from, to, fmt);
+    if (doAnim) btCountEl(el, from, to, fmt, firstReveal);
   }
   if (!doAnim) return;
   btDrawBalance(root.querySelector('svg[data-chart="bal"]'));
@@ -1186,46 +1218,67 @@ function renderBacktest() {
   const root = document.getElementById("backtest-root");
   if (!BT) { root.innerHTML = `<div class="wrap"><div class="loading">Loading backtest…</div></div>`; return; }
   const d = BT;
-  const sim = jsComputeSim(d.trades || [], {
+  // TWO independent sims off the FROZEN jsComputeSim (called here, never edited):
+  //   simSig (signal strategy) → the trade-by-trade table, kept in lockstep with the ladder.
+  //   simPnl (sim strategy)    → the equity curve + the headline chips, independently strategizable.
+  // bt.simStrategy === null means the sim mirrors the signal strategy.
+  const simStrat = bt.simStrategy || bt.strategy;
+  const baseParams = {
     sizing: bt.sizing, edgeFilter: bt.simEdge, minEntry: bt.minEntry, amountDollars: Number(bt.amount) || 0,
     depthCap: Number(bt.depth) || 0, execution: bt.exec, startingBankroll: bt.bankroll,
-    strategy: bt.strategy, maxSignals: Number(bt.maxSignals) || 0, edgeCap: Number(bt.edgeCap) || 0,
-  });
+    maxSignals: Number(bt.maxSignals) || 0, edgeCap: Number(bt.edgeCap) || 0,
+  };
+  const simSig = jsComputeSim(d.trades || [], { ...baseParams, strategy: bt.strategy });
+  const simPnl = (simStrat === bt.strategy) ? simSig : jsComputeSim(d.trades || [], { ...baseParams, strategy: simStrat });
+
   const btKey = (d.code || "") + "|" + (bt.date || "");
   const changed = btKey !== _btLastKey;          // new city/date vs. a param/slider tweak
   _btLastKey = btKey;
   const noData = (!d.trades || d.trades.length === 0);
   const backfilling = noData ? `<div class="bt-backfilling">⏳ ${esc(d.city)}: backtest data is still backfilling (forecast history for this city's traded dates hasn't finished downloading). Best-results will load automatically once it's ready — no action needed.</div>` : "";
-  const simMeta = `${esc(d.city)} · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%${bt.minEntry ? " · entry ≥ " + bt.minEntry + "¢" : ""}`;
+
+  // headline economics (from simPnl) — lead with net edge / expectancy, not win-rate
+  const net = (simPnl.final || 0) - (Number(bt.bankroll) || 0);
+  const fm = (simPnl.filled || 0) + (simPnl.missed || 0);
+  const fillPct = fm > 0 ? (simPnl.filled / fm) * 100 : null;
+  const filledRecs = (simPnl.tradeRecords || []).filter(t => t.fill === "filled");
+  const avgEdge = filledRecs.length ? filledRecs.reduce((s, t) => s + Math.abs(t.stratEdge != null ? t.stratEdge : t.edge), 0) / filledRecs.length : null;
+  const avgEntry = filledRecs.length ? filledRecs.reduce((s, t) => s + (t.entry || 0), 0) / filledRecs.length : null;
+  const simMeta = `${esc(d.city)} · ${esc(simStrat)} · ${esc(bt.sizing)} · |edge| ≥ ${(bt.simEdge * 100).toFixed(0)}%`;
+  const ledger = `<div class="bt-ledger mono"><span><b>${simPnl.total || 0}</b> signals</span><span class="pos"><b>${simPnl.filled || 0}</b> filled</span><span class="${(simPnl.missed || 0) > 0 ? "warn" : "muted"}"><b>${simPnl.missed || 0}</b> missed</span><span class="muted"><b>${simPnl.pending || 0}</b> pending</span><span>avg edge <b>${avgEdge != null ? (avgEdge * 100).toFixed(0) + "%" : "—"}</b></span><span>avg entry <b>${avgEntry != null ? Math.round(avgEntry) + "¢" : "—"}</b></span></div>`;
+
+  const diag = [blendPanel(d), calibrationPanel(d)].filter(Boolean);
+  const diagRow = diag.length === 2 ? `<div class="grid g-2">${diag.join("")}</div>` : diag.join("");
+
   root.innerHTML = `<div class="wrap">` +
     controlsBar(d) +
-    locationMap(d) +
-    `<div class="section-label">Forecast — combined GEFS + ECMWF ensemble · ${esc(d.city)} · ${esc(bt.date || "")}</div>` +
+    `<div class="section-label">Forecast · ${esc(d.city)} · ${esc(bt.date || "")} <span class="sl-sub">combined GEFS + ECMWF ensemble</span></div>` +
     `<div class="grid" style="grid-template-columns:1.5fr 1fr">` +
       `<div class="panel"><div class="panel-h"><h3>Ensemble distribution</h3><span class="meta">${d.nMembers} members · EMOS Gaussian overlay</span></div><div style="padding:8px 8px 0"><div class="chart-wrap">${ensembleChartSVG(d)}</div></div><div class="ens-note"><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--cool),var(--temperate),var(--warm),var(--hot),var(--extreme))"></span>member highs (thermal)</span><span><span class="sw" style="background:linear-gradient(90deg,var(--cold),var(--temperate),var(--hot),var(--extreme));height:4px"></span>EMOS μ=${d.emosMu}° σ=${d.emosSigma}°</span><span><span class="sw" style="background:var(--text-lo)"></span>ensemble mean ${d.ensMean}°</span><span><span class="sw" style="background:var(--up)"></span>resolved high ${d.observed}°</span></div></div>` +
       `<div class="panel" style="display:flex;flex-direction:column"><div class="panel-h"><h3>Forecast summary</h3></div><div class="fc-stats" style="border-bottom:1px solid var(--border)">${BTMetric("Members", d.nMembers)}${BTMetric("Ens. mean", `${d.ensMean}<small>°F</small>`)}${BTMetric("Ens. spread", `${d.ensSpread}<small>°F</small>`)}${BTMetric("Resolved", `${d.observed}<small>°F</small>`)}</div><div style="padding:16px;display:flex;flex-direction:column;gap:14px;flex:1"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:600 11px/1 var(--ui);letter-spacing:.12em;text-transform:uppercase;color:var(--text-lo)">EMOS post-processed</span><span class="mono" style="font-size:18px;color:var(--text-hi)">μ ${d.emosMu}° · σ ${d.emosSigma}°</span></div><div class="mono" style="font-size:11.5px;line-height:1.7;color:var(--text-lo)">Rolling 45-day fit corrects ensemble under-dispersion. Bracket probabilities below integrate this Gaussian; edge = model − market mid.</div></div></div>` +
     `</div>` +
     edgeByBracketTable(d) +
-    blendPanel(d) +
-    `<div class="section-label">P&amp;L simulation — tweak the run parameters below</div>` +
-    `<div class="panel"><div class="panel-h"><h3>Simulation results</h3><span class="meta">${simMeta}</span></div>` +
+    diagRow +
+    `<div class="section-label">P&amp;L simulation <span class="sl-sub">curve &amp; chips follow the sim strategy · trade table follows the signal strategy</span></div>` +
+    `<div class="panel"><div class="panel-h"><h3>Simulation</h3>${simStrategyControl(d)}<span class="meta">${simMeta}</span></div>` +
       backfilling + simControls() +
       `<div class="bt-metrics" style="border-bottom:1px solid var(--border)">` +
-        BTMetric("Final balance", moneyPlain(sim.final || 0), pct(sim.ret || 0), (sim.ret || 0) >= 0 ? "pos" : "neg") +
-        BTMetric("Resolved", `${Math.round((sim.n || 0) * (sim.win || 0))}/${sim.n || 0}`, `${((sim.win || 0) * 100).toFixed(0)}% win rate`) +
-        BTMetric("Sharpe (ann.)", (sim.sharpe || 0).toFixed(2), "risk-adjusted", (sim.sharpe || 0) >= 1 ? "pos" : "") +
-        BTMetric("Max drawdown", money(sim.maxDDDollars || 0), `${pct(sim.maxDD || 0)} peak-to-trough`, "neg") +
-        BTMetric("Missed fills", sim.missed || 0, "maker didn't fill", (sim.missed || 0) > 0 ? "neg" : "") +
-        BTMetric("Filtered / total", `${sim.n || 0} / ${sim.total || 0}`, "filled / passed filter") +
+        BTMetric("Net P&L", money(net), pct(simPnl.ret || 0), net >= 0 ? "pos" : "neg") +
+        BTMetric("Expectancy", money(simPnl.avg || 0), "per filled trade", (simPnl.avg || 0) >= 0 ? "pos" : "neg") +
+        BTMetric("Hit rate", `${((simPnl.win || 0) * 100).toFixed(0)}%`, `${Math.round((simPnl.n || 0) * (simPnl.win || 0))}/${simPnl.n || 0} resolved`) +
+        BTMetric("Sharpe", (simPnl.sharpe || 0).toFixed(2), "annualized", (simPnl.sharpe || 0) >= 1 ? "pos" : "") +
+        BTMetric("Max drawdown", money(simPnl.maxDDDollars || 0), `${pct(simPnl.maxDD || 0)} peak→trough`, "neg") +
+        BTMetric("Fill rate", fillPct != null ? `${fillPct.toFixed(0)}%` : "—", `${simPnl.filled || 0} filled · ${simPnl.missed || 0} missed`, (fillPct != null && fillPct < 100) ? "warn" : "") +
       `</div>` +
-      `<div style="padding:12px 12px 4px"><div class="chart-wrap">${balanceChartSVG(sim.curve || [bt.bankroll, bt.bankroll], (sim.tradeRecords || []).filter(t => t.fill === "filled"))}</div></div>` +
-      `<div class="panel-b" style="padding-top:4px"><div class="chart-legend"><span><span class="sw" style="background:${(sim.ret || 0) >= 0 ? "var(--up)" : "var(--down)"}"></span>balance curve · start $${(sim.curve || [1000])[0].toLocaleString()} → $${(sim.final || 0).toLocaleString()}</span></div></div>` +
+      ledger +
+      `<div style="padding:12px 12px 4px"><div class="chart-wrap">${balanceChartSVG(simPnl.curve || [bt.bankroll, bt.bankroll], filledRecs)}</div></div>` +
+      `<div class="panel-b" style="padding-top:4px"><div class="chart-legend"><span><span class="sw" style="background:${net >= 0 ? "var(--up)" : "var(--down)"}"></span>equity · $${(simPnl.curve || [bt.bankroll])[0].toLocaleString()} → $${(simPnl.final || 0).toLocaleString()}</span><span><span class="sw" style="background:var(--down);opacity:.4;height:8px"></span>drawdown (underwater)</span></div></div>` +
     `</div>` +
-    tradeDetailTable(sim) +
+    tradeDetailTable(simSig) +
     strategyComparison(d.strat || []) +
   `</div>`;
   wireCharts(root);
-  btEnterAnimations(root, changed, d, sim);
+  btEnterAnimations(root, changed, d, simPnl);
 }
 
 // ====================================================================
@@ -1233,8 +1286,9 @@ function renderBacktest() {
 // ====================================================================
 function btSelectCity(code) { bt.cityCode = code; bt.date = null; loadBacktest(); }
 function btSelectDate(v) { bt.date = v; loadBacktest(); }
-function btSetPlatform(v) { bt.platform = v; renderBacktest(); }
-function btSetStrategy(v) { bt.strategy = v; renderBacktest(); }
+function btSetStrategy(v) { bt.strategy = v; renderBacktest(); }      // signal strategy → ladder + trade table (sim follows if unlocked)
+function btSetSimStrategy(v) { bt.simStrategy = v; renderBacktest(); } // PnL-sim strategy → curve + chips only (locks independence)
+function btFollowSimStrategy() { bt.simStrategy = null; renderBacktest(); }
 function btSetBracketEdge(v) { bt.bracketEdge = +v; renderBacktest(); }
 function btSetSimEdge(v) { bt.simEdge = +v; renderBacktest(); }
 function btSetMinEntry(v) { bt.minEntry = +v; renderBacktest(); }
@@ -1273,30 +1327,6 @@ function recordBest(p) {
   const today = new Date().toISOString().slice(0, 10);
   if (p.date && p.date !== today) return;
   bestByCity[p.code] = (p.trades && p.trades.length) ? findBestParams(p.trades) : null;
-}
-
-// Lazy background pass: fetch every city once, compute its best with the SAME
-// findBestParams the dashboard uses, and update the map's Sharpe labels as each
-// result lands. Runs at most once per session; server 5min cache keeps it cheap.
-async function sweepBest() {
-  if (bestSweepStarted) return;
-  bestSweepStarted = true;
-  for (const c of BT_CITIES) {
-    if (c.code in bestByCity) continue;
-    try {
-      const q = new URLSearchParams({ city: c.code, date: "", sizing: "unit", amount: 500, depth: 500, edge: 0.10 });
-      const r = await fetch("/api/backtest?" + q.toString());
-      const p = await r.json();
-      bestByCity[c.code] = (p.trades && p.trades.length) ? findBestParams(p.trades) : null;
-    } catch (e) { bestByCity[c.code] = null; }
-    refreshMapLabels();
-  }
-}
-
-// Re-render only the map (Sharpe labels) without disturbing the rest of the tab.
-function refreshMapLabels() {
-  const el = document.getElementById("locmap");
-  if (el) el.innerHTML = usMapSVG(bt.cityCode);
 }
 
 // ====================================================================
@@ -1340,7 +1370,6 @@ async function loadBacktest() {
     recordBest(BT);
     autoLoadBest();
     renderBacktest();
-    sweepBest();
   } catch (e) {
     const root = document.getElementById("backtest-root");
     root.innerHTML = `<div class="wrap"><div class="loading">Failed to load backtest: ${esc(String(e))}</div></div>`;
@@ -1389,8 +1418,12 @@ function switchTab(name) {
   } else {
     stopLivePolling();
     if (rl) rl.textContent = "backtest";
-    if (!BT) loadBacktest();
-    else sweepBest();
+    // First-reveal hook: the backtest payload is prefetched in init() while the
+    // Live tab is showing, so its first render happens hidden (no animation).
+    // On the FIRST switch to Backtest, force a re-render so the entrance ramp
+    // (count-ups + curve draw + panel reveal) fires now that the tab is visible.
+    if (!BT) loadBacktest();                 // still loading → its render will animate (tab now visible)
+    else if (!btIntroDone) { _btLastKey = null; renderBacktest(); }
   }
 }
 
