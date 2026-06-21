@@ -24,6 +24,11 @@ date, idea, evidence that prompted it. Nothing here is a commitment.
   replicates "helps KMDW/KDFW, hurts KNYC/KLAX" — so re-evaluate HRRR inclusion per-city at re-eval
   (likely add for KDFW; keep off NYC/LAX). Folds into the per-city param decision.
 - **2026-06-20 · Narrow live universe to demonstrated-edge cities + adopt per-city params.**
+  **FORMALIZED (doc-only) 2026-06-21 → [decisions/2026-06-21-live-universe-and-watchlist.md](decisions/2026-06-21-live-universe-and-watchlist.md).**
+  Live universe fixed at Chicago + Miami (already live); Seattle = monitor (below 2.5 bar, not live);
+  Dallas = paper-watchlist with a forward tracker (`scripts/analysis/dallas_watchlist.py`, Union T=0.25);
+  LA/Vegas rejected. No live params changed. Still open: adopting the diagnostic's per-city params vs
+  the current live KORD UNION config (separate execution/fill-rate thread), and the Chicago paper-vs-live gap.
   Per-city diagnostic (`docs/research/md/2026-06-20-per-city-strategy-diagnostic.md`):
   the 11-city baseline portfolio LOSES net of fees (−$149, Sharpe −2.62); only
   Chicago, Miami, Seattle are profitable at baseline AND in both history halves AND

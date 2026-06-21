@@ -29,7 +29,7 @@
 ## Product choices
 - **Daily HIGH** contracts (not lows): a lows experiment was **"decisively negative"** and removed; precipitation not tested.
 - **CF6, not ASOS/METAR**, as the observation/resolution source: Kalshi resolves on CF6, and a **0.3°F** discrepancy at a **2°F** bin boundary flips resolution — training on a different source would make backtested edge fictional.
-- **Why Chicago & Miami first** — *(inferred)*: geographic-regime diversity + major long-history stations + Kalshi availability; the actual selection reason isn't documented.
+- **Why Chicago & Miami first** — *(now data-driven, was inferred)*: the per-city diagnostic (2026-06-20) showed they are the **only two cities profitable at baseline AND both history halves AND walk-forward** — the all-11-city portfolio loses (−$149, Sharpe −2.62). The **live universe is formally fixed at Chicago + Miami**; Seattle is sign-robust but below the 2.5 deploy bar (not live, monitor); Dallas is a paper-watchlist (only city clearing OOS Sharpe>2.5, but on n=27 / negative baseline); LA + Vegas rejected. See [../decisions/2026-06-21-live-universe-and-watchlist.md](../decisions/2026-06-21-live-universe-and-watchlist.md).
 
 ## Sources
 - [Research.md](../../Research.md) (root, local-only), [../reference/roadmap.md](../reference/roadmap.md), [../reference/investor-overview.md](../reference/investor-overview.md), [../decisions/](../decisions/), `git log` (e.g. HRRR switch in `scripts/live_trade.py` CITY_CONFIG comments; Polymarket integration commit 2026-06-08), [src/weather_markets/polymarket.py](../../src/weather_markets/polymarket.py).

@@ -55,4 +55,4 @@ goals/capital → [goals-metrics.md](docs/context/goals-metrics.md).
 - Add **Polymarket** as a second trading venue (Kalshi was just the starting point; not rejected).
 - Ops hardening — **DB backups, WAL, log rotation, persistent dashboard service** (none exist yet; acknowledged as future work). See [deployment.md](docs/context/deployment.md).
 
-Still *inferred only* (minor): why Chicago & Miami were the first live cities.
+Live universe formally fixed at **Chicago + Miami** (per-city diagnostic 2026-06-20 → the only baseline+both-halves+walk-forward-robust cities); Seattle = monitor (below 2.5 bar), Dallas = paper-watchlist, LA/Vegas rejected. See [docs/decisions/2026-06-21-live-universe-and-watchlist.md](docs/decisions/2026-06-21-live-universe-and-watchlist.md).
