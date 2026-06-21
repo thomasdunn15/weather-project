@@ -159,9 +159,17 @@ class TestParity:
             f"amount-sizing drift: JS final {res_js['final']} vs Python {final_py}")
 
     def test_fee_formula_parity(self, js, py):
+        # JS and Python fee outputs must be byte-identical for BOTH the taker and
+        # the maker (post-only, ¼-rate) branch.
         for entry in (1, 7, 27, 50, 85, 99):
-            assert js.call("kalshiFeeCents", entry) == py["kalshi_fee_cents"](entry), (
-                f"fee drift at {entry}¢")
+            for maker in (False, True):
+                assert js.call("kalshiFeeCents", entry, maker) == py["kalshi_fee_cents"](entry, maker), (
+                    f"fee drift at {entry}¢ maker={maker}")
+        # 1-arg call (no maker) must still equal the taker rate in both sims.
+        assert js.call("kalshiFeeCents", 50) == py["kalshi_fee_cents"](50) == js.call("kalshiFeeCents", 50, False)
+        # The maker discount must actually bite at mid-prices (¼ rate ⇒ cheaper).
+        assert py["kalshi_fee_cents"](50, True) < py["kalshi_fee_cents"](50, False)
+        assert js.call("kalshiFeeCents", 50, True) < js.call("kalshiFeeCents", 50, False)
 
 
 # ---------------------------------------------------------------------------

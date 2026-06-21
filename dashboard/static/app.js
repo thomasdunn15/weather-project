@@ -314,10 +314,13 @@ function hashUnit(s) {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return ((h >>> 0) % 100000) / 100000;
 }
-function kalshiFeeCents(entry) {
+function kalshiFeeCents(entry, maker) {
+  // Byte-mirror of dashboard/sim_python.py kalshi_fee_cents (parity-tested).
+  // taker = 0.07·P·(1−P); maker (post-only/resting) = ¼ that rate (0.0175).
   if (entry <= 0 || entry >= 100) return 0;
   const p = entry / 100;
-  return Math.max(1, Math.ceil(0.07 * p * (1 - p) * 100));
+  const rate = maker ? 0.0175 : 0.07;
+  return Math.max(1, Math.ceil(rate * p * (1 - p) * 100));
 }
 function kellyFraction(pWin, entry) {
   if (entry <= 0 || entry >= 100) return 0;
@@ -510,7 +513,10 @@ function jsComputeSim(trades, params) {
     const recordedSide = t.pos;   // "BUY_YES" or "BUY_NO"
     const sideFlipped = stratSide !== recordedSide;
     const won = sideFlipped ? !t.won : !!t.won;
-    const feePer = kalshiFeeCents(entry) / 100;
+    // Maker fee only when we rested strictly inside the cross (post_inside &
+    // entry < crossEntry); same condition as the missed-fill model above.
+    const isMaker = (execution === "post_inside_spread" && entry < crossEntry);
+    const feePer = kalshiFeeCents(entry, isMaker) / 100;
     // RISK CONTROL C — edge cap for sizing. Edges above edgeCap get sized as
     // if they were edgeCap. Doesn't change which trades fire — only sizing.
     // Live config: 0.40 in both cities.
