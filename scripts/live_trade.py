@@ -175,8 +175,9 @@ CITY_CONFIG = {
         "model_source": "EMOS combined 00Z Dallas (rolling 45d)",
         "paper_model_source": "EMOS combined 00Z Dallas (rolling 45d)",
         "live_model_source_tag": "EMOS combined UNION raw25+blend10 00Z Dallas (rolling 45d) [LIVE]",
-        "decision_hour": 16,                    # 16:00 UTC — after 00Z ingest (IFS retry 13:00,
-        "decision_minute": 0,                   # GEFS/HRRR retries ≤14:30) and after KMIA's 15:30 decision.
+        "decision_hour": 16,                    # 16:02 UTC — after 00Z ingest (IFS retry 13:00, GEFS/HRRR
+        "decision_minute": 2,                   # retries ≤14:30) and after KMIA's 15:30; offset :02 to clear
+                                                # the 16:00 check_pipeline_health / */5 snapshot pile-up (OOM hygiene).
         "use_union": True,                      # KORD parity: union of raw + blend
         "use_blend": True,                      # blend coefficients computed (needs ≥100 settled paper rows)
         "edge_threshold": 0.25,                 # raw threshold (25%) — KORD parity

@@ -18,9 +18,12 @@ The live universe is now **Chicago + Miami + Dallas**.
 
 ## The evidence this overrides
 
-Source: per-city diagnostic `docs/research/md/2026-06-20-per-city-strategy-diagnostic.md`
-and the watchlist tracker `scripts/analysis/dallas_watchlist.py`. Memories
-`project_per_city_diagnostic_finding`, `feedback_deploy_bar`.
+Source: the committed per-city numbers in
+[2026-06-21-live-universe-and-watchlist.md](2026-06-21-live-universe-and-watchlist.md)
+and the watchlist tracker `scripts/analysis/dallas_watchlist.py` (run it for the live read).
+The fuller per-city diagnostic write-up
+(`docs/research/md/2026-06-20-per-city-strategy-diagnostic.md`) is a **local, uncommitted**
+research note (same numbers). Memories `project_per_city_diagnostic_finding`, `feedback_deploy_bar`.
 
 - **Production baseline (|edge| ≥ 0.10): LOSES** — **−$7.18, Sharpe −1.93**, and is
   **negative in BOTH history halves**. This is the honest full-sample read.
@@ -48,7 +51,7 @@ stays on paper. The operator is overriding to convert "paper-plausible" into "li
     "model_source":       "EMOS combined 00Z Dallas (rolling 45d)",
     "paper_model_source": "EMOS combined 00Z Dallas (rolling 45d)",
     "live_model_source_tag": "EMOS combined UNION raw25+blend10 00Z Dallas (rolling 45d) [LIVE]",
-    "decision_hour": 16, "decision_minute": 0,   # 16:00 UTC
+    "decision_hour": 16, "decision_minute": 2,   # 16:02 UTC (:02 offset = OOM hygiene)
     "use_union": True, "use_blend": True,
     "edge_threshold": 0.25,                # raw leg (KORD parity)
     "blend_edge_threshold": 0.10,          # blend leg (KORD parity)
@@ -73,13 +76,14 @@ daily as `"EMOS combined 00Z Dallas (rolling 45d)"` and that `dallas_watchlist.p
 `AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS` **300 → 325** (= Chicago $150 + Miami $150 + Dallas $25),
 `AGGREGATE_CUMULATIVE_KILL_DOLLARS` **1000 → 1075** (= $500 + $500 + Dallas $75).
 
-**Cron** (`docs/crontab.txt`): fires `0 16 * * *` (16:00 UTC) — after 00Z ingest (IFS 00Z
+**Cron** (`docs/crontab.txt`): fires `2 16 * * *` (16:02 UTC) — after 00Z ingest (IFS 00Z
 07 UTC + 13 UTC retry; GEFS/HRRR retries 13:46 & 14:30) and after KMIA's 15:30 decision, so
 no live-trade collision. KDFW is in `weather_markets.stations.STATIONS`, so the existing
 all-station 13:46 + 14:30 GEFS/IFS retries already refresh its 00Z forecasts (14:30 retry is
-90 min pre-decision) — no dedicated Dallas pre-trade re-ingest needed. The only job on the
-16:00 minute is the lightweight `check_pipeline_health.py`; the box already runs heavier
-concurrent ingest crons at 13:46 & 14:30, so the overlap is within tolerance.
+~90 min pre-decision) — no dedicated Dallas pre-trade re-ingest needed. The decision is
+offset to **:02** (not :00) to clear the exact-minute pile-up at 16:00 with
+`check_pipeline_health.py` + the `*/5` price/orderbook snapshots + the `0,30` monitor_fills —
+cheap insurance on a no-swap box where a prior concurrent-load spike OOM-killed Postgres.
 
 ## Dashboard
 
@@ -113,4 +117,6 @@ touched.
 [2026-06-21-live-universe-and-watchlist.md](2026-06-21-live-universe-and-watchlist.md) (superseded for Dallas) ·
 [../context/strategy.md](../context/strategy.md) · [../context/operations.md](../context/operations.md) ·
 [edge-test-protocol.md](edge-test-protocol.md) ·
-`docs/research/md/2026-06-20-per-city-strategy-diagnostic.md` · memory `feedback_deploy_bar`
+`scripts/analysis/dallas_watchlist.py` (live forward-OOS read) ·
+`docs/research/md/2026-06-20-per-city-strategy-diagnostic.md` (local, uncommitted) ·
+memory `feedback_deploy_bar`

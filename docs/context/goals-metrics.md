@@ -5,7 +5,7 @@
 ## TL;DR
 - **Capital base = $3,050** (real deployed starting capital). The `3050` returnPct denominator in `dashboard/data_live.py` is therefore **correct** — not a stale guess.
 - **Objective = prove a positive edge after fees**, not a fixed return/Sharpe/drawdown target. Judged by the validation milestones + bail criteria below.
-- **Live risk envelope:** KORD & KMIA each **$150 daily / $500 cumulative** kill, 500-contract cap; **aggregate $300 daily / $1,000 cumulative**; spread-regime 5¢.
+- **Live risk envelope:** KORD & KMIA each **$150 daily / $500 cumulative** kill, 500-contract cap; **KDFW (Dallas, added live 2026-06-22, operator override) $25 daily / $75 cumulative**, 50-contract cap; **aggregate $325 daily / $1,075 cumulative**; spread-regime 5¢.
 - **Bar to go live:** survive a strict Bonferroni-corrected edge test (only Chicago lifetime edge≥25% passed) + a 30-day no-tune window.
 
 ## Capital
@@ -27,7 +27,8 @@ The goal is to demonstrate real edge after fees, then scale carefully. Milestone
 |---|---|---|---|
 | KORD (Chicago) | $150 | $500 | unit 500, 500-contract cap, edge≥25% raw / 10% blend (UNION) |
 | KMIA (Miami) | $150 | $500 | unit 500, blend-only ≥10% |
-| Aggregate | $300 | $1,000 | `AGGREGATE_*` constants; + spread-regime 5¢ |
+| KDFW (Dallas) | $25 | $75 | unit 50, 50-contract cap, edge≥25% raw / 10% blend (UNION). **Added live 2026-06-22 as an operator override** of the OOS-Sharpe>2.5 bar — smallest envelope in the universe; see [../decisions/2026-06-22-dallas-live-override.md](../decisions/2026-06-22-dallas-live-override.md) |
+| Aggregate | $325 | $1,075 | `AGGREGATE_*` constants (= KORD+KMIA+KDFW); + spread-regime 5¢ |
 These numbers are **immutable during live trading** (see [conventions.md](conventions.md)); changing them needs a precommit.
 
 ## Bar to take a city live (expansion criteria)

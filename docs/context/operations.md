@@ -6,7 +6,7 @@
 - Everything runs from cron on the cloud server, all times **UTC**. Adding a city to `stations.STATIONS` auto-cascades to the ingest crons (no per-city lines).
 - Workflow rule: **edit `docs/crontab.txt`, then `crontab docs/crontab.txt`** to install — never edit the live crontab directly.
 - Logs in `/var/log/weather/*.log`. GRIB caches under `/home/tdunn/data/{gefs,hrrr,ifs}` are purged hourly (disk-full once crashed Postgres — safety-critical).
-- Kill switches are filesystem flags: `touch halt/KORD`, `halt/KMIA`, or `halt/ALL`.
+- Kill switches are filesystem flags: `touch halt/KORD`, `halt/KMIA`, `halt/KDFW`, or `halt/ALL`.
 
 ## Trading-day timeline (UTC)
 | time | job | what |
@@ -25,6 +25,7 @@
 | 14:45 | `paper_trade_log.py` | log the day's signals (all cities) |
 | **14:46** | `live_trade.py --city KORD --live` | **Chicago live order** |
 | **15:30** | `live_trade.py --city KMIA --live` | **Miami live order** |
+| **16:02** | `live_trade.py --city KDFW --live` | **Dallas live order** (added 2026-06-22, operator override; minimal size; :02 offset = OOM hygiene) |
 | 14:45→19:55 (tmux loop, self-healing every 5m) | `monitor_fills.py --loop 15` | 15s fill polling |
 | :00/:30 of 15–19 | `monitor_fills.py` | 30-min safety-net fill check |
 | 20:00 | `monitor_fills.py --cancel-unfilled` | cancel still-pending orders (no overnight carry) |
