@@ -84,6 +84,16 @@ CONFIGS: list[ScoringConfig] = [
     ScoringConfig("combined", ("gefs", "ifs")),
     ScoringConfig("combined_hrrr", ("gefs", "ifs", "hrrr")),
     ScoringConfig("avg_g_i", ("gefs", "ifs"), weighting="model", headline=False),
+    # ── ECMWF-AIFS (P1): decorrelated AI core on the same ECMWF Open Data channel.
+    #    AIFS-Single is one deterministic member (like HRRR) → flat member pool is
+    #    fine. AIFS-ENS is 50 perturbed members → MUST use weighting="model" so the
+    #    50 members don't swamp the 81-member gefs+ifs pool (the flat-pooling trap).
+    #    Each config is auto-scored only on days where every constituent model is
+    #    present, so combined_aifs_ens self-restricts to AIFS-ENS's ~11-mo sub-window.
+    ScoringConfig("aifs", ("aifs",), headline=False),
+    ScoringConfig("combined_aifs", ("gefs", "ifs", "aifs")),
+    ScoringConfig("aifs_ens", ("aifs_ens",), headline=False),
+    ScoringConfig("combined_aifs_ens", ("gefs", "ifs", "aifs_ens"), weighting="model"),
 ]
 
 # Raw models to fetch from the DB = union of every config's members.

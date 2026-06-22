@@ -62,6 +62,7 @@
 # on cache miss, so aggressive cleanup is harmless to correctness.
 0 * * * * find /home/tdunn/data/gefs -type f -mmin +180 -delete
 0 * * * * find /home/tdunn/data/hrrr -type f -mmin +180 -delete
+0 * * * * find /home/tdunn/data/aifs -type f -mmin +180 -delete
 
 # ECMWF 00 UTC run (all registered stations): try at 07:00 (normal publication
 # ~04:00 UTC + buffer), retry at 13:00. The 07:00 run catches the 90% case;
@@ -71,6 +72,15 @@
 # 1h 45min before the 14:45 paper-trade cron.
 0 7 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_00z.log 2>&1
 0 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_00z.log 2>&1
+
+# ECMWF-AIFS 00Z run (P1 evaluation — 8 staged stations only; AIFS-Single + AIFS-ENS).
+# AIFS lands on the same Open Data channel as IFS; ingest at 07:20 / retry 13:20
+# (offset from the 07:00/13:00 IFS lines so the 50-member ENS pull doesn't spike
+# RAM at the same instant on this no-swap box). Idempotent (ON CONFLICT DO NOTHING).
+# NOTE: goes live only once research/p1-aifs is merged (ingest_aifs_daily.py +
+# aifs.py are on that branch, not yet in the production checkout).
+20 7 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_aifs_daily.py >> /var/log/weather/aifs_00z.log 2>&1
+20 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_aifs_daily.py >> /var/log/weather/aifs_00z.log 2>&1
 
 # ECMWF 12 UTC run (all registered stations): try today (open data publishes ~17 UTC), fall back to yesterday on failure
 30 18 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py >> /var/log/weather/ecmwf.log 2>&1
