@@ -37,6 +37,22 @@ if _SCRIPTS not in _sys.path:
 
 
 
+# Kalshi series prefix → display city, for the "Other Cities" rollup sublabel.
+SERIES_CITY = {
+    "KXHIGHLAX": "LA", "KXHIGHTSEA": "Seattle", "KXHIGHNY": "New York",
+    "KXHIGHAUS": "Austin", "KXHIGHDEN": "Denver", "KXHIGHTDAL": "Dallas",
+    "KXHIGHTLV": "Las Vegas", "KXHIGHTNOLA": "New Orleans", "KXHIGHTPHX": "Phoenix",
+}
+
+# Cities deployed with capital — the dashboard's returnPct + reconciliation base.
+STARTING_CAPITAL = 3050.0
+
+# Verified non-trade credits Kalshi posted to the account outside of trading
+# (2026-06-21 audit): a $14.99 friend-referral incentive. Deposits ($3,050) +
+# realized trading P&L + this credit reconcile to account equity to the cent.
+KALSHI_NON_TRADE_CREDITS = 14.99
+
+
 # ----------------------------------------------------------------------
 # Data adapters: real DB/API → DASH payload shape expected by the design
 # ----------------------------------------------------------------------
@@ -62,24 +78,31 @@ def get_live_data(cfg: dict) -> dict:
 
     # Kalshi balance + open orders (best-effort: skip on auth error)
     balance = 0.0
+    kalshi_portfolio_value = None   # Kalshi's authoritative mark of ALL open positions
     open_orders_count = 0
     open_orders_contracts = 0
+    open_orders_collateral = 0.0   # cash locked in resting orders (qty × limit)
     open_orders_rows = []
     try:
         from weather_markets.kalshi_api import KalshiClient, parse_position, parse_count
         client = KalshiClient()
         bal_resp = client.get_balance()
         balance = float(bal_resp.get("balance_dollars", bal_resp.get("balance", 0) / 100))
+        if "portfolio_value" in bal_resp:
+            # cents → dollars; covers bot + manual positions across all markets
+            kalshi_portfolio_value = float(bal_resp.get("portfolio_value") or 0) / 100.0
         orders_resp = client.get_orders(status="resting", limit=50)
         for o in orders_resp.get("orders", []):
             rem = parse_count(o, "remaining_count_fp")
+            limit_cents = int(round(float(o.get("yes_price_dollars") or o.get("no_price_dollars") or 0) * 100))
             open_orders_count += 1
             open_orders_contracts += rem
+            open_orders_collateral += rem * limit_cents / 100.0
             open_orders_rows.append({
                 "ticker": _short_ticker(o.get("ticker", "")),
                 "side": o.get("side", "").upper(),
                 "qty": rem,
-                "limit": int(round(float(o.get("yes_price_dollars") or o.get("no_price_dollars") or 0) * 100)),
+                "limit": limit_cents,
                 "age": _fmt_age(o.get("created_time")),
             })
     except Exception:
@@ -124,6 +147,20 @@ def get_live_data(cfg: dict) -> dict:
             GROUP BY model_source
         """, (today, today))
         source_stats = {ms: (cum, td, tdo) for ms, cum, td, tdo in cur.fetchall()}
+
+        # "Other Cities" bucket: every Kalshi series EXCEPT Chicago/Miami rolled
+        # into one card. Aggregates by ticker series prefix (robust vs the
+        # model_source matching used for the two live cities) so manually-traded
+        # / reconciled markets (LA, Seattle, New York, …) surface on the dashboard.
+        cur.execute("""
+            SELECT COALESCE(SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL), 0)::float / 100,
+                   COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = %s AND settlement IS NOT NULL), 0)::float / 100,
+                   COUNT(*) FILTER (WHERE settlement IS NOT NULL),
+                   ARRAY_AGG(DISTINCT split_part(ticker, '-', 1)) FILTER (WHERE settlement IS NOT NULL)
+            FROM live_trades
+            WHERE split_part(ticker, '-', 1) NOT IN ('KXHIGHCHI', 'KXHIGHMIA')
+        """, (today,))
+        oc_realized, oc_today_realized, oc_n_settled, oc_series = cur.fetchone()
 
         # Today's filled orders
         cur.execute("""
@@ -182,6 +219,25 @@ def get_live_data(cfg: dict) -> dict:
     per_city_unreal = {}
     for p in positions_rows:
         per_city_unreal[p["city"]] = per_city_unreal.get(p["city"], 0) + p["unreal"]
+
+    # "Other Cities" card: everything that isn't Chicago (KORD) or Miami (KMIA).
+    # Unrealized = open-position marks for non-CHI/MIA stations (0 when flat).
+    oc_unreal = round(sum(p["unreal"] for p in positions_rows
+                          if p["city"] not in ("KORD", "KMIA")), 2)
+    other_cities = None
+    if (oc_n_settled or 0) > 0 or oc_unreal:
+        labels = ", ".join(SERIES_CITY.get(s, (s or "").replace("KXHIGH", ""))
+                           for s in sorted(oc_series or []))
+        other_cities = {
+            "name": "Other Cities",
+            "code": f"{len(oc_series or [])} series",
+            "model": "manual · reconciled",
+            "sub": labels,
+            "realized": round(oc_realized, 2),
+            "unrealized": oc_unreal,
+            "today": round(oc_today_realized + oc_unreal, 2),
+            "n": int(oc_n_settled or 0),
+        }
 
     cities_payload = []
     halt_dir = Path(__file__).parent.parent / "halt"
@@ -280,21 +336,39 @@ def get_live_data(cfg: dict) -> dict:
     today_unrealized = sum(p["unreal"] for p in positions_rows)
     n_open_contracts = sum(p["qty"] for p in positions_rows)
 
-    # Portfolio value = sum of (position size × side-appropriate close-now price)
-    # in YES-equivalent cents. For a YES position, close-value = qty × yes_bid.
-    # For a NO position, close-value = qty × NO bid = qty × (100 − yes_ask).
-    # We approximate using the position's mark (already side-adjusted to
-    # YES-equivalent close price).
-    portfolio_value = 0.0
+    # Account portfolio value. PREFER Kalshi's authoritative portfolio_value
+    # (get_balance) — it marks EVERY open position, including manual trades made
+    # outside the bot (e.g. cities the cron doesn't run). Computing it from
+    # live_trades alone undercounts the real account whenever you hold positions
+    # the bot didn't place. Fall back to the bot-position sum only if Kalshi
+    # didn't return the field.
+    bot_portfolio_value = 0.0
     for p in positions_rows:
         if p["side"] == "YES":
             # mark = yes_bid → position close value = qty × yes_bid / 100
-            portfolio_value += p["qty"] * p["mark"] / 100.0
+            bot_portfolio_value += p["qty"] * p["mark"] / 100.0
         else:
             # mark stored is yes_ask (YES-eq mark); NO close value = qty × (100 - yes_ask) / 100
-            portfolio_value += p["qty"] * (100 - p["mark"]) / 100.0
-    portfolio_value = round(portfolio_value, 2)
+            bot_portfolio_value += p["qty"] * (100 - p["mark"]) / 100.0
+    portfolio_value = round(kalshi_portfolio_value if kalshi_portfolio_value is not None
+                            else bot_portfolio_value, 2)
     total_account_value = round(balance + portfolio_value, 2)
+
+    # Balance reconciliation (verified 2026-06-21 against Kalshi, account flat):
+    #   $3,050 deposits + settled trading P&L + $14.99 referral = account equity.
+    # `reconciledEquity` is that flat-state identity; `balance` is live equity
+    # (cash + open-position marks) and differs intraday by whatever capital is
+    # currently deployed in open positions / resting orders. The gap is live
+    # exposure, not an error — a *persistent* gap when flat flags untracked P&L.
+    reconcile = {
+        "deposits": STARTING_CAPITAL,
+        "realized": round(cum_realized, 2),
+        "credit": KALSHI_NON_TRADE_CREDITS,
+        "reconciledEquity": round(STARTING_CAPITAL + cum_realized
+                                  + KALSHI_NON_TRADE_CREDITS, 2),
+        "balance": total_account_value,
+        "deployed": round(portfolio_value + open_orders_collateral, 2),
+    }
 
     return {
         "id": "live",
@@ -331,6 +405,8 @@ def get_live_data(cfg: dict) -> dict:
         "nextCron": next_cron,
         "series": series,
         "cities": cities_payload,
+        "otherCities": other_cities,
+        "reconcile": reconcile,
         "agg": agg,
         "positions": positions_rows,
         "signals": signals_rows,
@@ -367,10 +443,128 @@ def _fmt_age(ts: str | None) -> str:
         return "—"
 
 
+def _vwap_entry_yes(fills: list[dict], side: str) -> int | None:
+    """Actual average ENTRY price in YES-equivalent cents, from Kalshi fills for
+    one (ticker, side). Net of any partial closes (buys − sells on the held
+    side). Returns None if no net opening volume. This reflects real fills, so it
+    updates as you cross for better prices — unlike the bot's stored limit."""
+    price_key = "yes_price_dollars" if side == "yes" else "no_price_dollars"
+    net_c = 0.0
+    net_cost = 0.0
+    for f in fills:
+        if f.get("side") != side:
+            continue
+        cnt = float(f.get("count_fp", f.get("count", 0)) or 0)
+        price = float(f.get(price_key, 0) or 0)
+        sgn = 1.0 if f.get("action") == "buy" else -1.0
+        net_c += sgn * cnt
+        net_cost += sgn * cnt * price
+    if net_c <= 0:
+        return None
+    vwap_side = (net_cost / net_c) * 100.0          # cents on the side held
+    return int(round(vwap_side if side == "yes" else 100.0 - vwap_side))
+
+
 def _open_positions(today: date, live_marks: dict | None = None) -> list[dict]:
-    """Open positions = filled or partial_resting trades for today that haven't
-    settled yet. Marks to market using the live WS feed when available, else the
-    latest DB price snapshot.
+    """Open positions sourced LIVE from the Kalshi API (authoritative): every
+    held market — bot AND manual trades in cities the cron never runs — with the
+    real fill-VWAP entry, not the bot's limit price. Marks to market via the WS
+    feed, falling back to the DB price snapshot. Bracket/city metadata comes from
+    the `contracts` table. Falls back to the live_trades view if Kalshi is
+    unreachable. Returns {ticker, city, bracket, side, qty, avg, mark, unreal,
+    unrealPct, live}."""
+    live_marks = live_marks or {}
+    try:
+        from weather_markets.kalshi_api import KalshiClient
+        client = KalshiClient()
+        try:
+            pos_resp = client.get_positions()
+            held = []
+            for p in pos_resp.get("market_positions", []):
+                qty_signed = int(round(float(p.get("position_fp", p.get("position", 0)) or 0)))
+                if qty_signed != 0:
+                    held.append((p["ticker"], qty_signed))
+            if not held:
+                return []
+            fills_by: dict = {}
+            for f in client.get_fills(limit=200).get("fills", []):
+                fills_by.setdefault(f.get("ticker"), []).append(f)
+        finally:
+            client.close()
+
+        tickers = [t for t, _ in held]
+        meta: dict = {}
+        db_marks: dict = {}
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT ticker, station_id, bracket_type, strike_low, strike_high
+                           FROM contracts WHERE ticker = ANY(%s)""", (tickers,))
+            for tk, st, bt, sl, sh in cur.fetchall():
+                meta[tk] = (st, bt, sl, sh)
+            cur.execute("""SELECT DISTINCT ON (ticker) ticker, yes_bid, yes_ask
+                           FROM prices WHERE ticker = ANY(%s)
+                           ORDER BY ticker, snapshot_at DESC""", (tickers,))
+            for tk, yb, ya in cur.fetchall():
+                if yb is not None and ya is not None:
+                    db_marks[tk] = (int(yb), int(ya))
+
+        rows = []
+        for ticker, qty_signed in held:
+            side = "yes" if qty_signed > 0 else "no"
+            qty = abs(qty_signed)
+            avg_yes = _vwap_entry_yes(fills_by.get(ticker, []), side)
+            live_used = ticker in live_marks
+            if live_used:
+                yb, ya, _ts = live_marks[ticker]
+                mark = (int(yb), int(ya))
+            else:
+                mark = db_marks.get(ticker)
+            unreal_cents = 0
+            unreal_pct = 0
+            display_mark_yes_eq = avg_yes or 0
+            if avg_yes is not None and mark is not None:
+                yes_bid, yes_ask = mark
+                if side == "yes":
+                    per_contract = yes_bid - avg_yes
+                    cost_basis = avg_yes
+                    display_mark_yes_eq = yes_bid
+                else:
+                    per_contract = avg_yes - yes_ask
+                    cost_basis = 100 - avg_yes
+                    display_mark_yes_eq = yes_ask
+                unreal_cents = per_contract * qty
+                unreal_pct = (per_contract / cost_basis * 100) if cost_basis else 0
+            st, bt, sl, sh = meta.get(ticker, (ticker.split("-")[0], "", None, None))
+            if bt == "greater_than" and sl is not None:
+                bracket_lbl = f"≥{int(sl)+1}°F"
+            elif bt == "less_than" and sh is not None:
+                bracket_lbl = f"≤{int(sh)-1}°F"
+            elif sl is not None and sh is not None:
+                bracket_lbl = f"{int(sl)}–{int(sh)}°F" if int(sl) != int(sh) else f"{int(sl)}°F"
+            else:
+                bracket_lbl = ticker.split("-")[-1]
+            rows.append({
+                "ticker": _short_ticker(ticker),
+                "city": st,
+                "bracket": bracket_lbl,
+                "side": side.upper(),
+                "qty": qty,
+                "avg": avg_yes if avg_yes is not None else 0,
+                "mark": int(display_mark_yes_eq),
+                "unreal": round(unreal_cents / 100.0, 2),
+                "unrealPct": round(unreal_pct, 1),
+                "live": live_used,
+            })
+        rows.sort(key=lambda r: r["ticker"])
+        return rows
+    except Exception:
+        # Kalshi unreachable → fall back to the bot's DB view of open positions.
+        return _open_positions_from_db(today, live_marks=live_marks)
+
+
+def _open_positions_from_db(today: date, live_marks: dict | None = None) -> list[dict]:
+    """Fallback: open positions = filled or partial_resting trades for today that
+    haven't settled yet (bot only). Marks to market using the live WS feed when
+    available, else the latest DB price snapshot.
     Aggregates multiple orders on the same (ticker, side) into one position
     (weighted-average entry price).
     Returns list of {ticker, city, bracket, side, qty, avg, mark, unreal, unrealPct, live}.

@@ -83,6 +83,7 @@
 .wrap { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; max-width: 1640px; margin: 0 auto; }
 .grid { display: grid; gap: 14px; }
 .g-3 { grid-template-columns: repeat(3, 1fr); }
+.g-4 { grid-template-columns: repeat(4, 1fr); }
 .g-2 { grid-template-columns: 1fr 1fr; }
 
 /* ---------- panel primitive ---------- */

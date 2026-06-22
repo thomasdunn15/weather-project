@@ -9,6 +9,7 @@
   .hero { grid-template-columns: 1fr 1fr; }
   .hero > div:nth-child(2) { border-right: 0; }
   .g-3 { grid-template-columns: 1fr; }
+  .g-4 { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 720px) {

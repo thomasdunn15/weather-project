@@ -669,6 +669,7 @@ function liveHero(d) {
       <div class="k">Account balance</div>
       <div class="v sm" id="hero-balance" style="color:var(--text-hi)">${moneyPlain(d.balance)}</div>
       <div class="sub"><span>cash <b id="hero-cash">${moneyPlain(d.cashBalance)}</b></span><span>portfolio <b id="hero-portfolio">${moneyPlain(d.portfolioValue)}</b></span></div>
+      ${d.reconcile ? `<div class="sub recon" title="Verified 2026-06-21: deposits + settled trading P&amp;L + referral credit = account equity (when flat)"><span>${moneyPlain(d.reconcile.deposits)} dep</span><span>${money(d.reconcile.realized)} P&amp;L</span><span>${money(d.reconcile.credit)} ref</span><span class="eq">= ${moneyPlain(d.reconcile.reconciledEquity)}</span></div>` : ""}
     </div>
   </div>`;
 }
@@ -726,6 +727,18 @@ function cityCard(c) {
       <div class="m"><div class="ml">Today</div><div class="mv ${cls(c.today)}">${money(c.today)}</div><div class="ms">${c.orders} orders</div></div>
     </div>
     <div class="cfoot">${c.haltNote ? `<div class="halt-note">${esc(c.haltNote)}</div>` : `<div class="activity"><span>budget <b>$${c.budget}</b></span><span><b>${c.contracts.toLocaleString()}</b> contracts</span><span>edge ≥ <b>${esc(c.edgeThresh)}</b></span><span>size <b>${esc(c.stake)}</b></span></div>`}${riskBar("Cumulative", c.risk.cumUsed, c.risk.cumKill)}${riskBar("Today", c.risk.todayUsed, c.risk.todayKill)}</div>
+  </div>`;
+}
+
+function otherCitiesCard(c) {
+  return `<div class="panel city other">
+    <div class="ch"><span class="nm">${esc(c.name)}</span><span class="code">${esc(c.code)}</span><span class="badge other">manual</span><span class="model">${esc(c.model)}</span></div>
+    <div class="cbody">
+      <div class="m"><div class="ml">Realized</div><div class="mv ${cls(c.realized)}">${money(c.realized)}</div><div class="ms">settled</div></div>
+      <div class="m"><div class="ml">Unrealized</div><div class="mv ${cls(c.unrealized)}">${money(c.unrealized)}</div><div class="ms">open mark</div></div>
+      <div class="m"><div class="ml">Today</div><div class="mv ${cls(c.today)}">${money(c.today)}</div><div class="ms">${c.n} settled</div></div>
+    </div>
+    <div class="cfoot"><div class="activity"><span>includes <b>${esc(c.sub)}</b></span></div></div>
   </div>`;
 }
 
@@ -798,7 +811,7 @@ function renderLive() {
   root.innerHTML =
     killBanner(d) + liveHero(d) + statusStrip(d) +
     `<div class="section-label">Per-city · realized + unrealized + risk</div>` +
-    `<div class="grid g-3">${d.cities.map(cityCard).join("")}${aggRisk(d)}</div>` +
+    `<div class="grid ${d.otherCities ? "g-4" : "g-3"}">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
     `<div class="grid" style="grid-template-columns:1.45fr 1fr">` +
       `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
       positionsTable(d.positions) +

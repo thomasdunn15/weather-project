@@ -39,6 +39,8 @@
 .hero .v.sm { font-size: 40px; }
 .hero .sub { margin-top: 11px; display: flex; gap: 16px; font: 500 12px/1.3 var(--mono); color: var(--text-lo); flex-wrap: wrap; }
 .hero .sub b { color: var(--text-mid); font-weight: 600; border-radius: var(--r-sm); }
+.hero .sub.recon { margin-top: 6px; gap: 10px; font-size: 10.5px; color: var(--text-faint); }
+.hero .sub.recon .eq { color: var(--text-mid); }
 .hero .spark { position: absolute; right: 18px; bottom: 14px; opacity: 0.9; }
 .tag-pill { font: 600 10px/1 var(--mono); letter-spacing: 0.04em; padding: 3px 6px; border-radius: var(--r-sm); border: 1px solid var(--border-strong); color: var(--text-mid); }
 
@@ -89,6 +91,9 @@
 .badge { font: 600 9.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 7px; border-radius: 100px; border: 1px solid currentColor; }
 .badge.active { color: var(--up);   background: var(--up-dim); }
 .badge.halted { color: var(--warn); background: var(--warn-dim); }
+.badge.other  { color: var(--text-lo); background: var(--bg-3); }
+/* "Other Cities" rollup: subtle left accent so it reads as a roll-up, not a live city */
+.city.other { border-left: 2px solid var(--text-faint); }
 .city .cbody { display: grid; grid-template-columns: repeat(3, 1fr); }
 .city .cbody .m { padding: 13px 15px; border-right: 1px solid var(--border); }
 .city .cbody .m:last-child { border-right: 0; }
