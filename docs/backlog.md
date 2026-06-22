@@ -137,3 +137,23 @@ strategy); and a first-open entrance-animation fix. Deferred (not built):
   Brier) is the bigger analytics item already noted in the frontend plan above.
 - **Paper-vs-live divergence + fill-quality monitor** — still open from the
   frontend-optimization plan; out of scope for this display pass.
+
+## Execution policy — maker-vs-taker (research 2026-06-21, proposals only)
+
+See `docs/research/md/2026-06-21-execution-policy-maker-vs-taker.md`. Validate before any live change.
+
+- **Maker/taker-aware fee model (highest value, cheap).** `kalshi_fee_cents` charges a
+  flat 7% to all fills, but Kalshi maker fee is ~1.75%·P·(1−P) (¼ of taker; historically
+  resting orders were fee-exempt). Add a `maker: bool` param and re-run the P4
+  maker-vs-taker backtest — the maker case is currently understated by ~¾ of the fee
+  (~1¢/ctr at mid-price).
+- **Time-based re-quote in the fill loop.** `place_with_guaranteed_fill` only crosses on a
+  would-cross race, not on elapsed time. Add a monitor pass that crosses an unfilled maker
+  after T≈45m iff `|edge| ≥ Y_city` (cancel+repost; TIF is GTC-only). Per-city Y: KORD 0.25, KMIA 0.10, Dallas 0.25.
+- **Price-based depth/size cap.** Cap order `count` at depth available ≤ ask+2¢ (NOT
+  model-fair depth, which over-bets — `depthcap` realized −5.9¢/ctr on KORD; skill≠edge).
+  Matters mainly for Dallas (33% of signals have <500 model-+EV depth).
+- **Never marketable-sweep full size** (already true via `place_limit_order`; add an explicit guard). A 500-lot sweep walks ~25 levels and pays +2.7 to +7.2¢ over ask — erases the edge.
+- **Re-adjudicate the 2.5 OOS bar at ~60 days book / ≥30 live fills per city.** Current
+  12-day book + 3–4 OOS test days make the Sharpe ranking pure noise (bootstrap CIs span
+  zero). The binding constraint here is sample size, not policy design.

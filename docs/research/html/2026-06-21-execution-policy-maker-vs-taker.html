@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order-Entry Execution Policy: Resolving the Maker-vs-Taker Dilemma</title>
+<style>
+:root { --fg:#1a1a1a; --muted:#666; --accent:#0b8457; --border:#e2e2e2;
+  --bg:#fff; --code-bg:#f6f8fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:#fafafa; color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65; font-size:16px; }
+.paper { max-width:820px; margin:48px auto; padding:56px 64px; background:var(--bg);
+  border:1px solid var(--border); border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+h1 { font-size:2rem; line-height:1.2; margin:0 0 .25em;
+  border-bottom:2px solid var(--fg); padding-bottom:.3em; }
+h2 { font-size:1.35rem; margin:1.8em 0 .6em;
+  border-bottom:1px solid var(--border); padding-bottom:.2em; }
+h3 { font-size:1.1rem; margin:1.4em 0 .5em; }
+em { color:var(--muted); }
+a { color:#0366d6; text-decoration:none; }
+a:hover { text-decoration:underline; }
+table { border-collapse:collapse; width:100%; margin:1.2em 0; font-size:.93rem; }
+th, td { border:1px solid var(--border); padding:8px 12px; text-align:left; }
+th { background:var(--code-bg); font-weight:600; }
+tr:nth-child(even) td { background:#fbfbfb; }
+code { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.88em;
+  background:var(--code-bg); padding:.15em .4em; border-radius:4px; }
+pre { background:var(--code-bg); border:1px solid var(--border); border-radius:6px;
+  padding:14px 16px; overflow:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:1.2em 0; padding:.4em 1em; border-left:4px solid var(--accent);
+  background:#f7fbf9; color:var(--muted); }
+hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+@media print { body { background:#fff; }
+  .paper { border:none; box-shadow:none; margin:0; max-width:none; } }
+</style>
+</head>
+<body>
+<main class="paper">
+<h1 id="order-entry-execution-policy-resolving-the-maker-vs-taker-dilemma">Order-Entry Execution Policy: Resolving the Maker-vs-Taker Dilemma</h1>
+<p><em>2026-06-21 · status: draft</em></p>
+<h2 id="question">Question</h2>
+<p>Given a fired signal <code>(ticker, side, model edge E, current book)</code>, what <strong>order-entry
+policy</strong> maximizes <em>realized after-fee</em> edge and out-of-sample Sharpe? This is the
+maker-vs-taker dilemma: a marketable order fills but walks the book and inflates the
+average price; a passive limit gets a better price but may not fill. The goal is a
+concrete, implementable <strong>execution playbook</strong> (a decision rule with per-city
+parameters), validated walk-forward — for the live/watchlist cities KORD (primary),
+KMIA, and Dallas/KDFW. Read-only research; no live or config changes.</p>
+<h2 id="tldr-verdict">TL;DR / Verdict</h2>
+<p><strong>Confidence: medium on the price/structure conclusions, low on the Sharpe ranking.</strong></p>
+<ol>
+<li><strong>The dilemma is smaller than it looks at production scale, because the bot already
+   does the right thing: it posts resting GTC <em>limits</em>, never a marketable sweep.</strong> A
+   full-size (500-lot) sweep against the real book would walk ~25 levels and pay
+   <strong>+2.7¢ to +7.2¢ over the ask</strong> — enough to erase the entire (thin, uncertain) edge.
+   The single most important rule is therefore <strong>never send a marketable order for full
+   size</strong>; always rest a limit. The current code (<code>place_limit_order</code>) already complies.</li>
+<li><strong>Whether to rest at the ask (taker) or 1¢ inside (maker) is decided by the spread,
+   which is city-specific.</strong> KORD spreads are tight (median <strong>1¢</strong>) → on <strong>62%</strong> of KORD
+   signals there is <em>no maker room</em>, so crossing at the ask is correct. KMIA (median 3¢)
+   and Dallas (median 2¢) have real spread to capture.</li>
+<li><strong>Where a spread exists, posting inside is the better trade</strong>: it captures ~1–3¢ of
+   spread, and — critically — <strong>shows no adverse selection</strong> (on filled maker orders,
+   realized edge ≥ the taker edge in all three cities). The only cost of the maker is a
+   <strong>~50–70% fill rate within the actionable cron window</strong> (matching the live KMIA 52%),
+   versus ~90% for crossing.</li>
+<li><strong>Kalshi charges makers ~¼ the fee of takers</strong> (and historically zero). The project's
+   <code>kalshi_fee_cents</code> charges a flat 7% to <em>both</em>, so production backtests and this sim
+   <strong>understate the maker advantage by ~¾ of the fee</strong> (~1¢/contract at mid-price).</li>
+<li><strong>The deploy-bar question cannot be honestly answered on this data.</strong> With ~12 days
+   of book and 3–4 out-of-sample test days, the walk-forward OOS Sharpe is dominated by
+   noise and fill-volume artifacts, and bootstrap CIs on per-contract edge span zero for
+   every policy. <strong>No policy reliably clears 2.5 OOS here, and none can be shown to</strong> —
+   the honest read is <em>defer the Sharpe ranking; act on the mechanical price evidence.</em></li>
+</ol>
+<p><strong>Bottom line:</strong> the deployed <code>EXECUTION_MODE="smart"</code> (edge-aware cross-vs-post) with
+per-city thresholds is well-aligned with the evidence. The actionable improvements are
+(a) a maker/taker-aware fee model, (b) a depth/size cap for Dallas, and (c) a time-based
+re-quote. Execution recovers a few cents of an already-thin edge; it does not create edge.</p>
+<h2 id="methods-data">Methods &amp; Data</h2>
+<p><strong>All numbers net of Kalshi fees; read-only <code>SELECT</code>s + a stdlib simulation
+(<code>/tmp/exec_sim.py</code>); no DB writes, no <code>--live</code>.</strong> Worktree <code>research/exec-policy-maker-taker</code>.</p>
+<p>Internal sources:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Volume / window</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>live_trades</code></td>
+<td>40 orders, 2026-06-04→06-21</td>
+<td><strong>Ground-truth</strong> fill rates &amp; realized slippage (the live forward test)</td>
+</tr>
+<tr>
+<td><code>orderbook_snapshots</code></td>
+<td>14.7M rows, 2026-06-10→06-21 (~12 d), 888 tickers</td>
+<td>L2 depth ladder → simulate fills at realistic prices</td>
+</tr>
+<tr>
+<td><code>paper_trades</code></td>
+<td>signal universe; 89 dedup signals in the book window</td>
+<td>The fired-signal set (edge, side, quote, entry price)</td>
+</tr>
+<tr>
+<td><code>contracts</code> / <code>observations</code></td>
+<td>strikes + observed daily high</td>
+<td>Settlement → win/loss for realized PnL</td>
+</tr>
+</tbody>
+</table>
+<p>Code paths read (faithfully re-implemented in the sim): <code>dashboard/sim_python.py</code>
+(fee fn + execution modes), <code>scripts/live_trade.py</code> (<code>place_with_guaranteed_fill</code>,
+<code>EXECUTION_MODE="smart"</code>, <code>SMART_CROSS_EDGE_THRESHOLD</code>, <code>CITY_CONFIG</code>),
+<code>src/weather_markets/kalshi_api.py</code> (V2 <code>place_limit_order</code>: <code>post_only</code>,
+<code>time_in_force=GTC</code>, price levers, <code>POST /portfolio/events/orders</code>),
+<code>src/weather_markets/evaluation.py::contract_resolved_yes</code> (settlement convention),
+<code>scripts/analysis/dallas_watchlist.py</code> (PnL/Sharpe convention),
+<code>scripts/analysis/best_time_of_day.py</code>.</p>
+<p><strong>Book reconstruction.</strong> For each signal I take the latest orderbook snapshot at/before
+the decision time (<code>coalesce(market_snapshot_at, logged_at)</code>). Kalshi books are bids-only;
+the ask ladder for BUY_YES is synthesized from NO bids (<code>ask = 100 − no_bid</code>), per the
+production convention (<code>cross = 100 − best opposite bid</code>). The maker fill model uses the
+<strong>post-decision</strong> evolution: a passive buy at price <code>L</code> fills if the opposite-side bid
+ever reaches <code>≥ 100 − L</code> within a horizon (+30m / +60m / by-close). Settlement uses the
+integer daily high with the canonical bracket rule (<code>between</code> inclusive, <code>greater_than</code>
+strict <code>&gt;low</code>, <code>less_than</code> strict <code>&lt;high</code>).</p>
+<p><strong>Policies simulated</strong> at the production size of <strong>500 contracts</strong>: <code>market</code> (instant
+sweep), <code>limit_ask</code> (rest at the ask = <code>cross_at_ask</code>), <code>post1</code>/<code>post2</code> (maker 1¢/2¢
+inside), <code>premium1</code>/<code>premium2</code> (cross at ask+k), <code>smart</code> (cross if <code>|E|≥X</code> else post),
+<code>ladder</code> (50% take / 50% maker), <code>chase</code> (post, then cross at +60m), <code>depthcap</code> (buy only
+marginally +EV depth). Validation: walk-forward (params on first 70% of days, measured on
+last 30%) and bootstrap 95% CIs.</p>
+<p>External: optimal-execution / maker-taker microstructure literature and the current
+Kalshi fee schedule (cited below).</p>
+<h2 id="internal-findings">Internal Findings</h2>
+<h3 id="1-live-ground-truth-the-actual-per-city-fill-rate">1. Live ground truth — the actual per-city fill rate</h3>
+<p>The open "compute fill rate when asked" item, from the live <code>cross_at_ask</code>/<code>smart</code>
+forward test (Wilson 95% CI on order fill):</p>
+<table>
+<thead>
+<tr>
+<th>City (series)</th>
+<th>Orders</th>
+<th>Contract fill %</th>
+<th>Order fill % (95% CI)</th>
+<th>Unfilled orders</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>KORD</strong> <code>KXHIGHCHI</code></td>
+<td>25</td>
+<td><strong>90.0%</strong></td>
+<td>80% [61, 91]</td>
+<td>2</td>
+</tr>
+<tr>
+<td><strong>KMIA</strong> <code>KXHIGHMIA</code></td>
+<td>9</td>
+<td><strong>52.2%</strong></td>
+<td>56% [27, 81]</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>Dallas</strong> <code>KXHIGHTDAL</code></td>
+<td>0</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>KORD fills ~90% of contracts; KMIA only ~52% (its cancels cluster <em>before</em> 2026-06-17,
+when the smart threshold was 0.40 → KMIA never crossed → chronic missed fills; lowering
+it to 0.10 fixed this). <strong>Dallas has zero live fills</strong> — its book-sim below is entirely
+unvalidated by live data.</p>
+<h3 id="2-books-are-thin-at-the-touch-so-a-full-size-sweep-is-destructive">2. Books are thin at the touch — so a full-size sweep is destructive</h3>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>n</th>
+<th>qty@ask (median)</th>
+<th>qty@ask (p25)</th>
+<th>≥500 @ ask</th>
+<th>spread (median)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>34</td>
+<td>19</td>
+<td>8</td>
+<td><strong>9%</strong></td>
+<td><strong>1.0¢</strong></td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>12</td>
+<td>16</td>
+<td>8</td>
+<td>8%</td>
+<td>3.0¢</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>43</td>
+<td>39</td>
+<td>6</td>
+<td>5%</td>
+<td>2.0¢</td>
+</tr>
+</tbody>
+</table>
+<p>Only ~5–9% of signals have the full 500 lot resting at the best ask. <strong>A marketable
+500-lot order walks the book.</strong> Yet live <code>cross_at_ask</code> fills ~90% — because a <em>resting
+GTC limit</em> captures arriving flow over minutes that a single snapshot can't show. The
+lesson: a resting limit ≠ an instant sweep. The snapshot sim therefore gives a robust
+read on <strong>price</strong> (mechanical), an upper-bound on <strong>sweep slippage</strong>, and only a
+lower-bound on resting fill quantity (use the live numbers in §1 for that).</p>
+<h3 id="3-the-priceedge-frontier-size-500-net-fees-the-well-powered-result">3. The price/edge frontier (size 500, net fees) — the well-powered result</h3>
+<p><code>slip_vs_ask</code> is the deterministic, well-powered signal (the others are confounded by
+fill quantity and a tiny settled sample — see Limitations). Representative rows:</p>
+<p><strong>KORD/Chicago</strong> (n=34)</p>
+<table>
+<thead>
+<tr>
+<th>policy</th>
+<th>ctr fill %</th>
+<th>avg entry ¢</th>
+<th>slip vs ask ¢</th>
+<th>edge/ctr ¢</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>market (sweep)</td>
+<td>100%</td>
+<td>32.5</td>
+<td><strong>+4.31</strong></td>
+<td>−6.70</td>
+</tr>
+<tr>
+<td>limit_ask (cross)</td>
+<td>17%*</td>
+<td>28.1</td>
+<td>0.00</td>
+<td>−2.87</td>
+</tr>
+<tr>
+<td>post1 (maker)</td>
+<td>53%*</td>
+<td>27.5</td>
+<td><strong>−0.65</strong></td>
+<td>−2.13</td>
+</tr>
+<tr>
+<td>smart</td>
+<td>62%*</td>
+<td>27.7</td>
+<td>−0.42</td>
+<td>−2.39</td>
+</tr>
+</tbody>
+</table>
+<p><strong>KMIA/Miami</strong> (n=12)</p>
+<table>
+<thead>
+<tr>
+<th>policy</th>
+<th>ctr fill %</th>
+<th>avg entry ¢</th>
+<th>slip vs ask ¢</th>
+<th>edge/ctr ¢</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>market (sweep)</td>
+<td>100%</td>
+<td>49.6</td>
+<td>+2.69</td>
+<td>+6.38</td>
+</tr>
+<tr>
+<td>limit_ask (cross)</td>
+<td>22%*</td>
+<td>46.9</td>
+<td>0.00</td>
+<td>+9.18</td>
+</tr>
+<tr>
+<td>post1 (maker)</td>
+<td>84%*</td>
+<td>45.4</td>
+<td><strong>−1.50</strong></td>
+<td><strong>+10.64</strong></td>
+</tr>
+<tr>
+<td>chase</td>
+<td>62%*</td>
+<td>46.1</td>
+<td>−0.83</td>
+<td>+9.91</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Dallas/KDFW</strong> (n=43)</p>
+<table>
+<thead>
+<tr>
+<th>policy</th>
+<th>ctr fill %</th>
+<th>avg entry ¢</th>
+<th>slip vs ask ¢</th>
+<th>edge/ctr ¢</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>market (sweep)</td>
+<td>100%</td>
+<td>32.4</td>
+<td><strong>+7.22</strong></td>
+<td>−5.98</td>
+</tr>
+<tr>
+<td>limit_ask (cross)</td>
+<td>19%*</td>
+<td>25.2</td>
+<td>0.00</td>
+<td>+0.90</td>
+</tr>
+<tr>
+<td>post1 (maker)</td>
+<td>60%*</td>
+<td>23.8</td>
+<td>−1.44</td>
+<td>+0.15</td>
+</tr>
+<tr>
+<td>chase</td>
+<td>42%*</td>
+<td>24.8</td>
+<td>−0.35</td>
+<td>+1.25</td>
+</tr>
+</tbody>
+</table>
+<p>* <code>ctr fill %</code> here is <em>snapshot</em> fill (filled/requested against the frozen book); real
+resting GTC limits fill far more over time (live §1). It is <strong>not</strong> the policy's true fill
+rate — it is shown to expose that <code>limit_ask</code>'s "good" PnL/Sharpe elsewhere is a
+low-fill-volume artifact, not edge.</p>
+<p>The mechanical price ladder is unambiguous and certain: <strong>maker (−0.7 to −1.5¢ vs ask)
+&lt; limit@ask (0) &lt; premium (+0.5 to +1¢) &lt; sweep (+2.7 to +7.2¢)</strong>. Demanding immediacy
+for full size costs the most; posting inside captures the spread.</p>
+<h3 id="4-no-adverse-selection-on-filled-maker-orders">4. No adverse selection on filled maker orders</h3>
+<p>The classic fear: a resting order fills precisely when information has moved against it.
+Comparing the <strong>same signals</strong>, maker price vs taker price, on maker-filled orders:</p>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>maker-filled n</th>
+<th>edge @ maker ¢</th>
+<th>edge @ taker ¢</th>
+<th>price gain ¢</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>30</td>
+<td>−2.13</td>
+<td>−2.87</td>
+<td>+0.73</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>11</td>
+<td>+10.64</td>
+<td>+9.18</td>
+<td>+1.45</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>39</td>
+<td>+0.15</td>
+<td>−1.36</td>
+<td>+1.49</td>
+</tr>
+</tbody>
+</table>
+<p>In all three, the maker's price saving flows straight through to realized edge — i.e.
+<strong>resting orders are not picked off</strong> in these slow-information temperature markets. The
+maker's only real cost is <em>missed fills</em> (opportunity cost), not getting run over.</p>
+<h3 id="5-realistic-maker-fill-rate-book-model-by-horizon">5. Realistic maker fill rate (book model, by horizon)</h3>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>maker-eligible</th>
+<th>no-room (must cross)</th>
+<th>fill @30m</th>
+<th>fill @60m</th>
+<th>fill @close</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>13</td>
+<td><strong>21 (62%)</strong></td>
+<td>54%</td>
+<td>54%</td>
+<td>100%</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>10</td>
+<td>2</td>
+<td>60%</td>
+<td>70%</td>
+<td>100%</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>21</td>
+<td><strong>22 (51%)</strong></td>
+<td>43%</td>
+<td>48%</td>
+<td>90%</td>
+</tr>
+</tbody>
+</table>
+<p>Within the actionable cron window (~30–60m) maker capture is <strong>~50–70%</strong> — consistent
+with live KMIA (52%). It only reaches ~90–100% <em>by close</em>, which is too late to be useful
+(edge has decayed; near settlement). And on KORD, <strong>62% of signals have no maker room at
+all</strong> (1¢ spread) — there is simply nothing to capture, so crossing is correct.</p>
+<h3 id="6-depth-aware-size-cap-and-a-skill-vs-edge-warning">6. Depth-aware size cap — and a skill-vs-edge warning</h3>
+<p>Max marginally +EV contracts when sweeping to the <strong>model's</strong> fair value:</p>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>median N*</th>
+<th>p25 N*</th>
+<th>% signals N* &lt; 500</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>1894</td>
+<td>1172</td>
+<td>6%</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>1383</td>
+<td>1147</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>760</td>
+<td>395</td>
+<td><strong>33%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>At 500 lots KORD/KMIA almost never over-bet the model's edge; <strong>Dallas walks into
+negative model-edge depth 33% of the time</strong> → it needs a size cap. <strong>But</strong> the <code>depthcap</code>
+policy, which sizes to model-fair, <em>realizes</em> badly (−5.9¢/ctr on KORD) — because the
+model's fair value is over-optimistic (skill ≠ edge; the market does most of the work).
+<strong>Do not size to model-fair.</strong> Use a conservative price-based cap instead (don't buy
+beyond ask+2¢).</p>
+<h3 id="7-walk-forward-oos-sharpe-uninformative-on-12-days">7. Walk-forward OOS Sharpe — uninformative on 12 days</h3>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>train/test days</th>
+<th>best X (train)</th>
+<th>smart</th>
+<th>market</th>
+<th>limit_ask</th>
+<th>post1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>7 / 4</td>
+<td>0.25</td>
+<td>9.02</td>
+<td>−1.79</td>
+<td>13.59</td>
+<td>8.01</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>4 / 3</td>
+<td>0.40</td>
+<td>−2.85</td>
+<td>−5.64</td>
+<td>8.58</td>
+<td>−2.85</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>7 / 3</td>
+<td>0.50</td>
+<td>−8.24</td>
+<td>−0.61</td>
+<td>11.95</td>
+<td>−6.65</td>
+</tr>
+</tbody>
+</table>
+<p>These swing wildly with 3–4 test days and <code>limit_ask</code> "wins" only because it trades a
+tiny, cheap, fill-selected sliver — a <strong>low-fill artifact</strong>, not edge. Bootstrap 95% CIs
+on KORD per-contract edge confirm nothing is distinguishable:</p>
+<table>
+<thead>
+<tr>
+<th>policy</th>
+<th>n</th>
+<th>mean ¢</th>
+<th>95% CI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>market</td>
+<td>30</td>
+<td>−6.70</td>
+<td>[−21.6, +8.1]</td>
+</tr>
+<tr>
+<td>limit_ask</td>
+<td>30</td>
+<td>−2.87</td>
+<td>[−17.5, +11.8]</td>
+</tr>
+<tr>
+<td>post1</td>
+<td>30</td>
+<td>−2.13</td>
+<td>[−16.2, +12.8]</td>
+</tr>
+<tr>
+<td>smart</td>
+<td>30</td>
+<td>−2.39</td>
+<td>[−16.6, +12.9]</td>
+</tr>
+</tbody>
+</table>
+<p>Every CI spans zero and they overlap entirely. <strong>The fill-rate↔price↔Sharpe frontier
+resolves on price and fill, not on Sharpe</strong>, at this sample size. The P4 result (maker
+3.55 vs taker 2.25 OOS) used a much longer settled history; it is the better basis for the
+<em>Sharpe</em> claim, and it agrees in direction with the mechanical price evidence here.</p>
+<h3 id="8-time-of-day-lower-priority">8. Time-of-day (lower priority)</h3>
+<p><code>best_time_of_day.py</code> already covers KORD/KMIA and, by design, holds fill rate constant
+(assumes fills at cron-time) — so any apparent late-day P&amp;L edge there is a fill-rate
+artifact, not a time edge. With only ~12 days of intraday book, a per-hour execution
+optimum is <strong>underpowered</strong>; I did not extend it. The horizon table (§5) is the
+defensible time dimension: maker fills accrue over 30–60m, not instantly.</p>
+<h2 id="external-context">External Context</h2>
+<ul>
+<li><strong>Maker/taker &amp; adverse selection.</strong> The maker–taker design exists precisely because
+  posting visible limit orders invites adverse selection from informed flow, so exchanges
+  pay makers (rebate / lower fee) to compensate; optimal placement trades off execution
+  probability against picking-off risk. Our finding of <em>no</em> adverse selection is
+  consistent with a market where information arrives slowly and is largely already in the
+  public forecast — the maker is compensated (spread) without being systematically
+  run over.
+  (<a href="https://arxiv.org/pdf/1610.00261">arXiv:1610.00261</a>,
+  <a href="https://blogs.cfainstitute.org/marketintegrity/2014/12/18/hft-price-improvement-adverse-selection-an-expensive-way-to-get-tighter-spreads/">CFA Institute</a>)</li>
+<li><strong>Optimal execution / market impact.</strong> Splitting orders and using passive limits to
+  avoid sweeping the book is the standard remedy for temporary impact (Almgren–Chriss
+  lineage; limit-vs-market execution with fill uncertainty).
+  (<a href="https://arxiv.org/pdf/1604.04963">arXiv:1604.04963</a>,
+  <a href="https://arxiv.org/pdf/1106.5040">arXiv:1106.5040</a>) — supports "never sweep full size."</li>
+<li><strong>Kalshi fee schedule (the material one).</strong> Taker fee <code>= ceil(0.07·P·(1−P)·100)¢</code>;
+  <strong>maker fee <code>≈ 1.75%·P·(1−P)</code>, one-quarter of the taker rate</strong> (2026), and Kalshi's own
+  guidance historically described <strong>resting orders as fee-exempt</strong>. Either way, the
+  project's <code>kalshi_fee_cents</code> (flat 7% for all fills) <strong>overcharges makers ~4×</strong>, making
+  the maker policy look worse than reality in backtests by ~¾ of the fee (~1¢/ctr at
+  mid-price; ~0 at the extremes due to the 1¢ floor).
+  (<a href="https://news.kalshi.com/p/makers-and-takers">Kalshi: Makers and Takers</a>,
+  <a href="https://marketmath.io/platforms/kalshi">Market Math: Kalshi fees 2026</a>)</li>
+</ul>
+<h2 id="limitations-threats-to-validity">Limitations &amp; Threats to Validity</h2>
+<ul>
+<li><strong>Tiny samples.</strong> 40 live orders (KORD n=25, KMIA n=9, Dallas n=0); ~12 days of book;
+  89 signals (81 settled); 3–4 walk-forward test days. The <strong>Sharpe and realized-edge
+  rankings are not statistically distinguishable</strong> (all bootstrap CIs span zero). Treat
+  every PnL/Sharpe number as illustrative, not decisive.</li>
+<li><strong>Snapshot fill understates resting depth.</strong> The book-sim fills against one frozen
+  snapshot, so it under-counts the liquidity a GTC limit captures over time (live proves
+  ~90% fill vs ~17% snapshot for KORD). The <strong>price</strong> results are robust (mechanical); the
+  <strong>fill-quantity / net$ / Sharpe</strong> results are not — lean on live §1 for fill rate.</li>
+<li><strong>No trade prints.</strong> Maker fill is inferred from book <em>touch</em> (opposite bid reaching our
+  price), not actual executions, and assumes full-size fill on touch (live suggests
+  partials). Queue position is not modeled.</li>
+<li><strong>Skill ≠ edge.</strong> <code>depthcap</code>-to-model-fair loses money: the model's edge is largely
+  illusory (market does most of the work). Execution can only <em>preserve</em> the small,
+  uncertain underlying edge — it cannot manufacture one. A policy that merely "improves
+  fill rate" at converged prices is a liquidity artifact.</li>
+<li><strong>Fee model bias.</strong> The flat-7% fee in code/sim understates the maker advantage; the
+  true maker edge is ~1¢/ctr better than every maker row above.</li>
+<li><strong>Dallas is unvalidated live</strong> (paper-watchlist only) and is <em>not</em> a robust-edge city
+  (per-city diagnostic) — its execution numbers are the least trustworthy.</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p>The deployed <code>EXECUTION_MODE="smart"</code> is already well-aligned with the evidence. Proposed
+<strong>execution playbook</strong> (decision rule; per-city parameters). Per CONFIG-FREEZE handling,
+each item is a <strong>backlog proposal, not an action</strong> (mirrored to <code>docs/backlog.md</code>):</p>
+<p><strong>Decision rule (per fired signal):</strong>
+1. <strong>Never send a marketable order for full size.</strong> Always a resting GTC limit. <em>(Already
+   true via <code>place_limit_order</code>; add an explicit guard that the requested <code>count</code> never
+   exceeds available depth at ≤ ask+2¢, so a fat-finger can't sweep.)</em>
+2. <strong>If spread ≤ 1¢ → cross at the ask</strong> (<code>limit = ask</code>, <code>post_only=False</code>). No maker room
+   to capture (KORD: 62% of signals).
+3. <strong>Else if <code>|E| ≥ X_city</code> → cross at the ask.</strong> High conviction ⇒ fill certainty
+   dominates the ~1–3¢ spread.
+4. <strong>Else → post 1¢ inside</strong> (<code>limit = best_bid+1</code>, <code>post_only=True</code>), GTC; <strong>re-quote</strong>:
+   if unfilled after <strong>T = 45 min</strong>, cross at the ask <strong>only if <code>|E| ≥ Y_city</code></strong>, else let
+   it expire. Captures spread (no adverse selection) while bounding missed-fill cost.
+5. <strong>Cap size</strong> at <code>min(unit_contracts, depth at price ≤ ask+2¢)</code> — a <em>price-based</em> cap,
+   <strong>not</strong> model-fair depth (which over-bets). Matters mainly for Dallas (33% of signals).</p>
+<p><strong>Per-city parameters</strong> (from spread structure + fill rates):</p>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>X (cross-if-edge≥)</th>
+<th>Y (re-quote cross-if-edge≥)</th>
+<th>T</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>0.40 <em>(current — keep)</em></td>
+<td>0.25</td>
+<td>45m</td>
+<td>Tight 1¢ spreads → mostly crosses anyway; maker matters only on the wide-spread tail</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>0.10 <em>(current — keep)</em></td>
+<td>0.10</td>
+<td>45m</td>
+<td>Wide 3¢ spreads + high maker edge (+10.6¢) &amp; no adverse selection → lean maker; the 0.40 era caused the 52% fill</td>
+</tr>
+<tr>
+<td>Dallas</td>
+<td>0.25 + <strong>size cap</strong></td>
+<td>0.25</td>
+<td>45m</td>
+<td>Watchlist only; add the price-based size cap; do not promote on execution numbers</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Concrete backlog items (proposals — validate before any live change):</strong>
+1. <strong>Maker/taker-aware fee model.</strong> Make <code>kalshi_fee_cents</code> take a <code>maker: bool</code> and apply
+   ~1.75%·P·(1−P) (or 0) for <code>post_only</code> fills. Re-run the P4 maker-vs-taker backtest with
+   it — the maker case is currently understated by ~¾ of the fee. <em>(Highest value: cheap,
+   improves every backtest's accuracy.)</em>
+2. <strong>Time-based re-quote in the fill loop.</strong> <code>place_with_guaranteed_fill</code> only crosses on a
+   would-cross race, not on elapsed time. Add a monitor pass that crosses an unfilled
+   maker after T=45m iff <code>|E| ≥ Y</code>. (TIF is GTC-only — no IOC exposed — so this is a
+   cancel+repost, which <code>kalshi_api</code> already supports via <code>DELETE /portfolio/orders/{id}</code>.)
+3. <strong>Price-based depth/size cap</strong> for thin books (Dallas), as in rule 5.
+4. <strong>Keep accumulating orderbook + live fills.</strong> The binding constraint on <em>this</em> question
+   is sample size: re-run this study at ~60 days of book / ≥30 live fills per city before
+   trusting any OOS Sharpe ranking or a finely-tuned threshold.</p>
+<p><strong>Does it clear the 2.5 OOS bar?</strong> Not answerable on 12 days (CIs span zero; OOS Sharpe is
+noise/artifact). The mechanical evidence (never sweep; capture spread where it exists;
+maker isn't adversely selected; maker fees are ~4× overcharged in code) all points the
+same direction as the longer-history P4 result (maker 3.55 &gt; taker 2.25), which remains
+the better basis for the Sharpe claim. <strong>Recommendation: keep <code>smart</code>, fix the fee model,
+add the re-quote + Dallas size cap — and re-adjudicate the bar on a larger forward sample.</strong></p>
+<h2 id="sources">Sources</h2>
+<p>External:
+1. Limit Order Strategic Placement with Adverse Selection Risk — https://arxiv.org/pdf/1610.00261
+2. Optimal Execution of Limit and Market Orders with Fill Uncertainty — https://arxiv.org/pdf/1604.04963
+3. Optimal HFT with limit and market orders — https://arxiv.org/pdf/1106.5040
+4. CFA Institute — Price Improvement &amp; Adverse Selection — https://blogs.cfainstitute.org/marketintegrity/2014/12/18/hft-price-improvement-adverse-selection-an-expensive-way-to-get-tighter-spreads/
+5. Kalshi — Makers and Takers (resting orders fee-exempt) — https://news.kalshi.com/p/makers-and-takers
+6. Market Math — Kalshi Fees 2026 (maker = ¼ taker) — https://marketmath.io/platforms/kalshi</p>
+<p>Internal (reproducible):
+- <code>psql -d weather</code> SELECTs on <code>live_trades</code>, <code>orderbook_snapshots</code>, <code>paper_trades</code>, <code>contracts</code>, <code>observations</code> (see Methods).
+- Simulation: <code>/tmp/exec_sim.py</code> (stdlib + <code>psql COPY</code>; book reconstruction, 10 policies, settlement, adverse-selection, walk-forward, bootstrap CI). Net of Kalshi V2 fees.
+- Code re-implemented: <code>dashboard/sim_python.py</code> (<code>kalshi_fee_cents</code>, execution modes), <code>scripts/live_trade.py</code> (<code>place_with_guaranteed_fill</code>, <code>resolve_exec_path</code>, <code>SMART_CROSS_EDGE_THRESHOLD</code>, <code>CITY_CONFIG</code>), <code>src/weather_markets/kalshi_api.py</code> (<code>place_limit_order</code>), <code>src/weather_markets/evaluation.py</code> (<code>contract_resolved_yes</code>), <code>scripts/analysis/dallas_watchlist.py</code>.</p>
+</main>
+</body>
+</html>
