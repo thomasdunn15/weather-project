@@ -234,8 +234,14 @@ class KalshiClient:
         rejects the order if it would cross the spread (i.e. immediately execute
         against the book). Caller can override for cross-spread fallback later.
 
-        side='yes' means buying a YES contract; price_cents is set as yes_price.
-        side='no'  means buying a NO  contract; price_cents is set as no_price.
+        Wire format is Kalshi's V2 order schema (POST /portfolio/events/orders),
+        which quotes everything from the YES leg:
+          side='yes' (buy YES) -> v2 side='bid', price = price_cents/100
+          side='no'  (buy NO)  -> v2 side='ask', price = (100 - price_cents)/100
+        (selling YES at 1-p is economically buying NO at p). count and price go
+        on the wire as fixed-point dollar STRINGS; the v1 yes_price/no_price/type
+        fields are gone, and time_in_force + self_trade_prevention_type are now
+        required.
         """
         if side not in ("yes", "no"):
             raise ValueError(f"side must be 'yes' or 'no', got {side!r}")
@@ -244,22 +250,30 @@ class KalshiClient:
         if count < 1:
             raise ValueError(f"count must be >= 1, got {count}")
 
+        if action != "buy":
+            raise ValueError(
+                f"only action='buy' is supported (V2 expresses a sell as the "
+                f"opposite YES leg); got {action!r}"
+            )
+        # Translate to the V2 YES-leg quote: buy YES -> bid @ p; buy NO -> ask @ (1-p).
+        if side == "yes":
+            v2_side, yes_price_cents = "bid", price_cents
+        else:
+            v2_side, yes_price_cents = "ask", 100 - price_cents
+
         body: dict[str, Any] = {
             "ticker": ticker,
-            "action": action,
-            "side": side,
-            "count": count,
-            "type": "limit",
+            "side": v2_side,
+            "count": str(int(count)),
+            "price": f"{yes_price_cents / 100:.4f}",
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": "taker_at_cross",
             "post_only": post_only,
         }
-        if side == "yes":
-            body["yes_price"] = price_cents
-        else:
-            body["no_price"] = price_cents
         if client_order_id is not None:
             body["client_order_id"] = client_order_id
 
-        return self._request("POST", "/portfolio/orders", json=body)
+        return self._request("POST", "/portfolio/events/orders", json=body)
 
     def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order by Kalshi order_id. Returns the updated order."""
