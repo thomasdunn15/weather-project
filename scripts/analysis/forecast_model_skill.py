@@ -81,8 +81,10 @@ CONFIGS: list[ScoringConfig] = [
     ScoringConfig("gefs", ("gefs",)),
     ScoringConfig("ifs", ("ifs",)),
     ScoringConfig("hrrr", ("hrrr",), headline=False),
+    ScoringConfig("nbm", ("nbm",), headline=False),          # NBM core alone (pooled-skill table)
     ScoringConfig("combined", ("gefs", "ifs")),
     ScoringConfig("combined_hrrr", ("gefs", "ifs", "hrrr")),
+    ScoringConfig("combined_nbm", ("gefs", "ifs", "nbm")),    # Phase-1: + NBM calibrated daily-Tmax
     ScoringConfig("avg_g_i", ("gefs", "ifs"), weighting="model", headline=False),
 ]
 

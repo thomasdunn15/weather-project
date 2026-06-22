@@ -86,6 +86,16 @@
 # Clean up ECMWF GRIB cache hourly (see GEFS/HRRR cleanup note above for why).
 0 * * * * find /home/tdunn/data/ifs -type f -mmin +180 -delete
 
+# NBM 00Z run (Phase-1 staged stations): NOAA National Blend of Models calibrated
+# daily-Tmax (model='nbm'), for forecast-skill VALIDATION only — NOT in the trading
+# path. Try 09:00 UTC (NBM open-data on AWS lands ~03-05 UTC + buffer), retry 14:00.
+# Idempotent (ON CONFLICT DO NOTHING). NB: requires the research/p1-nbm branch to be
+# merged to main (adds scripts/ingest_nbm_daily.py + weather_markets/nbm.py).
+0 9 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_nbm_daily.py >> /var/log/weather/nbm.log 2>&1
+0 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_nbm_daily.py >> /var/log/weather/nbm.log 2>&1
+# Clean up NBM Herbie idx cache hourly (GRIBs are auto-removed at load by remove_grib).
+0 * * * * find /home/tdunn/data/_p1_nbm -type f -mmin +180 -delete
+
 # Paper-trading log: 14:45 UTC daily — 15 min after Kalshi discovery (14:30) and well before NYC peak heating (~18 UTC).
 # Uses 00Z ECMWF forecast (ingested at 07 UTC), trades against pre-convergence market.
 # KEPT RUNNING alongside live trading for diagnostic comparison (paper vs live divergence).
