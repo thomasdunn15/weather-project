@@ -25,7 +25,7 @@
 | 14:45 | `paper_trade_log.py` | log the day's signals (all cities) |
 | **14:46** | `live_trade.py --city KORD --live` | **Chicago live order** |
 | **15:30** | `live_trade.py --city KMIA --live` | **Miami live order** |
-| **16:02** | `live_trade.py --city KDFW --live` | **Dallas live order** (added 2026-06-22, operator override; minimal size; :02 offset = OOM hygiene) |
+| **17:32** | `live_trade.py --city KDFW --live` | **Dallas live order** (2026-06-22 operator override; **full 500-size**; 17:32 per time-of-day study w/ fill caveat; :32 offset = OOM hygiene) |
 | 14:45→19:55 (tmux loop, self-healing every 5m) | `monitor_fills.py --loop 15` | 15s fill polling |
 | :00/:30 of 15–19 | `monitor_fills.py` | 30-min safety-net fill check |
 | 20:00 | `monitor_fills.py --cancel-unfilled` | cancel still-pending orders (no overnight carry) |

@@ -58,6 +58,17 @@ CITY_CONFIGS = {
         "max_contracts": 500,
         "size_edge_cap": 0.40,
     },
+    "KDFW": {                                      # production live config (2026-06-22 override, full size)
+        "model_source": "EMOS combined 00Z Dallas (rolling 45d)",
+        "strategy": "union",
+        "raw_edge_threshold": 0.25,
+        "blend_edge_threshold": 0.10,
+        "max_signals_per_day": 99,                 # no anti-stacking in production KDFW
+        "sizing_mode": "unit",
+        "unit_contracts": 500,
+        "max_contracts": 500,
+        "size_edge_cap": 0.40,
+    },
 }
 
 def logit(p): p = max(0.001, min(0.999, p)); return math.log(p/(1-p))
@@ -84,7 +95,7 @@ def fit_blend(records):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--city", choices=["KORD", "KMIA", "both"], default="both")
+    parser.add_argument("--city", choices=["KORD", "KMIA", "KDFW", "both"], default="both")
     parser.add_argument("--start", default="2025-09-01")
     parser.add_argument("--end",   default="2026-06-09")
     args = parser.parse_args()

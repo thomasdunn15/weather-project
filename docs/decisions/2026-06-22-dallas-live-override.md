@@ -1,7 +1,28 @@
 # Dallas (KDFW) goes LIVE — operator override of the deploy bar, 2026-06-22
 
+> **REVISION 2026-06-22 (same day, after the section below was written).** The operator
+> made two further calls that change the risk profile materially:
+> 1. **Scaled Dallas from the initial MINIMAL 50 contracts to FULL 500** (KORD/KMIA parity:
+>    daily-loss $150, cumulative-kill $500, max-open 5000; aggregate → **$450 daily /
+>    $1,500 cumulative**). The "wrong call is cheap" framing below **no longer holds** — this
+>    is now a **full-size live bet on a config with no proven OOS edge**, taken on the
+>    operator's explicit instruction. This also pre-empts the doc's own "promote to full size
+>    only after forward OOS clears 2.5" gate — that gate was overridden too.
+> 2. **Moved the decision time 16:02 → 17:32 UTC** per the time-of-day study
+>    (`scripts/analysis/best_time_of_day.py --city KDFW`): the ~17:00–17:30 window had the
+>    highest in-sample P&L (17:30 total +$512 / t=2.59 vs 16:00 +$101 / t=0.54 over n=101).
+>    **Caveat:** that study assumes the order **fills** at the mid at every candidate time
+>    (fill rate not modeled) and 17:30 is the best of 14 times tested — so the move is a
+>    **forward experiment** to test whether the late-day effect is real or a fill mirage, not
+>    a proven optimum. `:32` offset (not `:30`) avoids the on-the-minute monitor_fills/`*/5`
+>    pile-up on the no-swap box.
+>
+> The original minimal-size rationale is preserved below for the record; the config block,
+> aggregate, cron, and graduation sections have been updated to the current full-size values.
+
 **Decision:** Take **Dallas (KDFW)** LIVE on Kalshi under the KORD-style **UNION-25%**
-rule, at **minimal size**, as a deliberate **OPERATOR OVERRIDE** of the standing
+rule — initially at **minimal size** (see revision above for the same-day scale-up to full
+size) — as a deliberate **OPERATOR OVERRIDE** of the standing
 **"out-of-sample walk-forward Sharpe > 2.5"** deploy bar. Dallas does **not** clear that
 bar on trustworthy evidence (see below). It goes live anyway — at the smallest risk
 envelope in the universe — specifically to **gather honest, forward live data** under
@@ -51,39 +72,43 @@ stays on paper. The operator is overriding to convert "paper-plausible" into "li
     "model_source":       "EMOS combined 00Z Dallas (rolling 45d)",
     "paper_model_source": "EMOS combined 00Z Dallas (rolling 45d)",
     "live_model_source_tag": "EMOS combined UNION raw25+blend10 00Z Dallas (rolling 45d) [LIVE]",
-    "decision_hour": 16, "decision_minute": 2,   # 16:02 UTC (:02 offset = OOM hygiene)
+    "decision_hour": 17, "decision_minute": 32,  # 17:32 UTC (time-of-day study; :32 offset = OOM hygiene)
     "use_union": True, "use_blend": True,
     "edge_threshold": 0.25,                # raw leg (KORD parity)
     "blend_edge_threshold": 0.10,          # blend leg (KORD parity)
     "smart_cross_edge_threshold": 0.40,    # exec (KORD parity)
     "sizing_mode": "unit",
-    "unit_contracts": 50,                  # MINIMAL — 10× smaller than KORD/KMIA (500)
+    "unit_contracts": 500,                 # FULL size — KORD/KMIA parity (scaled from 50 same day)
     "amount_dollars": 50.0,                # unused (sizing_mode=unit)
-    "max_contracts_per_trade": 50,
-    "daily_loss_limit_dollars": 25.0,      # tightest in the universe
-    "cumulative_kill_dollars": 75.0,       # tightest in the universe
-    "max_open_contracts": 500,             # 10× smaller than KORD/KMIA (5000)
+    "max_contracts_per_trade": 500,
+    "daily_loss_limit_dollars": 150.0,     # KORD/KMIA parity (scaled from $25)
+    "cumulative_kill_dollars": 500.0,      # KORD/KMIA parity (scaled from $75)
+    "max_open_contracts": 5000,            # KORD/KMIA parity (scaled from 500)
     "is_active": True,
 }
 ```
+
+(Original minimal-size config was unit 50 / daily $25 / cum $75 / max-open 500 / 16:02 UTC —
+scaled to the above on 2026-06-22 per the revision note at the top.)
 
 Strategy = **UNION**: fire if `|raw_edge| ≥ 0.25` OR `|blend_edge| ≥ 0.10`; raw side wins
 the tie-break (verified on live KORD: when both fire they agree). Model = EMOS "combined"
 (GEFS+IFS) 00Z, rolling 45d — the **same** signal `scripts/paper_trade_log.py` already logs
 daily as `"EMOS combined 00Z Dallas (rolling 45d)"` and that `dallas_watchlist.py` tracks.
 
-**Aggregate risk envelope** updated for the new city:
-`AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS` **300 → 325** (= Chicago $150 + Miami $150 + Dallas $25),
-`AGGREGATE_CUMULATIVE_KILL_DOLLARS` **1000 → 1075** (= $500 + $500 + Dallas $75).
+**Aggregate risk envelope** (after the full-size scale-up):
+`AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS` **300 → 450** (= Chicago $150 + Miami $150 + Dallas $150),
+`AGGREGATE_CUMULATIVE_KILL_DOLLARS` **1000 → 1500** (= $500 + $500 + Dallas $500).
+(Initial minimal-size step set these to 325 / 1075; the same-day full-size scale-up took them to 450 / 1500.)
 
-**Cron** (`docs/crontab.txt`): fires `2 16 * * *` (16:02 UTC) — after 00Z ingest (IFS 00Z
-07 UTC + 13 UTC retry; GEFS/HRRR retries 13:46 & 14:30) and after KMIA's 15:30 decision, so
-no live-trade collision. KDFW is in `weather_markets.stations.STATIONS`, so the existing
-all-station 13:46 + 14:30 GEFS/IFS retries already refresh its 00Z forecasts (14:30 retry is
-~90 min pre-decision) — no dedicated Dallas pre-trade re-ingest needed. The decision is
-offset to **:02** (not :00) to clear the exact-minute pile-up at 16:00 with
-`check_pipeline_health.py` + the `*/5` price/orderbook snapshots + the `0,30` monitor_fills —
-cheap insurance on a no-swap box where a prior concurrent-load spike OOM-killed Postgres.
+**Cron** (`docs/crontab.txt`): fires `32 17 * * *` (17:32 UTC; moved same-day from 16:02 per
+the time-of-day study — see revision note). Still after 00Z ingest (IFS 00Z 07 UTC + 13 UTC
+retry; GEFS/HRRR retries 13:46 & 14:30) and after KORD 14:46 / KMIA 15:30, so no live-trade
+collision. KDFW is in `weather_markets.stations.STATIONS`, so the existing all-station 13:46 +
+14:30 GEFS/IFS retries already refresh its 00Z forecasts (well before 17:32) — no dedicated
+Dallas pre-trade re-ingest needed. Offset to **:32** (not :30) to clear the on-the-minute
+pile-up with the `0,30` monitor_fills + `*/5` snapshots — cheap insurance on a no-swap box
+where a prior concurrent-load spike OOM-killed Postgres.
 
 ## Dashboard
 
@@ -97,20 +122,29 @@ touched.
 
 ## Graduation / exit criteria
 
-- **Promote to full size** only if the **forward** OOS holds **Sharpe > 2.5 on a
-  meaningfully larger sample** — re-evaluate once forward **n ≥ ~30** settled trades (the
-  n=27 blip is not enough), and ideally once baseline/both-halves turn positive. Track with:
-  ```
-  uv run python scripts/analysis/dallas_watchlist.py
-  ```
-  (the live FORWARD-OOS read is the verdict; the in-sample figures are context only).
-- **Halt immediately** if the cumulative-kill (−$75) trips, or by hand at any time:
+The original plan was to *promote to full size only after* forward OOS cleared 2.5; the
+same-day scale-up **pre-empted that gate**, so full size is now in place from the start and
+the forward-OOS read instead governs whether Dallas **stays live at full size** or is pulled.
+
+- **Validate forward** — re-evaluate once forward **n ≥ ~30** settled trades (the n=27 blip
+  is not enough), ideally once baseline/both-halves turn positive. Two things to confirm,
+  because of the full-size + 17:32 changes:
+  1. **Edge:** does the live FORWARD-OOS Sharpe actually hold **> 2.5**? Track with:
+     ```
+     uv run python scripts/analysis/dallas_watchlist.py
+     ```
+     (live forward read is the verdict; in-sample figures are context only).
+  2. **The 17:32 fill hypothesis:** do the late-day signals actually **fill** at the modeled
+     prices, or was the time-of-day P&L a fill mirage? Compare realized live fills vs the
+     in-sample assumption.
+- **Halt immediately** if the cumulative-kill (now **−$500**) trips, or by hand at any time:
   ```
   touch halt/KDFW      # per-city halt
   touch halt/ALL       # aggregate halt (stops KORD + KMIA + KDFW)
   ```
-- **Demote back to paper** if forward OOS confirms the diagnostic's "no robust edge" read
-  (negative or sub-bar on n ≥ ~30).
+- **Demote back to paper (or back to minimal size)** if forward OOS confirms the diagnostic's
+  "no robust edge" read (negative or sub-bar on n ≥ ~30). At full size this matters more — a
+  sub-bar Dallas now loses real money, not pennies.
 
 ## See also
 

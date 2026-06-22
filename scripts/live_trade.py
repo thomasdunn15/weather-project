@@ -159,10 +159,14 @@ CITY_CONFIG = {
         # blip (OOS Sharpe 4.52) that the per-city diagnostic itself flags as a
         # "tuned OOS blip, not trustworthy". At the production baseline it LOSES
         # (−$7.18, Sharpe −1.93) and is negative in BOTH history halves. Forward
-        # OOS is n=1; there are 0 live fills. This goes live anyway, at MINIMAL
-        # size, as a deliberate operator decision to gather honest live data —
-        # superseding the Dallas paper-watchlist status. Risk envelope is the
-        # smallest in the universe (unit 50, daily −$25, cumulative −$75).
+        # OOS is n=1; 0 live fills; only ~4.5mo tradeable history (Kalshi listed
+        # KXHIGHTDAL 2026-02-11). Live anyway, superseding the paper-watchlist.
+        #
+        # REVISED 2026-06-22 (same day): scaled from the initial MINIMAL 50-unit
+        # to FULL 500-unit at KORD/KMIA parity ($150 daily / $500 cum), and moved
+        # the decision to 17:32 UTC per the time-of-day study. ELEVATED RISK —
+        # this is now a full-size live bet on a config with NO proven OOS edge;
+        # watch closely, `touch halt/KDFW` to stop.
         # See docs/decisions/2026-06-22-dallas-live-override.md.
         #
         # Strategy mirrors KORD: UNION (raw |edge| ≥ 25% OR blend |edge| ≥ 10%),
@@ -175,28 +179,28 @@ CITY_CONFIG = {
         "model_source": "EMOS combined 00Z Dallas (rolling 45d)",
         "paper_model_source": "EMOS combined 00Z Dallas (rolling 45d)",
         "live_model_source_tag": "EMOS combined UNION raw25+blend10 00Z Dallas (rolling 45d) [LIVE]",
-        "decision_hour": 16,                    # 16:02 UTC — after 00Z ingest (IFS retry 13:00, GEFS/HRRR
-        "decision_minute": 2,                   # retries ≤14:30) and after KMIA's 15:30; offset :02 to clear
-                                                # the 16:00 check_pipeline_health / */5 snapshot pile-up (OOM hygiene).
+        "decision_hour": 17,                    # 17:32 UTC — per time-of-day study (best in-sample window
+        "decision_minute": 32,                  # ~17:00-17:30; FILL-RATE CAVEAT — validating forward). :32
+                                                # offset clears the 17:30 monitor_fills / */5 pile-up (OOM hygiene).
         "use_union": True,                      # KORD parity: union of raw + blend
         "use_blend": True,                      # blend coefficients computed (needs ≥100 settled paper rows)
         "edge_threshold": 0.25,                 # raw threshold (25%) — KORD parity
         "blend_edge_threshold": 0.10,           # blend threshold (10%) — KORD parity
         "smart_cross_edge_threshold": 0.40,     # exec: cross at ≥40% edge — KORD parity
         "sizing_mode": "unit",                  # fixed contract count per trade
-        "unit_contracts": 50,                   # MINIMAL size (10× smaller than KORD/KMIA's 500)
+        "unit_contracts": 500,                  # FULL size — KORD/KMIA parity (scaled from 50 on 2026-06-22)
         "amount_dollars": 50.0,                 # unused (sizing_mode=unit) — kept for reference
-        "max_contracts_per_trade": 50,          # depth cap (= unit_contracts — no over-bet)
-        "daily_loss_limit_dollars":     25.0,   # tightest in the universe (override → fail fast)
-        "cumulative_kill_dollars":      75.0,   # tightest in the universe (override → fail fast)
-        "max_open_contracts":          500,     # 10× smaller than KORD/KMIA's 5000
-        "is_active": True,                      # LIVE per operator override 2026-06-22
+        "max_contracts_per_trade": 500,         # depth cap (= unit_contracts)
+        "daily_loss_limit_dollars":    150.0,   # KORD/KMIA parity (scaled from $25)
+        "cumulative_kill_dollars":     500.0,   # KORD/KMIA parity (scaled from $75)
+        "max_open_contracts":         5000,     # KORD/KMIA parity (scaled from 500)
+        "is_active": True,                      # LIVE per operator override 2026-06-22 (full size)
     },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 325.0    # = Chicago $150 + Miami $150 + Dallas $25
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1075.0    # = Chicago $500 + Miami $500 + Dallas $75
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 450.0    # = Chicago $150 + Miami $150 + Dallas $150
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1500.0    # = Chicago $500 + Miami $500 + Dallas $500
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.

@@ -141,22 +141,22 @@
 # paper-watchlist in docs/decisions/2026-06-21-live-universe-and-watchlist.md).
 # Model:  KDFW with UNION strategy (raw |edge| ≥ 25% OR blend |edge| ≥ 10%),
 #         EMOS "combined" (GEFS+IFS) 00Z rolling 45d — same signal the paper cron logs.
-# Time:   16:02 UTC decision (CITY_CONFIG decision_hour=16/minute=2). Chosen because it is
-#         AFTER 00Z ingest (IFS 00Z lands 07 UTC w/ 13 UTC retry; GEFS/HRRR retries 13:46 & 14:30)
-#         and AFTER the KMIA 15:30 decision, so no live-trade collision. KDFW is in
-#         weather_markets.stations.STATIONS, so the existing all-station 13:46 + 14:30
-#         GEFS/IFS retries already refresh its 00Z forecasts (the 14:30 retry is only ~90 min
-#         before this decision) — no dedicated Dallas pre-trade re-ingest cron needed.
-#         Offset to :02 (not :00) to clear the exact-minute pile-up at 16:00 with
-#         check_pipeline_health.py + the */5 price/orderbook snapshots + the 0,30 monitor_fills.
-#         All are lightweight, but the box has NO swap (a prior concurrent-load spike OOM-killed
-#         Postgres and downed live trading), so the 2-min offset is cheap insurance.
-# Risk:   MINIMAL size — unit 50 contracts, per-city daily-loss −$25, cumulative-kill −$75,
-#         max-open 500 (all ~10× tighter than KORD/KMIA). Aggregate limits bumped to
-#         −$325 daily / −$1,075 cumulative (= +Dallas $25/$75). Fills are covered by the
-#         existing 15-19 UTC monitor + 14:45→19:55 realtime loop + 20:00 EOD cancel.
+# Time:   17:32 UTC decision (CITY_CONFIG decision_hour=17/minute=32). Moved here 2026-06-22 from
+#         16:02 per the time-of-day study (scripts/analysis/best_time_of_day.py --city KDFW): the
+#         ~17:00-17:30 window had the highest in-sample P&L. CAVEAT: that study assumes the order
+#         FILLS at the mid at every candidate time (fill rate is NOT modeled) and 17:30 is the best
+#         of 14 times tested — so this is treated as a FORWARD experiment to test whether the
+#         late-day effect is real or a fill mirage, not a proven optimum. Still AFTER the 00Z ingest
+#         (IFS 07 UTC + 13 UTC retry; GEFS/HRRR retries 13:46 & 14:30) and AFTER KORD 14:46 / KMIA
+#         15:30, so no live-trade collision. Offset to :32 (not :30) to clear the on-the-minute
+#         pile-up with the 0,30 monitor_fills + */5 snapshots — NO-swap box, OOM hygiene.
+# Risk:   FULL size (scaled up 2026-06-22 from the initial minimal 50) — unit 500 contracts,
+#         per-city daily-loss −$150, cumulative-kill −$500, max-open 5000 (KORD/KMIA parity).
+#         Aggregate limits bumped to −$450 daily / −$1,500 cumulative (= 3× $150 / 3× $500).
+#         ELEVATED RISK: full-size live bet on a config with NO proven OOS edge. Fills covered by
+#         the existing 15-19 UTC monitor + 14:45→19:55 realtime loop + 20:00 EOD cancel.
 # Halt:   `touch halt/KDFW` (per-city) or `touch halt/ALL` (aggregate) to stop.
-2 16 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KDFW --live >> /var/log/weather/live_trade.log 2>&1
+32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KDFW --live >> /var/log/weather/live_trade.log 2>&1
 
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.
