@@ -151,11 +151,51 @@ CITY_CONFIG = {
         "max_open_contracts":         5000,     # matches KORD
         "is_active": True,                      # RESUMED per precommit doc
     },
+    "KDFW": {
+        "city_name": "Dallas",
+        # ADDED 2026-06-22 — OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar.
+        # Dallas does NOT clear the bar on trustworthy evidence: union-25% is
+        # validated only in-sample (Sharpe 3.60) / a single n=27 walk-forward
+        # blip (OOS Sharpe 4.52) that the per-city diagnostic itself flags as a
+        # "tuned OOS blip, not trustworthy". At the production baseline it LOSES
+        # (−$7.18, Sharpe −1.93) and is negative in BOTH history halves. Forward
+        # OOS is n=1; there are 0 live fills. This goes live anyway, at MINIMAL
+        # size, as a deliberate operator decision to gather honest live data —
+        # superseding the Dallas paper-watchlist status. Risk envelope is the
+        # smallest in the universe (unit 50, daily −$25, cumulative −$75).
+        # See docs/decisions/2026-06-22-dallas-live-override.md.
+        #
+        # Strategy mirrors KORD: UNION (raw |edge| ≥ 25% OR blend |edge| ≥ 10%),
+        # raw side wins the tie-break. Model is EMOS "combined" (GEFS+IFS) 00Z,
+        # rolling 45d — the same signal scripts/paper_trade_log.py already logs
+        # daily under "EMOS combined 00Z Dallas (rolling 45d)" and that
+        # scripts/analysis/dallas_watchlist.py tracks.
+        "models": ["gefs", "ifs"],
+        "emos_model": "combined",
+        "model_source": "EMOS combined 00Z Dallas (rolling 45d)",
+        "paper_model_source": "EMOS combined 00Z Dallas (rolling 45d)",
+        "live_model_source_tag": "EMOS combined UNION raw25+blend10 00Z Dallas (rolling 45d) [LIVE]",
+        "decision_hour": 16,                    # 16:00 UTC — after 00Z ingest (IFS retry 13:00,
+        "decision_minute": 0,                   # GEFS/HRRR retries ≤14:30) and after KMIA's 15:30 decision.
+        "use_union": True,                      # KORD parity: union of raw + blend
+        "use_blend": True,                      # blend coefficients computed (needs ≥100 settled paper rows)
+        "edge_threshold": 0.25,                 # raw threshold (25%) — KORD parity
+        "blend_edge_threshold": 0.10,           # blend threshold (10%) — KORD parity
+        "smart_cross_edge_threshold": 0.40,     # exec: cross at ≥40% edge — KORD parity
+        "sizing_mode": "unit",                  # fixed contract count per trade
+        "unit_contracts": 50,                   # MINIMAL size (10× smaller than KORD/KMIA's 500)
+        "amount_dollars": 50.0,                 # unused (sizing_mode=unit) — kept for reference
+        "max_contracts_per_trade": 50,          # depth cap (= unit_contracts — no over-bet)
+        "daily_loss_limit_dollars":     25.0,   # tightest in the universe (override → fail fast)
+        "cumulative_kill_dollars":      75.0,   # tightest in the universe (override → fail fast)
+        "max_open_contracts":          500,     # 10× smaller than KORD/KMIA's 5000
+        "is_active": True,                      # LIVE per operator override 2026-06-22
+    },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 300.0    # = Chicago $150 + Miami $150
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1000.0    # = Chicago $500 + Miami $500
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 325.0    # = Chicago $150 + Miami $150 + Dallas $25
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1075.0    # = Chicago $500 + Miami $500 + Dallas $75
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
@@ -761,7 +801,7 @@ def size_trade(city: str, signal: dict, per_trade_stake_cents: int) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--city", required=True, choices=list(CITY_CONFIG.keys()),
-                        help="Which city to trade (KORD or KMIA).")
+                        help="Which city to trade (KORD, KMIA, or KDFW).")
     parser.add_argument("--live", action="store_true",
                         help="Actually place orders. Without this flag, runs dry.")
     args = parser.parse_args()

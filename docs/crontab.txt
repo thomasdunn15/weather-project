@@ -136,6 +136,27 @@
 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
+# DALLAS live trading — OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar, 2026-06-22.
+# See docs/decisions/2026-06-22-dallas-live-override.md (supersedes the Dallas
+# paper-watchlist in docs/decisions/2026-06-21-live-universe-and-watchlist.md).
+# Model:  KDFW with UNION strategy (raw |edge| ≥ 25% OR blend |edge| ≥ 10%),
+#         EMOS "combined" (GEFS+IFS) 00Z rolling 45d — same signal the paper cron logs.
+# Time:   16:00 UTC decision (CITY_CONFIG decision_hour=16/minute=0). Chosen because it is
+#         AFTER 00Z ingest (IFS 00Z lands 07 UTC w/ 13 UTC retry; GEFS/HRRR retries 13:46 & 14:30)
+#         and AFTER the KMIA 15:30 decision, so no live-trade collision. KDFW is in
+#         weather_markets.stations.STATIONS, so the existing all-station 13:46 + 14:30
+#         GEFS/IFS retries already refresh its 00Z forecasts (the 14:30 retry is only 90 min
+#         before this decision) — no dedicated Dallas pre-trade re-ingest cron needed.
+#         The only job sharing the 16:00 minute is the lightweight check_pipeline_health.py
+#         below; the box already runs 3 concurrent (heavier) ingest crons at 13:46 & 14:30
+#         without issue, so this overlap is within tolerance.
+# Risk:   MINIMAL size — unit 50 contracts, per-city daily-loss −$25, cumulative-kill −$75,
+#         max-open 500 (all ~10× tighter than KORD/KMIA). Aggregate limits bumped to
+#         −$325 daily / −$1,075 cumulative (= +Dallas $25/$75). Fills are covered by the
+#         existing 15-19 UTC monitor + 14:45→19:55 realtime loop + 20:00 EOD cancel.
+# Halt:   `touch halt/KDFW` (per-city) or `touch halt/ALL` (aggregate) to stop.
+0 16 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KDFW --live >> /var/log/weather/live_trade.log 2>&1
+
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.
 # NOTE: a near-realtime loop also runs from 14:45 → 19:55 UTC via the

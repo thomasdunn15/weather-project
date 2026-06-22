@@ -148,17 +148,19 @@ def get_live_data(cfg: dict) -> dict:
         """, (today, today))
         source_stats = {ms: (cum, td, tdo) for ms, cum, td, tdo in cur.fetchall()}
 
-        # "Other Cities" bucket: every Kalshi series EXCEPT Chicago/Miami rolled
-        # into one card. Aggregates by ticker series prefix (robust vs the
-        # model_source matching used for the two live cities) so manually-traded
-        # / reconciled markets (LA, Seattle, New York, …) surface on the dashboard.
+        # "Other Cities" bucket: every Kalshi series EXCEPT the live cities
+        # (Chicago/Miami/Dallas) rolled into one card. Aggregates by ticker
+        # series prefix (robust vs the model_source matching used for the live
+        # cities) so manually-traded / reconciled markets (LA, Seattle, New
+        # York, …) surface on the dashboard. Dallas (KXHIGHTDAL) is excluded
+        # here so its own per-city card isn't double-counted in the rollup.
         cur.execute("""
             SELECT COALESCE(SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL), 0)::float / 100,
                    COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = %s AND settlement IS NOT NULL), 0)::float / 100,
                    COUNT(*) FILTER (WHERE settlement IS NOT NULL),
                    ARRAY_AGG(DISTINCT split_part(ticker, '-', 1)) FILTER (WHERE settlement IS NOT NULL)
             FROM live_trades
-            WHERE split_part(ticker, '-', 1) NOT IN ('KXHIGHCHI', 'KXHIGHMIA')
+            WHERE split_part(ticker, '-', 1) NOT IN ('KXHIGHCHI', 'KXHIGHMIA', 'KXHIGHTDAL')
         """, (today,))
         oc_realized, oc_today_realized, oc_n_settled, oc_series = cur.fetchone()
 
@@ -220,10 +222,12 @@ def get_live_data(cfg: dict) -> dict:
     for p in positions_rows:
         per_city_unreal[p["city"]] = per_city_unreal.get(p["city"], 0) + p["unreal"]
 
-    # "Other Cities" card: everything that isn't Chicago (KORD) or Miami (KMIA).
-    # Unrealized = open-position marks for non-CHI/MIA stations (0 when flat).
+    # "Other Cities" card: everything that isn't a live city — Chicago (KORD),
+    # Miami (KMIA), or Dallas (KDFW). Unrealized = open-position marks for the
+    # remaining stations (0 when flat). Dallas is excluded so it isn't
+    # double-counted against its own per-city card.
     oc_unreal = round(sum(p["unreal"] for p in positions_rows
-                          if p["city"] not in ("KORD", "KMIA")), 2)
+                          if p["city"] not in ("KORD", "KMIA", "KDFW")), 2)
     other_cities = None
     if (oc_n_settled or 0) > 0 or oc_unreal:
         labels = ", ".join(SERIES_CITY.get(s, (s or "").replace("KXHIGH", ""))

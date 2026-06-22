@@ -808,10 +808,13 @@ function renderLive() {
   const root = document.getElementById("live-root");
   if (!LIVE) { root.innerHTML = `<div class="loading">Loading live data…</div>`; return; }
   const d = LIVE;
+  // Per-city grid columns = one per card: N city cards + optional Other Cities + the aggregate-risk card.
+  // Generalized from the old 2-city g-3/g-4 special case so any city count (e.g. Dallas → 3 cities → g-5) lays out.
+  const cityGridCols = d.cities.length + (d.otherCities ? 1 : 0) + 1;
   root.innerHTML =
     killBanner(d) + liveHero(d) + statusStrip(d) +
     `<div class="section-label">Per-city · realized + unrealized + risk</div>` +
-    `<div class="grid ${d.otherCities ? "g-4" : "g-3"}">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
+    `<div class="grid g-${cityGridCols}">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
     `<div class="grid" style="grid-template-columns:1.45fr 1fr">` +
       `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
       positionsTable(d.positions) +
