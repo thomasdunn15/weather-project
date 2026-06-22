@@ -1,5 +1,10 @@
 # Live universe & watchlist — formalized 2026-06-21
 
+> **SUPERSEDED for Dallas by [2026-06-22-dallas-live-override.md](2026-06-22-dallas-live-override.md).**
+> On 2026-06-22 the operator took **Dallas (KDFW) LIVE at minimal size** as a deliberate
+> override of the deploy bar — the Dallas **paper-watchlist** status recorded below no longer
+> holds. Chicago + Miami below are unchanged. The deploy bar itself is **not** relaxed.
+
 **Decision:** Formally fix the live trading universe at **Chicago (KORD) + Miami (KMIA)**,
 and define the tiers below it (watchlist / paper-watchlist / rejected). **No live config
 changes** — Chicago and Miami are already the live cities; this record makes the boundary
@@ -30,7 +35,7 @@ walk-forward fold). Memories: `project_per_city_diagnostic_finding`,
 | **Chicago (KORD)** | **LIVE** | ✅ | ✅ | +$3.02 / 69 / +4.38¢ / **1.58** | Robust edge; one of two cities passing all sign gates. Already live. |
 | **Miami (KMIA)** | **LIVE** | ✅ | ✅ | +$2.66 / 102 / +2.61¢ / **1.00** | Robust edge (blend-only); passes all sign gates. Already live. |
 | **Seattle (KSEA)** | **NOT live — monitor** | ✅ | ✅ | +$2.04 / 56 / +3.64¢ / **1.76** | Sign-robust but OOS Sharpe ~1.5–1.8, **below the 2.5 bar**. User's explicit call: not live yet. Thin/decaying. |
-| **Dallas (KDFW)** | **PAPER-WATCHLIST** | ❌ | ❌ | +$3.17 / 27 / +11.74¢ / **4.52** | The **only** city clearing OOS Sharpe > 2.5 — but on **n=27**, with **negative baseline (−$7.18, Sharpe −1.93)** and both halves negative. The diagnostic calls it a "tuned OOS blip, not trustworthy." Graduate to live **only if** the forward OOS holds as samples grow. |
+| **Dallas (KDFW)** | **~~PAPER-WATCHLIST~~ → LIVE (override 2026-06-22)** | ❌ | ❌ | +$3.17 / 27 / +11.74¢ / **4.52** | The **only** city clearing OOS Sharpe > 2.5 — but on **n=27**, with **negative baseline (−$7.18, Sharpe −1.93)** and both halves negative. The diagnostic calls it a "tuned OOS blip, not trustworthy." **Taken live at minimal size 2026-06-22 by operator override** (not a bar clearance) to gather honest live data — see [2026-06-22-dallas-live-override.md](2026-06-22-dallas-live-override.md). |
 | **Los Angeles (KLAX)** | **REJECTED** | ❌ | ❌ | +$2.31 / 22 / +10.50¢ / 2.33 | Single-fold OOS marginally positive but **Sharpe 2.33 < 2.5** and baseline/both-halves negative — in-sample mirage, fails the gates. |
 | **Las Vegas (KLAS)** | **REJECTED** | ❌ | ❌ | −$2.22 / 26 / −8.54¢ / **−2.65** | Gorgeous in-sample, **negative out-of-sample**. Fails outright. |
 

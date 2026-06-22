@@ -48,7 +48,8 @@ Fees: `kalshi_fee_cents(entry) = ceil(0.07 · p · (1−p) · 100)`, min 1¢, p 
 Each city dict carries (KORD shown): `city_name`, `models`, `emos_model` (`combined`/`combined_hrrr`), `model_source`, `paper_model_source`, `live_model_source_tag`, `decision_hour`/`decision_minute` (UTC), `use_union`, `use_blend`, `edge_threshold`, `blend_edge_threshold`, `smart_cross_edge_threshold`, `sizing_mode`, `unit_contracts`, `amount_dollars`, `max_contracts_per_trade`, `daily_loss_limit_dollars`, `cumulative_kill_dollars`, `is_active`.
 - **KORD (Chicago, LIVE):** combined_hrrr, **UNION** (raw ≥25% OR blend ≥10%), unit 500, decision 14:46Z.
 - **KMIA (Miami, LIVE):** **blend-only** ≥10%, unit 500, decision 15:30Z.
-- **Paper/backtest cities:** KNYC (halted), KAUS, KDEN, KLAX, KPHX, KLAS, KSEA, KDFW, KMSY (T-series western/central). See `src/weather_markets/stations.py` for the series mapping.
+- **KDFW (Dallas, LIVE — operator override 2026-06-22):** combined (GEFS+IFS), **UNION** (raw ≥25% OR blend ≥10%), unit **50** (minimal), decision 16:02Z. Live against the OOS-Sharpe>2.5 bar to buy live-fill data; see [../decisions/2026-06-22-dallas-live-override.md](../decisions/2026-06-22-dallas-live-override.md).
+- **Paper/backtest cities:** KNYC (halted), KAUS, KDEN, KLAX, KPHX, KLAS, KSEA, KMSY (T-series western/central). See `src/weather_markets/stations.py` for the series mapping.
 
 ## Key findings (don't re-test on similar data)
 Market-blend wins; ECMWF-00Z config = no edge after fees (n=1002); rolling-EMOS window doesn't move annual CRPS; multibracket/Kelly/EMOS-features = null. Cross-platform arb is the next high-EV idea. *(Sources: memory `project_*_finding`; [../decisions/](../decisions/) precommits.)*

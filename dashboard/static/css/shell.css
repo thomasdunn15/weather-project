@@ -84,6 +84,7 @@
 .grid { display: grid; gap: 14px; }
 .g-3 { grid-template-columns: repeat(3, 1fr); }
 .g-4 { grid-template-columns: repeat(4, 1fr); }
+.g-5 { grid-template-columns: repeat(5, 1fr); }
 .g-2 { grid-template-columns: 1fr 1fr; }
 
 /* ---------- panel primitive ---------- */
