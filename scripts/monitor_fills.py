@@ -20,7 +20,8 @@ Exit codes:
 """
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 from weather_markets.db import get_connection
 from weather_markets.kalshi_api import KalshiClient, KalshiAuthError, parse_count, parse_dollars_to_cents
@@ -32,6 +33,22 @@ KALSHI_STATUS_MAP = {
     "executed": "filled",       # fully filled
     "canceled": "cancelled",    # cancelled (Kalshi uses US spelling)
 }
+
+# ---- 45-minute re-quote for unfilled maker orders ----------------------------
+# Research 2026-06-21 (execution-policy maker-vs-taker), Recommendation rule 4:
+# an unfilled resting (maker) order is cancelled after REQUOTE_AFTER_MINUTES and
+# re-posted as a CROSS at the ask — but ONLY if |edge| >= the per-city threshold
+# Y; otherwise it is left to expire. TIF is GTC-only (no IOC), so this is a
+# cancel + repost. OFF by default: enable with --requote (live) or
+# --requote-dry-run (log-only); must be PAPER-VALIDATED before the cron uses it.
+REQUOTE_AFTER_MINUTES = 45
+REQUOTE_CROSS_EDGE_THRESHOLD = {   # ticker series prefix -> Y_city
+    "KXHIGHCHI": 0.25,    # KORD
+    "KXHIGHMIA": 0.10,    # KMIA
+    "KXHIGHTDAL": 0.25,   # Dallas (paper watchlist)
+}
+DEFAULT_REQUOTE_Y = 0.25
+REQUOTE_MARKER = "REQUOTE@45m"     # notes marker → one re-quote per order (runaway guard)
 
 
 def fetch_vwap_and_fees(client: KalshiClient, ticker: str, kalshi_order_id: str, side: str) -> tuple[int | None, int | None, int]:
@@ -172,6 +189,148 @@ def update_one_pending(conn, client: KalshiClient, row, cancel_unfilled: bool) -
     return f"unknown kalshi status: {kstatus}"
 
 
+def requote_threshold_for(ticker: str) -> float:
+    """Per-city re-quote cross threshold Y (|edge| >= Y → cross at ask on re-quote)."""
+    return REQUOTE_CROSS_EDGE_THRESHOLD.get((ticker or "").split("-")[0], DEFAULT_REQUOTE_Y)
+
+
+def _requote_decision(edge: float, ticker: str, elapsed_min: float,
+                      already_requoted: bool, filled_qty: int) -> str:
+    """PURE decision for the time-based re-quote (unit-tested, no I/O). Returns:
+      'skip_already'     — already re-quoted once (RUNAWAY guard: one re-quote/order)
+      'skip_partial'     — order has fills already; only FULLY-unfilled orders re-quote
+      'skip_not_elapsed' — younger than REQUOTE_AFTER_MINUTES
+      'leave_expire'     — elapsed but |edge| < Y_city → let it expire (no cross)
+      'requote_cross'    — elapsed and |edge| >= Y_city → cancel + repost cross at ask
+    """
+    if already_requoted:
+        return "skip_already"
+    if filled_qty > 0:
+        return "skip_partial"
+    if elapsed_min < REQUOTE_AFTER_MINUTES:
+        return "skip_not_elapsed"
+    if abs(edge) < requote_threshold_for(ticker):
+        return "leave_expire"
+    return "requote_cross"
+
+
+def requote_unfilled_makers(client, *, now=None, dry_run: bool = False, verbose: bool = True) -> bool:
+    """Cancel + repost (as a cross at the ask) each FULLY-UNFILLED resting maker
+    order older than REQUOTE_AFTER_MINUTES, iff |edge| >= the per-city threshold;
+    otherwise leave it to expire. GTC-only TIF → cancel + V2 create (re-post).
+
+    DOUBLE-FILL guard: re-checks the LIVE order fill state right BEFORE cancelling
+    (skip if it started filling) and again AFTER cancelling (if it filled during
+    the cancel, record the fill and do NOT repost — never two positions).
+    RUNAWAY guard: one re-quote per order, enforced by a notes marker.
+    `dry_run` logs decisions without any API writes. Returns True on no errors."""
+    # live_trade owns the cross-price + guaranteed-fill (V2 create) helpers.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from live_trade import place_with_guaranteed_fill, fetch_live_cross_price
+
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=REQUOTE_AFTER_MINUTES)
+    today = now.date()
+    if verbose:
+        print(f"\n=== requote pass ({now.isoformat()}, T={REQUOTE_AFTER_MINUTES}m, dry_run={dry_run}) ===")
+    had_error = False
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, kalshi_order_id, ticker, side, count, edge, placed_at, client_order_id, notes
+                FROM live_trades
+                WHERE fill_status = 'pending' AND target_date = %s
+                  AND kalshi_order_id IS NOT NULL
+                  AND placed_at <= %s
+                ORDER BY placed_at
+            """, (today, cutoff))
+            rows = cur.fetchall()
+        if verbose:
+            print(f"  unfilled resting orders aged >= {REQUOTE_AFTER_MINUTES}m: {len(rows)}")
+
+        for (id_, koid, ticker, side, count, edge, placed_at, coid, notes) in rows:
+            elapsed_min = (now - placed_at).total_seconds() / 60.0
+            already = REQUOTE_MARKER in (notes or "")
+            # Double-fill guard #1: re-fetch the LIVE order state before deciding.
+            try:
+                order = client.get_order(koid, ticker=ticker)
+                order = order.get("order", order)
+                filled_qty = max(0, parse_count(order, "initial_count_fp")
+                                 - parse_count(order, "remaining_count_fp"))
+                resting = order.get("status", "").lower() == "resting"
+            except Exception as e:
+                print(f"  {ticker} (id={id_}): get_order failed: {e}", file=sys.stderr)
+                had_error = True
+                continue
+            decision = _requote_decision(float(edge), ticker, elapsed_min, already, filled_qty)
+            if decision == "requote_cross" and not resting:
+                decision = "skip_partial"   # no longer resting (filled/cancelled) → leave it
+            y = requote_threshold_for(ticker)
+            if decision != "requote_cross":
+                if verbose:
+                    print(f"  {ticker} (id={id_}): {decision} "
+                          f"(edge={edge:.3f} Y={y} elapsed={elapsed_min:.0f}m filled={filled_qty})")
+                continue
+
+            if dry_run:
+                ask = fetch_live_cross_price(client, ticker, side)
+                print(f"  {ticker} (id={id_}): WOULD requote → cross@ask {ask}c "
+                      f"(edge={edge:.3f} >= Y{y}, count={count}) [dry-run, no writes]")
+                continue
+
+            try:
+                client.cancel_order(koid)
+            except Exception as e:
+                print(f"  {ticker} (id={id_}): cancel failed: {e}", file=sys.stderr)
+                had_error = True
+                continue
+            # Double-fill guard #2: did it fill during the cancel? If so, keep that
+            # fill and do NOT repost.
+            try:
+                o2 = client.get_order(koid, ticker=ticker)
+                o2 = o2.get("order", o2)
+                filled2 = max(0, parse_count(o2, "initial_count_fp") - parse_count(o2, "remaining_count_fp"))
+            except Exception:
+                filled2 = 0
+            if filled2 > 0:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE live_trades SET fill_status='partial', "
+                                "notes=COALESCE(notes,'')||%s WHERE id=%s",
+                                (f" | {REQUOTE_MARKER} aborted: {filled2} filled during cancel", id_))
+                print(f"  {ticker} (id={id_}): {filled2} filled during cancel → recorded, NOT reposted")
+                continue
+
+            ask = fetch_live_cross_price(client, ticker, side)
+            if ask is None:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE live_trades SET fill_status='cancelled', "
+                                "notes=COALESCE(notes,'')||%s WHERE id=%s",
+                                (f" | {REQUOTE_MARKER}: cancelled, no ask available", id_))
+                print(f"  {ticker} (id={id_}): no ask → cancelled, not reposted")
+                continue
+            new_coid = f"{coid}-rq" if coid else None
+            status, price_used, new_koid, coid_used, note = place_with_guaranteed_fill(
+                client, ticker=ticker, side=side, count=count, limit_price=ask,
+                cross_price=ask, primary_post_only=False, client_order_id=new_coid)
+            with conn.cursor() as cur:
+                if status == "placed":
+                    cur.execute("""UPDATE live_trades
+                        SET kalshi_order_id=%s, client_order_id=COALESCE(%s, client_order_id),
+                            limit_price_cents=%s, cross_price_cents=%s, fill_status='pending',
+                            placed_at=NOW(), notes=COALESCE(notes,'')||%s
+                        WHERE id=%s""",
+                        (new_koid, coid_used, price_used, price_used,
+                         f" | {REQUOTE_MARKER} cross@{price_used}c (edge={edge:.3f}>=Y{y}){note}", id_))
+                    print(f"  {ticker} (id={id_}): REQUOTED as cross@{price_used}c (edge={edge:.3f})")
+                else:
+                    cur.execute("UPDATE live_trades SET fill_status='cancelled', "
+                                "notes=COALESCE(notes,'')||%s WHERE id=%s",
+                                (f" | {REQUOTE_MARKER} repost REJECTED: {note}", id_))
+                    print(f"  {ticker} (id={id_}): cancelled; repost REJECTED: {note}", file=sys.stderr)
+                    had_error = True
+    return not had_error
+
+
 def _run_once(client, cancel_unfilled: bool, verbose: bool = True) -> bool:
     """One pass over open orders. Returns True if all OK, False on any error."""
     today = datetime.now(timezone.utc).date()
@@ -215,6 +374,13 @@ def main() -> int:
     parser.add_argument("--until", type=str, metavar="HH:MM", default=None,
                         help="Stop loop at this UTC time (e.g., --until 20:00). Used with --loop "
                              "to terminate at EOD. Without this, --loop runs indefinitely.")
+    parser.add_argument("--requote", action="store_true",
+                        help="After the fill pass, run the 45-min re-quote: cancel each unfilled "
+                             "maker order older than 45m and re-post as a cross at the ask iff "
+                             "|edge|>=Y_city. PLACES REAL ORDERS — paper-validate before cron use.")
+    parser.add_argument("--requote-dry-run", action="store_true",
+                        help="Log what the 45-min re-quote WOULD do (which orders, ask price) "
+                             "without cancelling or placing anything. Safe to run live.")
     args = parser.parse_args()
 
     try:
@@ -236,6 +402,8 @@ def main() -> int:
     # Single-shot mode (default — preserves existing cron behavior)
     if args.loop <= 0:
         ok = _run_once(client, args.cancel_unfilled)
+        if args.requote or args.requote_dry_run:
+            ok = requote_unfilled_makers(client, dry_run=args.requote_dry_run) and ok
         client.close()
         return 0 if ok else 2
 
@@ -251,6 +419,8 @@ def main() -> int:
                 break
             try:
                 _run_once(client, args.cancel_unfilled, verbose=True)
+                if args.requote or args.requote_dry_run:
+                    requote_unfilled_makers(client, dry_run=args.requote_dry_run, verbose=True)
             except Exception as e:
                 print(f"  ERR (continuing): {type(e).__name__}: {e}", file=sys.stderr)
             time.sleep(args.loop)

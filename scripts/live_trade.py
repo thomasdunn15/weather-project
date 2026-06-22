@@ -322,12 +322,21 @@ def halt_file_for_city(city: str) -> Path:
     return HALT_DIR / city
 
 
-def kalshi_fee_cents(entry_price_cents: int) -> int:
-    """Kalshi per-contract fee: $0.07 × P × (1-P), rounded up to cent."""
+def kalshi_fee_cents(entry_price_cents: int, maker: bool = False) -> int:
+    """Kalshi per-contract fee in cents, maker/taker-aware (2026 schedule).
+
+    taker (marketable/cross fill): $0.07 × P × (1-P); maker (resting/post_only
+    fill): ¼ that rate ($0.0175 × P × (1-P); resting orders were historically
+    fee-exempt). Rounded up to the cent, min 1¢. Pass maker=True for post_inside
+    / resting fills so estimated EV reflects the real discount. Kept identical to
+    dashboard/sim_python.py and app.js (parity-tested). Recorded live P&L still
+    prefers the ACTUAL Kalshi fee from fills (monitor_fills.fee_cost); this is the
+    estimate/fallback."""
     if entry_price_cents <= 0 or entry_price_cents >= 100:
         return 0
     p = entry_price_cents / 100.0
-    return max(1, math.ceil(0.07 * p * (1.0 - p) * 100))
+    rate = 0.0175 if maker else 0.07
+    return max(1, math.ceil(rate * p * (1.0 - p) * 100))
 
 
 def check_halts(city: str) -> list[str]:

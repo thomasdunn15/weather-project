@@ -46,16 +46,23 @@ def _apply_stake_cap(
     return raw_stake, False
 
 
-def kalshi_fee_cents(entry_price_cents: int) -> int:
+def kalshi_fee_cents(entry_price_cents: int, maker: bool = False) -> int:
     """Kalshi trading fee per contract in cents.
 
-    Formula (per Kalshi docs): $0.07 × contracts × P × (1−P), rounded UP to the
-    nearest $0.01 per fill. Charged on the entry trade only; no fee at settlement.
-    Returns 0 for degenerate prices (≤0 or ≥100)."""
+    Two rates (Kalshi 2026 schedule):
+      - taker (marketable / cross fill): $0.07 × P × (1−P)
+      - maker (resting / post-only fill): one-quarter the rate, $0.0175 × P × (1−P)
+        (resting orders were historically fee-exempt; ¼ is the conservative model).
+    Rounded UP to the nearest $0.01 per fill, min 1¢. Charged on the entry trade
+    only; no fee at settlement. Returns 0 for degenerate prices (≤0 or ≥100).
+
+    NOTE: byte-mirrored in dashboard/static/app.js `kalshiFeeCents`; the two MUST
+    stay identical (tests/test_sim_parity.py::test_fee_formula_parity)."""
     if entry_price_cents <= 0 or entry_price_cents >= 100:
         return 0
     p = entry_price_cents / 100.0
-    fee_dollars = 0.07 * p * (1.0 - p)
+    rate = 0.0175 if maker else 0.07
+    fee_dollars = rate * p * (1.0 - p)
     return max(1, math.ceil(fee_dollars * 100))
 
 
@@ -150,6 +157,14 @@ def simulate_pnl(
             else:
                 entry = max(1, cross_entry - int(ask - bid - 1))
 
+        # Maker vs taker: a fill is a MAKER (reduced-fee) fill only when we rested
+        # STRICTLY inside the cross. Cross / at-ask / premium fills are takers; a
+        # post-inside mode that found no room (entry == cross_entry) crossed and
+        # is a taker too. Mirrors app.js: post_inside_spread && entry < crossEntry.
+        maker_mode = (execution_mode in ("limit_100", "limit_70", "limit_50")
+                      or emp_mode_key == "post_inside_spread")
+        is_maker = maker_mode and entry < cross_entry
+
         # Bracket label for display (same logic as Edge by bracket table)
         bt = row.get("bracket_type")
         if bt == "greater_than":
@@ -180,7 +195,7 @@ def simulate_pnl(
             })
             continue
 
-        fee_per_contract = kalshi_fee_cents(entry) / 100.0  # dollars
+        fee_per_contract = kalshi_fee_cents(entry, is_maker) / 100.0  # dollars
 
         was_capped = False  # only relevant for kelly/scaling; unit/amount ignore caps
         if sizing_type == "unit":
