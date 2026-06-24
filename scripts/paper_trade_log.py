@@ -56,26 +56,37 @@ from weather_markets.stations import all_stations, Station
 EDGE_THRESHOLD = 0.10
 WINDOW_DAYS = 45
 INIT_HOUR = 0          # use 00Z runs — published before market open
-MODEL = "combined"     # GEFS + IFS at 00Z
+MODEL = "combined"     # GEFS + IFS at 00Z (the base model every station logs)
+
+# A station also logs its LIVE model here when that differs from the base, so the
+# backtest tab — which reads the station's live model_source — tracks what actually
+# trades. KORD switched to combined_hrrr live on 2026-06-07; without this its
+# combined_hrrr paper series went stale at the one-time backfill cutoff (2026-06-05),
+# freezing the Chicago backtest detail. (Added 2026-06-24.)
+EXTRA_MODELS_BY_STATION = {"KORD": ["combined_hrrr"]}
 
 
-def model_source_for(station: Station, platform: str = "kalshi", blend: bool = False) -> str:
+def model_source_for(station: Station, platform: str = "kalshi", blend: bool = False,
+                     model: str = "combined") -> str:
     """The model_source string for this station, matching the backfill naming.
     platform='polymarket' adds a 'POLYMARKET' tag so dashboard filter can find it.
     blend=True adds a '+blend' suffix to mark Benter-style market-blended signals
     (logs alongside raw-model rows for A/B comparison).
+    model selects the ensemble label ('combined' = GEFS+IFS, 'combined_hrrr' =
+    GEFS+IFS+HRRR); it must match the string the dashboard/backtest reads for the
+    station's live model (e.g. KORD live = 'combined_hrrr').
     """
     if station.station_id == "KNYC":
-        base = "EMOS combined 00Z (rolling 45d)"
+        base = f"EMOS {model} 00Z (rolling 45d)"
     else:
-        base = f"EMOS combined 00Z {station.city} (rolling 45d)"
+        base = f"EMOS {model} 00Z {station.city} (rolling 45d)"
     if blend:
-        # Insert +blend right after the 'combined' token so the dashboard
+        # Insert +blend right after the model token so the dashboard
         # variant selector can distinguish raw from blended sources.
-        base = base.replace("EMOS combined ", "EMOS combined+blend ")
+        base = base.replace(f"EMOS {model} ", f"EMOS {model}+blend ")
     if platform == "polymarket":
         # Insert POLYMARKET tag before the closing paren so the dashboard regex
-        # can find it. Format: "EMOS combined 00Z {city} POLYMARKET (rolling 45d)"
+        # can find it. Format: "EMOS {model} 00Z {city} POLYMARKET (rolling 45d)"
         return base.replace(" (rolling", " POLYMARKET (rolling")
     return base
 
@@ -139,6 +150,7 @@ def log_for_station(
     conn,
     platform: str = "kalshi",
     series: str | None = None,
+    model: str = MODEL,
 ) -> None:
     """Run paper-trade logic for one station. Prints a per-station summary.
 
@@ -148,7 +160,7 @@ def log_for_station(
 
     Any "skip" condition (missing forecast, no contracts, EMOS fit fails) is
     logged and returns without raising — other stations continue uninterrupted."""
-    model_source = model_source_for(station, platform=platform)
+    model_source = model_source_for(station, platform=platform, model=model)
     min_entry = min_entry_price_for(station)
     # Default series per platform if not overridden
     if series is None:
@@ -164,12 +176,12 @@ def log_for_station(
 
     print(f"\n--- {station.station_id} ({station.city}) -> {model_source!r}, entry>={min_entry}c ---")
 
-    if MODEL == "combined":
+    if model == "combined":
         models_list = ["gefs", "ifs"]
-    elif MODEL == "combined_hrrr":
+    elif model == "combined_hrrr":
         models_list = ["gefs", "ifs", "hrrr"]
     else:
-        models_list = [MODEL]
+        models_list = [model]
 
     # At least one underlying model must be present for today's init at this station.
     with conn.cursor() as cur:
@@ -178,7 +190,7 @@ def log_for_station(
             (station.station_id, models_list, init_time),
         )
         if cur.fetchone() is None:
-            print(f"  no {MODEL} forecast for init {init_time.isoformat()}. Skipping.")
+            print(f"  no {model} forecast for init {init_time.isoformat()}. Skipping.")
             return
 
     # Combined ensemble for this station / today.
@@ -196,7 +208,7 @@ def log_for_station(
     emos = fit_emos_rolling(
         today, conn,
         window_days=WINDOW_DAYS, station_id=station.station_id,
-        model=MODEL, init_hour=INIT_HOUR,
+        model=model, init_hour=INIT_HOUR,
     )
     if emos is None:
         print(f"  rolling EMOS returned None (< 30 training days). Skipping.")
@@ -235,8 +247,12 @@ def log_for_station(
     # +blend variant alongside the raw model signals for A/B comparison.
     # Skips if insufficient training data.
     from weather_markets.blend import get_blend
-    blend_fit = get_blend(station.station_id, station.city) if platform == "kalshi" else None
-    blend_source = model_source_for(station, platform=platform, blend=True) if blend_fit else None
+    # Only the base "combined" model logs a +blend A/B variant. Extra live models
+    # (e.g. KORD combined_hrrr) log their RAW signal only — the backtest tab derives
+    # the blend walk-forward on the fly, so a logged combined_hrrr+blend isn't needed.
+    blend_fit = (get_blend(station.station_id, station.city)
+                 if (platform == "kalshi" and model == "combined") else None)
+    blend_source = model_source_for(station, platform=platform, blend=True, model=model) if blend_fit else None
     blend_threshold = BLEND_EDGE_THRESHOLD_BY_CITY.get(station.station_id, 0.10)
     if blend_fit:
         print(f"  blend fit:     α={blend_fit.alpha:+.3f} β_m={blend_fit.beta_model:+.3f} β_mkt={blend_fit.beta_market:+.3f} "
@@ -370,14 +386,21 @@ def main() -> None:
                     continue
                 if platform == "polymarket" and station.station_id not in {"KMDW","KNYC","KMIA","KLAX","KSFO"}:
                     continue
-                try:
-                    log_for_station(
-                        station, today, init_time, logged_at, snapshot_cutoff, args.as_of, conn,
-                        platform=platform,
-                    )
-                except Exception as e:
-                    # One station's failure must not abort the others.
-                    print(f"  {station.station_id} [{platform}] raised: {type(e).__name__}: {e}")
+                # Base "combined" model for every station (+ its blend variant).
+                models_to_log = ["combined"]
+                # Plus any station-specific live model (kalshi only), e.g. KORD combined_hrrr,
+                # so the backtest tab keyed to the live model stays current.
+                if platform == "kalshi":
+                    models_to_log += EXTRA_MODELS_BY_STATION.get(station.station_id, [])
+                for m in models_to_log:
+                    try:
+                        log_for_station(
+                            station, today, init_time, logged_at, snapshot_cutoff, args.as_of, conn,
+                            platform=platform, model=m,
+                        )
+                    except Exception as e:
+                        # One station/model's failure must not abort the others.
+                        print(f"  {station.station_id} [{platform}/{m}] raised: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
