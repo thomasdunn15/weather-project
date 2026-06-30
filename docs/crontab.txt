@@ -54,6 +54,17 @@
 # closed (last 7 days) for settlement_px on resolved contracts.
 2-59/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_polymarket_prices.py >> /var/log/weather/polymarket_snapshot.log 2>&1
 
+# Polymarket US ORDERBOOK DEPTH snapshots: every 5 minutes (offset by 3 min to
+# spread API load past the price snapshot at :02 and the Kalshi orderbook at :01).
+# READ-ONLY: calls only GET /v1/markets, /book and /bbo — never any order endpoint.
+# We have ZERO Polymarket depth history; this is the venue-mirror of the Kalshi
+# orderbook snapshot (writes polymarket_orderbook_snapshots, same schema) so the
+# walk-the-book / fill-rate tooling transfers. Cadence matches Kalshi's */5 so
+# the two venues' depth is directly comparable per snapshot window. Defaults to
+# the 5 Polymarket weather stations (KMIA, KMDW, KNYC, KLAX, KSFO).
+# PROPOSED — not yet installed. Enable after reviewing accumulated rows.
+# 3-59/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python -u scripts/snapshot_polymarket_orderbook.py >> /var/log/weather/polymarket_orderbook_snapshot.log 2>&1
+
 # Clean up Herbie GRIB caches every hour — purge anything older than 60 min.
 # Hourly cadence (vs old daily) and short retention (vs old +3 days) are
 # required because backfills can churn through >50 GB/day per worker, faster
