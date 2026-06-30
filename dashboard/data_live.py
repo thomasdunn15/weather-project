@@ -52,6 +52,42 @@ STARTING_CAPITAL = 3050.0
 # realized trading P&L + this credit reconcile to account equity to the cent.
 KALSHI_NON_TRADE_CREDITS = 14.99
 
+# Total deposits + non-trade credits = the cumulative-P&L base for the Kalshi
+# reconciliation: account_value − DEPOSITS == cumulative P&L (the headline that
+# must match Kalshi reality).
+DEPOSITS = STARTING_CAPITAL + KALSHI_NON_TRADE_CREDITS  # $3,064.99
+
+# Cities the live cron trades (they get their own per-city card). Everything
+# else the account has traded — manual / reconciled markets — rolls into the
+# "Other Cities" card. Keyed by the reconciliation's display-city name.
+LIVE_CITY_NAMES = {"Chicago", "Miami", "Dallas"}
+
+
+from dashboard.ttl_cache import ttl_cache
+
+
+@ttl_cache(60)
+def _kalshi_reconciliation(deposits: float = DEPOSITS) -> dict | None:
+    """Authoritative per-city P&L rebuilt from Kalshi's own ledger (settlements +
+    open positions), with the unattributable intraday round-trip P&L as an
+    explicit residual. See scripts/analysis/kalshi_reconcile_by_city.py.
+
+    Cached 60s: the call paginates settlements and marks every open position, so
+    it must NOT run on every 2s dashboard poll (API + memory pressure — the box
+    has no swap). Returns None on ANY failure so callers degrade gracefully to
+    the live_trades-derived view rather than crashing the dashboard.
+    """
+    try:
+        from weather_markets.kalshi_api import KalshiClient
+        from analysis.kalshi_reconcile_by_city import reconcile_by_city
+        client = KalshiClient()
+        try:
+            return reconcile_by_city(client, deposits=deposits)
+        finally:
+            client.close()
+    except Exception:
+        return None
+
 
 # ----------------------------------------------------------------------
 # Data adapters: real DB/API → DASH payload shape expected by the design
@@ -222,26 +258,67 @@ def get_live_data(cfg: dict) -> dict:
     for p in positions_rows:
         per_city_unreal[p["city"]] = per_city_unreal.get(p["city"], 0) + p["unreal"]
 
-    # "Other Cities" card: everything that isn't a live city — Chicago (KORD),
-    # Miami (KMIA), or Dallas (KDFW). Unrealized = open-position marks for the
-    # remaining stations (0 when flat). Dallas is excluded so it isn't
-    # double-counted against its own per-city card.
-    oc_unreal = round(sum(p["unreal"] for p in positions_rows
-                          if p["city"] not in ("KORD", "KMIA", "KDFW")), 2)
+    # AUTHORITATIVE per-city + total P&L, reconciled from Kalshi's own ledger
+    # (settlements + open positions), cached 60s. This is the source of truth for
+    # the per-city cards, the "Other Cities" rollup, the cumulative hero, and the
+    # aggregate — it captures manual trades (absent from live_trades) and uses
+    # Kalshi's settlement result, not our observations. `recon` is None if the
+    # Kalshi call failed, in which case every consumer below falls back to the
+    # live_trades-derived numbers. See _kalshi_reconciliation().
+    recon = _kalshi_reconciliation()
+    recon_acct = recon.get("_account") if isinstance(recon, dict) else None
+
+    # "Other Cities" card: every city the account has traded that ISN'T a live
+    # cron city (Chicago/Miami/Dallas) — manual / reconciled markets (LA, NYC,
+    # Seattle, …). When the Kalshi reconciliation is available we ALSO fold the
+    # intraday round-trip residual here (net P&L of positions opened+closed
+    # before settlement that Kalshi's capped fills can't attribute per-city) so
+    # the visible cards sum to the cumulative; the sub-label discloses it.
     other_cities = None
-    if (oc_n_settled or 0) > 0 or oc_unreal:
-        labels = ", ".join(SERIES_CITY.get(s, (s or "").replace("KXHIGH", ""))
-                           for s in sorted(oc_series or []))
-        other_cities = {
-            "name": "Other Cities",
-            "code": f"{len(oc_series or [])} series",
-            "model": "manual · reconciled",
-            "sub": labels,
-            "realized": round(oc_realized, 2),
-            "unrealized": oc_unreal,
-            "today": round(oc_today_realized + oc_unreal, 2),
-            "n": int(oc_n_settled or 0),
-        }
+    if recon is not None:
+        oc_real = oc_unreal = oc_today = 0.0
+        oc_n = 0
+        oc_names = []
+        for cc, d in recon.items():
+            if cc.startswith("_") or cc in LIVE_CITY_NAMES:
+                continue
+            oc_real += d["realized"]; oc_unreal += d["unrealized"]
+            oc_today += d.get("today", 0.0); oc_n += d["n_settled"]
+            oc_names.append(cc)
+        residual = recon.get("_residual", {}).get("total", 0.0)
+        oc_real += residual
+        oc_today += recon.get("_residual", {}).get("today", 0.0)
+        sub = ", ".join(sorted(oc_names))
+        if abs(residual) >= 0.005:
+            sub += f"  ·  incl. ${residual:+,.0f} intraday round-trips (not city-attributable)"
+        if oc_n or abs(oc_unreal) >= 0.005 or abs(oc_real) >= 0.005:
+            other_cities = {
+                "name": "Other Cities",
+                "code": f"{len(oc_names)} cities",
+                "model": "manual · reconciled",
+                "sub": sub,
+                "realized": round(oc_real, 2),
+                "unrealized": round(oc_unreal, 2),
+                "today": round(oc_today, 2),
+                "n": int(oc_n),
+            }
+    else:
+        # Fallback: live_trades-derived "Other Cities" (manual rows only).
+        oc_unreal = round(sum(p["unreal"] for p in positions_rows
+                              if p["city"] not in ("KORD", "KMIA", "KDFW")), 2)
+        if (oc_n_settled or 0) > 0 or oc_unreal:
+            labels = ", ".join(SERIES_CITY.get(s, (s or "").replace("KXHIGH", ""))
+                               for s in sorted(oc_series or []))
+            other_cities = {
+                "name": "Other Cities",
+                "code": f"{len(oc_series or [])} series",
+                "model": "manual · reconciled",
+                "sub": labels,
+                "realized": round(oc_realized, 2),
+                "unrealized": oc_unreal,
+                "today": round(oc_today_realized + oc_unreal, 2),
+                "n": int(oc_n_settled or 0),
+            }
 
     cities_payload = []
     halt_dir = Path(__file__).parent.parent / "halt"
@@ -258,6 +335,25 @@ def get_live_data(cfg: dict) -> dict:
                 city_today += td_
                 city_today_orders += int(tdo)
         city_unrealized = round(per_city_unreal.get(city_code, 0.0), 2)
+
+        # Displayed P&L = Kalshi reconciliation (authoritative: includes manual
+        # trades + Kalshi settlement result). Falls back to the live_trades view
+        # when the Kalshi call failed. The risk dials below INTENTIONALLY stay on
+        # the live_trades figures (city_realized/city_today) — those mirror the
+        # cron's own kill accounting, so the dashboard never shows a false kill
+        # breach from settled-only Kalshi realized.
+        disp_realized = round(city_realized, 2)
+        disp_unrealized = city_unrealized
+        disp_today = round(city_today + city_unrealized, 2)
+        if recon is not None:
+            rc = recon.get(city_name)
+            if rc is not None:
+                disp_realized = round(rc["realized"], 2)
+                disp_unrealized = round(rc["unrealized"], 2)
+                disp_today = round(rc.get("today", 0.0), 2)
+            else:
+                disp_realized = disp_unrealized = disp_today = 0.0
+
         # Halt status — three layers: explicit is_active=False in config,
         # halt file present, or aggregate halt
         halt_file = halt_dir / city_code
@@ -281,9 +377,9 @@ def get_live_data(cfg: dict) -> dict:
             "code": city_code,
             "model": ms_tag.replace(" [LIVE]", "").replace(" (rolling 45d)", " · rolling 45d"),
             "status": "halted" if is_halted else "active",
-            "realized": round(city_realized, 2),
-            "unrealized": city_unrealized,
-            "today": round(city_today + city_unrealized, 2),
+            "realized": disp_realized,
+            "unrealized": disp_unrealized,
+            "today": disp_today,
             "orders": city_today_orders,
             "budget": int(ccfg.get("daily_loss_limit_dollars", 0)),
             "contracts": ccfg.get("max_open_contracts", 0),
@@ -358,17 +454,41 @@ def get_live_data(cfg: dict) -> dict:
                             else bot_portfolio_value, 2)
     total_account_value = round(balance + portfolio_value, 2)
 
-    # Balance reconciliation (verified 2026-06-21 against Kalshi, account flat):
-    #   $3,050 deposits + settled trading P&L + $14.99 referral = account equity.
-    # `reconciledEquity` is that flat-state identity; `balance` is live equity
-    # (cash + open-position marks) and differs intraday by whatever capital is
-    # currently deployed in open positions / resting orders. The gap is live
-    # exposure, not an error — a *persistent* gap when flat flags untracked P&L.
+    # Cumulative + today display values. PREFER the Kalshi reconciliation: its
+    # cumulative.total == account_value − deposits (the headline that must match
+    # Kalshi reality), and it captures manual trades the live_trades view misses.
+    # Fall back to the live_trades numbers when the Kalshi call failed.
+    if recon_acct is not None:
+        cum_total = recon_acct["total"]
+        cum_realized_disp = recon_acct["realized_total"]
+        cum_unreal_disp = recon_acct["unrealized_total"]
+        cum_return_pct = round((cum_total / 3050.0) * 100, 1)
+        cum_win_rate = recon_acct["win_rate"]
+        cum_n_settled = recon_acct["n_settled"]
+        today_total_disp = recon_acct["today"]
+        today_realized_disp = recon_acct["today_realized"]
+        today_unreal_disp = recon_acct["today_unrealized"]
+    else:
+        cum_total = round(cum_realized + today_unrealized, 2)
+        cum_realized_disp = round(cum_realized, 2)
+        cum_unreal_disp = round(today_unrealized, 2)
+        cum_return_pct = round((cum_total / 3050.0) * 100, 1)
+        cum_win_rate = round(win_rate, 3)
+        cum_n_settled = int(n_settled)
+        today_total_disp = round(today_realized + today_unrealized, 2)
+        today_realized_disp = round(today_realized, 2)
+        today_unreal_disp = round(today_unrealized, 2)
+
+    # Balance reconciliation: deposits + realized trading P&L + referral credit =
+    # flat-state equity. `realized` here is the Kalshi-authoritative cumulative
+    # realized (settled + intraday), so reconciledEquity + open-position marks =
+    # the live account balance. `balance` is live equity (cash + open marks);
+    # the gap to reconciledEquity is capital deployed in open positions.
     reconcile = {
         "deposits": STARTING_CAPITAL,
-        "realized": round(cum_realized, 2),
+        "realized": round(cum_realized_disp, 2),
         "credit": KALSHI_NON_TRADE_CREDITS,
-        "reconciledEquity": round(STARTING_CAPITAL + cum_realized
+        "reconciledEquity": round(STARTING_CAPITAL + cum_realized_disp
                                   + KALSHI_NON_TRADE_CREDITS, 2),
         "balance": total_account_value,
         "deployed": round(portfolio_value + open_orders_collateral, 2),
@@ -390,19 +510,19 @@ def get_live_data(cfg: dict) -> dict:
         "cashBalance": round(balance, 2),       # cash component (free / settled)
         "portfolioValue": portfolio_value,      # mark-to-market position value
         "today": {
-            "total": round(today_realized + today_unrealized, 2),
-            "realized": round(today_realized, 2),
-            "unrealized": round(today_unrealized, 2),
+            "total": round(today_total_disp, 2),
+            "realized": round(today_realized_disp, 2),
+            "unrealized": round(today_unreal_disp, 2),
             "trades": int(today_trades),
             "open": n_open_contracts,
         },
         "cumulative": {
-            "total": round(cum_realized + today_unrealized, 2),
-            "realizedCum": round(cum_realized, 2),
-            "unrealizedCum": round(today_unrealized, 2),
-            "returnPct": round(((cum_realized + today_unrealized) / 3050.0) * 100, 1),
-            "winRate": round(win_rate, 3),
-            "nSettled": int(n_settled),
+            "total": round(cum_total, 2),
+            "realizedCum": round(cum_realized_disp, 2),
+            "unrealizedCum": round(cum_unreal_disp, 2),
+            "returnPct": cum_return_pct,
+            "winRate": round(cum_win_rate, 3),
+            "nSettled": int(cum_n_settled),
         },
         "openOrders": {"count": open_orders_count, "contracts": open_orders_contracts},
         "hrrr": hrrr,
