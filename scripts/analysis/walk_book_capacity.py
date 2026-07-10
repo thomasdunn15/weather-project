@@ -84,6 +84,15 @@ STATION_CFG = {
         decision_hour=17, decision_min=32, live_unit=500,
         depth_start=date(2026, 6, 10), depth_end=date(2026, 7, 7),
     ),
+    "KPHX": dict(
+        city="Phoenix", series="KXHIGHTPHX",
+        paper_model_source="EMOS combined 00Z Phoenix (rolling 45d)",
+        # RAW-only @0.20 expressed via the union path with blend disabled (blend_thr=1.00
+        # never fires) so this reproduces the LIVE Phoenix signal. live_unit=250.
+        use_union=True, raw_thr=0.20, blend_thr=1.00, smart_cross_thr=0.40,
+        decision_hour=14, decision_min=52, live_unit=250,
+        depth_start=date(2026, 6, 10), depth_end=date(2026, 7, 10),
+    ),
 }
 
 SIZES = [100, 250, 500, 750, 1000, 1500, 2000]
