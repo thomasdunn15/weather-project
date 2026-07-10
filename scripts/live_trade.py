@@ -196,11 +196,52 @@ CITY_CONFIG = {
         "max_open_contracts":         5000,     # KORD/KMIA parity (scaled from 500)
         "is_active": True,                      # LIVE per operator override 2026-06-22 (full size)
     },
+    "KPHX": {
+        "city_name": "Phoenix",
+        # ADDED 2026-07-10 — OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar.
+        # Phoenix does NOT clear the bar. Paper "EMOS combined 00Z Phoenix" shows a
+        # CONCENTRATED high-conviction edge — raw |edge|≥0.20 → +11.7c/contract net,
+        # both halves of the recent 6mo window positive (H1 +4.8 / H2 +2.6) — but on
+        # a YOUNG, THIN sample (Kalshi listed KXHIGHTPHX ~2026-02; n≈63 at 0.20) that
+        # could be a hot start, and Phoenix book depth is UNMEASURED. Live at 250-unit
+        # size (operator-set 2026-07-10, 5× the 50-unit minimal I recommended) as a
+        # real-money forward test; scale further ONLY after the edge holds forward AND
+        # a walk-book capacity study. `touch halt/KPHX` to stop.
+        # See docs/decisions/2026-07-10-phoenix-live-override.md.
+        #
+        # Strategy = RAW-only (NOT union/blend): Phoenix blend paper is n=13, too thin
+        # to fit/trust — trade the validated raw combined signal at 0.20. Same signal
+        # paper_trade_log logs daily as "EMOS combined 00Z Phoenix (rolling 45d)".
+        "models": ["gefs", "ifs"],
+        "emos_model": "combined",
+        "model_source": "EMOS combined 00Z Phoenix (rolling 45d)",
+        "paper_model_source": "EMOS combined 00Z Phoenix (rolling 45d)",
+        "live_model_source_tag": "EMOS combined RAW20 00Z Phoenix (rolling 45d) [LIVE]",
+        "decision_hour": 14,                    # 14:52 UTC — matches the paper-signal snapshot (~14:45)
+        "decision_minute": 52,                  # where the +11.7c edge was measured; :52 clears the 14:45
+                                                # paper / 14:46 KORD pile-up. TUNE via best_time_of_day later.
+        "use_union": False,                     # RAW-ONLY (blend n=13 too thin to validate)
+        "use_blend": False,
+        "edge_threshold": 0.20,                 # raw threshold (20%) — the paper-optimized value
+        "blend_edge_threshold": 1.00,           # blend disabled (moot: raw-only)
+        "smart_cross_edge_threshold": 0.40,     # exec: POST (maker) unless |edge|≥40% — conservative on
+                                                # an UNMEASURED book; don't walk depth at minimal size.
+        "sizing_mode": "unit",
+        "unit_contracts": 250,                  # operator-set 2026-07-10 (5× the 50-unit minimal). Book depth
+                                                # is UNMEASURED — run walk_book_capacity.py --station KPHX before
+                                                # scaling further; at 250 the >40%-edge signals CROSS the book.
+        "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
+        "max_contracts_per_trade": 250,         # depth cap (= unit_contracts)
+        "daily_loss_limit_dollars":   125.0,    # scaled 5× with size (was $25 at 50-unit)
+        "cumulative_kill_dollars":    375.0,    # scaled 5× with size (was $75 at 50-unit)
+        "max_open_contracts":         2500,     # 10× unit
+        "is_active": True,                      # LIVE per operator override 2026-07-10 (250-unit)
+    },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 450.0    # = Chicago $150 + Miami $150 + Dallas $150
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1500.0    # = Chicago $500 + Miami $500 + Dallas $500
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 575.0    # = Chicago $150 + Miami $150 + Dallas $150 + Phoenix $125
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1875.0    # = Chicago $500 + Miami $500 + Dallas $500 + Phoenix $375
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.

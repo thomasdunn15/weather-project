@@ -147,6 +147,10 @@
 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
+# PHOENIX live trading — OPERATOR OVERRIDE (MINIMAL 50-unit, raw@0.20), 2026-07-10.
+# See docs/decisions/2026-07-10-phoenix-live-override.md. 14:52 UTC = paper-signal time; tune later.
+52 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KPHX --live >> /var/log/weather/live_trade.log 2>&1
+
 # DALLAS live trading — OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar, 2026-06-22.
 # See docs/decisions/2026-06-22-dallas-live-override.md (supersedes the Dallas
 # paper-watchlist in docs/decisions/2026-06-21-live-universe-and-watchlist.md).
