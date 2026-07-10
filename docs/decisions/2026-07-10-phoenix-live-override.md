@@ -21,10 +21,12 @@ size**, as an operator override of the OOS-Sharpe > 2.5 deploy bar. Fourth live 
 - **Signal: RAW-only @ 0.20** (`use_union=False`, `use_blend=False`, `edge_threshold=0.20`).
   Blend is disabled because Phoenix blend paper is n=13 — too thin to fit/trust.
 - Model: EMOS `combined` (GEFS+IFS) 00Z, rolling 45d — the exact signal paper_trade_log logs daily.
-- Execution: `smart_cross_edge_threshold=0.40` → **post (maker)** unless |edge| ≥ 40%; conservative
-  on an unmeasured book (don't walk depth).
+- Execution: **POST-ONLY** (`smart_cross_edge_threshold=1.00` — never crosses). Set after the capacity
+  study showed the lone crossing signal LOST in-sample (overconfident tail bets) while maker fills 100%
+  at 250. Re-enable crossing (→0.40) once Phoenix proves out live.
 - **Size: `unit_contracts=250`, `max_contracts_per_trade=250`** — operator-set 2026-07-10 (5× the 50-unit
-  minimal I recommended). Book depth is **UNMEASURED**; at 250 the >40%-edge signals CROSS the book.
+  minimal I recommended). Book depth now **MEASURED** (capacity study 2026-07-10): 250 maker-fills 100%,
+  below the edge-cliff on both lenses. POST-ONLY, so no signal crosses.
 - Risk envelope: **daily-loss $125, cumulative-kill $375, max-open 2500** (scaled 5× with size — a single
   250-lot loss can be ~$60–190, so the $25/$75 minimal limits would have been incoherent at this size).
 - Decision time: **14:52 UTC** — matches the paper-signal snapshot (~14:45) where the +11.7¢ edge was

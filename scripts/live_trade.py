@@ -224,12 +224,15 @@ CITY_CONFIG = {
         "use_blend": False,
         "edge_threshold": 0.20,                 # raw threshold (20%) — the paper-optimized value
         "blend_edge_threshold": 1.00,           # blend disabled (moot: raw-only)
-        "smart_cross_edge_threshold": 0.40,     # exec: POST (maker) unless |edge|≥40% — conservative on
-                                                # an UNMEASURED book; don't walk depth at minimal size.
+        "smart_cross_edge_threshold": 1.00,     # POST-ONLY (never crosses — edge can't reach 100%). Set
+                                                # 2026-07-10 after the KPHX capacity study: the lone cross
+                                                # signal LOST in-sample (overconfident tail bets), and maker
+                                                # fills 100% at 250. Re-enable (→0.40) once Phoenix proves out.
         "sizing_mode": "unit",
-        "unit_contracts": 250,                  # operator-set 2026-07-10 (5× the 50-unit minimal). Book depth
-                                                # is UNMEASURED — run walk_book_capacity.py --station KPHX before
-                                                # scaling further; at 250 the >40%-edge signals CROSS the book.
+        "unit_contracts": 250,                  # operator-set 2026-07-10 (5× the 50-unit minimal). Capacity
+                                                # study 2026-07-10: 250 maker-fills 100% (saturates ~450-500),
+                                                # below the edge-cliff. POST-ONLY (smart_cross=1.00) → no crossing.
+                                                # Scale further only after the live edge holds ~30d.
         "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
         "max_contracts_per_trade": 250,         # depth cap (= unit_contracts)
         "daily_loss_limit_dollars":   125.0,    # scaled 5× with size (was $25 at 50-unit)
