@@ -15,11 +15,13 @@
   --bg-inset: #06090F;
   --glass: rgba(255,255,255,0.045);   /* backdrop-filter: blur(14px) on topbar/hero/modal */
 
-  /* ---- ink scale (3 weights + faint) ---- */
+  /* ---- ink scale (3 weights + faint) — all four tiers verified WCAG-AA (>=4.5:1)
+         on bg-0/1/2/3 so labels + sub-values stay legible at 9.5-10.5px.
+         hi 15.5 · mid 6.4 · lo 5.9 · faint 5.0 (vs bg-1). ---- */
   --text-hi:    #EAF0FB;
   --text-mid:   #8E9CB4;
-  --text-lo:    #58657E;
-  --text-faint: #3E495E;
+  --text-lo:    #8695AD;
+  --text-faint: #7C89A2;
 
   /* ---- hairlines ---- */
   --border:        rgba(180,200,230,0.08);
@@ -81,7 +83,7 @@
   --ease-out:  cubic-bezier(.22,1,.36,1);
   --ease-soft: cubic-bezier(.40,0,.20,1);
   --ease-in:   cubic-bezier(.40,0,1,1);
-  --press:     cubic-bezier(.34,1.56,.64,1);
+  --press:     cubic-bezier(.2,.9,.3,1);   /* snappy ease-out for press feedback — no overshoot/bounce */
   --flash-tint-pos: rgba(47,208,138,0.22);   /* derived from --up @22% */
   --flash-tint-neg: rgba(244,71,107,0.22);   /* derived from --down @22% */
 }

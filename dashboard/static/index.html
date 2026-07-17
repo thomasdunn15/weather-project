@@ -8,12 +8,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- ISOBAR split stylesheets, in cascade order -->
-<link rel="stylesheet" href="/static/css/tokens.css?v=7">
-<link rel="stylesheet" href="/static/css/shell.css?v=7">
-<link rel="stylesheet" href="/static/css/components.css?v=7">
-<link rel="stylesheet" href="/static/css/live.css?v=7">
-<link rel="stylesheet" href="/static/css/backtest.css?v=7">
-<link rel="stylesheet" href="/static/css/responsive.css?v=7">
+<link rel="stylesheet" href="/static/css/tokens.css?v=8">
+<link rel="stylesheet" href="/static/css/shell.css?v=8">
+<link rel="stylesheet" href="/static/css/components.css?v=8">
+<link rel="stylesheet" href="/static/css/live.css?v=8">
+<link rel="stylesheet" href="/static/css/backtest.css?v=8">
+<link rel="stylesheet" href="/static/css/responsive.css?v=8">
 </head>
 <body>
 <div class="app">
@@ -29,20 +29,20 @@
     <span class="refresh-pill"><span class="dot live"></span><span id="refresh-label">connecting…</span></span>
   </header>
 
-  <nav class="tabbar">
-    <button id="tab-live" class="on" onclick="switchTab('live')">Live Trading</button>
-    <button id="tab-backtest" onclick="switchTab('backtest')">Backtest</button>
+  <nav class="tabbar" role="tablist" aria-label="Dashboard views">
+    <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')">Live Trading</button>
+    <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')">Backtest</button>
   </nav>
 
   <main>
-    <section id="section-live">
+    <section id="section-live" role="tabpanel" aria-label="Live trading">
       <div class="wrap" id="live-root"><div class="loading">Loading live data…</div></div>
     </section>
-    <section id="section-backtest" hidden>
+    <section id="section-backtest" role="tabpanel" aria-label="Backtest" hidden>
       <div id="backtest-root"><div class="wrap"><div class="loading">Loading backtest…</div></div></div>
     </section>
   </main>
 </div>
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>

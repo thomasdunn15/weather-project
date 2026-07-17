@@ -40,11 +40,20 @@
   padding: 5px 9px; border: 1px solid var(--border); border-radius: 100px;
 }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--up); box-shadow: 0 0 0 0 var(--up); }
-.dot.live { animation: pulse 2.4s ease-out infinite; }
+/* feed-freshness states (driven by updateLiveIndicator via lv.ageMs):
+   fresh → green pulse · stale → amber pulse · dead/rest → static red. */
+.dot.live  { background: var(--up);   animation: pulse 2.4s ease-out infinite; }
+.dot.stale { background: var(--warn); animation: pulse-amber 2.4s ease-out infinite; }
+.dot.dead  { background: var(--down); animation: none; }
 @keyframes pulse {
   0%   { box-shadow: 0 0 0 0 rgba(47,208,138,0.5); }
   70%  { box-shadow: 0 0 0 6px rgba(47,208,138,0); }
   100% { box-shadow: 0 0 0 0 rgba(47,208,138,0); }
+}
+@keyframes pulse-amber {
+  0%   { box-shadow: 0 0 0 0 rgba(251,191,36,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(251,191,36,0); }
+  100% { box-shadow: 0 0 0 0 rgba(251,191,36,0); }
 }
 
 /* ---------- tab bar (animated underline + press) ---------- */
@@ -86,6 +95,14 @@
 .g-4 { grid-template-columns: repeat(4, 1fr); }
 .g-5 { grid-template-columns: repeat(5, 1fr); }
 .g-2 { grid-template-columns: 1fr 1fr; }
+
+/* per-city row: breakpoint-free so any city count (4, 5, +Other Cities, future
+   expansion) wraps gracefully instead of relying on a hand-picked .g-N that only
+   exists for 2-5 and collapses to one column at 6+. 340px min matches the proven
+   4-across width so the 3-metric body + strategy label never clip; on a desktop
+   it lands the 4 live cities on row 1 and the 2 summary cards (Other + aggregate)
+   on row 2, tablet 2-across, phone 1-up. */
+.city-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
 
 /* ---------- panel primitive ---------- */
 .panel { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }

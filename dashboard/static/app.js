@@ -8,8 +8,9 @@
    ===================================================================== */
 
 /* ---------- animation timing (tunable; user-signed-off prototype values) ----------
-   Override note: LOAD_MS was bumped 1600 → 2400 (1600 read too fast). */
-const LOAD_MS = 2400;   // entrance count-up from 0 — the hero "moment"
+   Override note: 2400 forced a wait to read live P&L on a glance tool reopened
+   all day; 900 keeps the entrance "moment" without stalling the read. */
+const LOAD_MS = 900;    // entrance count-up from 0 — the hero "moment"
 const TICK_MS = 400;    // live-poll prev→new tween
 const easeOutExpo  = t => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);   // load easing
 const easeOutCubic = t => 1 - Math.pow(1 - t, 3);                  // tick easing
@@ -121,7 +122,7 @@ function sparkSVG(data, color) {
   const last = vals[vals.length - 1];
   const c = color || (last >= 0 ? "var(--up)" : "var(--down)");
   const gid = "sg" + (++_uid);
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.22"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#${gid})"/><path d="${line}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.22"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#${gid})"/><path d="${line}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 function pnlChartSVG(data) {
@@ -149,7 +150,7 @@ function pnlChartSVG(data) {
   CHARTS.pnl = { W: w, n: data.length, X, build: (i) =>
     `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(data[i].v).toFixed(1)}" r="3.5" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${Math.min(X(i) + 8, padL + iw - 78).toFixed(1)},${padT + 2})"><rect width="74" height="20" rx="4" fill="var(--bg-3)" stroke="var(--border-strong)"/><text x="8" y="14" fill="var(--text-hi)" style="font:600 11px var(--mono)">${money(data[i].v, { sign: true, dp: 0 })}</text></g>`
   };
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="pnlrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)" clip-path="url(#pnlrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl" role="img" aria-label="Cumulative P&amp;L, last 7 days"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="pnlrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)" clip-path="url(#pnlrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 function ensembleChartSVG(d) {
@@ -208,7 +209,7 @@ function ensembleChartSVG(d) {
     obs = `<line x1="${X(d.observed)}" x2="${X(d.observed)}" y1="${padT - 2}" y2="${padT + ih}" stroke="var(--up)" stroke-width="2"/><g transform="translate(${Math.min(X(d.observed) + 6, padL + iw - 70)},${padT + 4})"><rect width="64" height="18" rx="4" fill="var(--up-dim)" stroke="var(--up-line)"/><text x="7" y="13" fill="var(--up)" style="font:600 10px var(--mono)">obs ${d.observed}°</text></g>`;
   }
   const xlab = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).filter(t => t % 2 === 0).map(t => `<text x="${X(t)}" y="${height - 9}" text-anchor="middle" class="chart-axis-x">${t}°</text>`).join("");
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}">${thermalDef}${bracketFills}${bnd}${bars}${curve}${mean}${obs}${xlab}</svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" role="img" aria-label="Ensemble high-temperature distribution with EMOS overlay">${thermalDef}${bracketFills}${bnd}${bars}${curve}${mean}${obs}${xlab}</svg>`;
 }
 
 function balanceChartSVG(curve, filledTrades) {
@@ -274,7 +275,7 @@ function balanceChartSVG(curve, filledTrades) {
   for (let i = 0; i < curve.length; i++) dd += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(peaks[i]).toFixed(1) + " ";
   for (let i = curve.length - 1; i >= 0; i--) dd += "L" + X(i).toFixed(1) + "," + Y(curve[i]).toFixed(1) + " ";
   const ddPath = `<path d="${dd}Z" fill="var(--down)" opacity="0.1" clip-path="url(#balrev)"/>`;
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="balrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)" clip-path="url(#balrev)"/>${ddPath}<path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="bal" role="img" aria-label="Simulated equity curve"><defs><linearGradient id="balfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.16"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="balrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--border-strong)" stroke-width="1.5"/><text x="${padL + iw + 8}" y="${Y(start) - 4}" fill="var(--text-lo)" style="font:600 9.5px var(--mono)">start</text><path d="${line} L${X(curve.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z" fill="url(#balfill)" clip-path="url(#balrev)"/>${ddPath}<path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 // Attach hover handlers to every chart with a data-chart attr. Called after each
@@ -682,21 +683,33 @@ function formatCountdown(d) {
   return m + "m " + String(s).padStart(2, "0") + "s";
 }
 
+// Feed freshness (not just connectivity): a connected WS whose marks stopped
+// updating is STALE and must not read as healthy green on a real-money feed.
+function liveFeedState(lv) {
+  lv = lv || {};
+  const ageS = lv.ageMs != null ? Math.round(lv.ageMs / 1000) : null;
+  if (!lv.connected)              return { ico: "warn", dot: "stale", tag: "",      ageS };
+  if (ageS != null && ageS > 600) return { ico: "err",  dot: "dead",  tag: "dead",  ageS };
+  if (ageS != null && ageS > 120) return { ico: "warn", dot: "stale", tag: "stale", ageS };
+  return { ico: "ok", dot: "live", tag: "", ageS };
+}
+
 function statusStrip(d) {
   const killOk = d.killArmed;
   const liveCities = d.cities.filter(c => c.status === "active").length;
   const lv = d.live || {};
   const src = lv.source || "—";
-  // contract said 'ws/rest/db' but the payload returns 'websocket'; key the dot
-  // off lv.connected (matches the topbar pill) rather than an exact source string.
-  const srcIco = lv.connected ? "ok" : src === "rest" ? "warn" : "";
+  // Live-feed chip freshness mirrors the topbar dot (liveFeedState): connected
+  // but stale marks show amber/red, never healthy green.
+  const fs = liveFeedState(lv);
+  const srcIco = fs.ico;
   return `<div class="status-strip">
     <div class="chip"><span class="ico ${killOk ? "ok" : "err"}"></span><span class="txt"><span class="l">Kill switch</span><span class="d" style="color:${killOk ? "var(--up)" : "var(--down)"}">${killOk ? "ARMED" : "TRIGGERED"}</span></span></div>
     <div class="chip"><span class="ico ${d.nextCron.inMin === null ? "err" : "ok"}"></span><span class="txt"><span class="l">Next cron · ${esc(d.nextCron.label)}</span><span class="d">${esc(d.nextCron.at)} ${d.nextCron.inMin !== null ? `<small>· in <span id="cron-countdown">${formatCountdown(d)}</span></small>` : ""}</span></span></div>
     <div class="chip"><span class="ico ${d.openOrders.count > 0 ? "ok" : ""}"></span><span class="txt"><span class="l">Open orders</span><span class="d">${d.openOrders.count} resting <small>· ${d.openOrders.contracts.toLocaleString()} contracts</small></span></span></div>
     <div class="chip"><span class="ico ${d.hrrr.status === "ok" ? "ok" : "warn"}"></span><span class="txt"><span class="l">HRRR data</span><span class="d" style="color:${d.hrrr.status === "ok" ? "var(--text-hi)" : "var(--warn)"}">${d.hrrr.status === "ok" ? "fresh" : "stale"} <small>· ${esc(d.hrrr.age)} ago</small></span></span></div>
     <div class="chip"><span class="ico ok"></span><span class="txt"><span class="l">Positions</span><span class="d">${d.positions.length} open <small>· ${liveCities}/${d.cities.length} cities live</small></span></span></div>
-    <div class="chip"><span class="ico ${srcIco}"></span><span class="txt"><span class="l">Live feed</span><span class="d">${esc(src)}<small>${lv.marks != null ? ` · ${lv.marks} marks` : ""}</small></span></span></div>
+    <div class="chip"><span class="ico ${srcIco}"></span><span class="txt"><span class="l">Live feed</span><span class="d">${esc(src)}<small>${lv.marks != null ? ` · ${lv.marks} marks` : ""}${fs.tag ? ` · <span style="color:${fs.dot === "dead" ? "var(--down)" : "var(--warn)"}">${fs.tag}</span>` : ""}</small></span></span></div>
   </div>`;
 }
 
@@ -708,7 +721,7 @@ function killBanner(d) {
 function riskBar(name, used, limit) {
   const r = Math.min(1, limit ? used / limit : 0);
   const lvl = r >= 0.8 ? "err" : r >= 0.5 ? "warn" : "ok";
-  return `<div class="riskrow"><div class="rl"><span class="name">${esc(name)}</span><span class="val">$${used.toFixed(0)} <span style="color:var(--text-faint)">/ $${limit.toFixed(0)}</span></span></div><div class="bar"><span class="${lvl}" style="width:${(r * 100).toFixed(0)}%"></span></div></div>`;
+  return `<div class="riskrow"><div class="rl"><span class="name">${esc(name)}</span><span class="val">$${used.toFixed(0)} <span style="color:var(--text-faint)">/ $${limit.toFixed(0)}</span></span></div><div class="bar"><span class="${lvl}" style="transform:scaleX(${r.toFixed(3)})"></span></div></div>`;
 }
 
 function dialHTML(used, limit) {
@@ -749,9 +762,9 @@ function aggRisk(d) {
   const lvl = (u, k) => (k && u / k >= 0.8) ? "err" : (k && u / k >= 0.5) ? "warn" : "ok";
   return `<div class="panel" style="display:flex;flex-direction:column"><div class="panel-h"><h3>Aggregate risk envelope</h3><span class="meta">cross-city</span></div>
     <div class="panel-b aggm" style="flex:1">
-      <div class="a"><div class="top"><span class="lbl">Cumulative drawdown</span><span class="num ${cls(a.cumPnl)}">${money(a.cumPnl)}</span></div><div class="bar"><span class="${lvl(cumUsed, a.cumKill)}" style="width:${Math.min(100, a.cumKill ? cumUsed / a.cumKill * 100 : 0)}%"></span></div><span class="cap">kill at −$${a.cumKill} · ${(a.cumKill ? cumUsed / a.cumKill * 100 : 0).toFixed(0)}% used</span></div>
-      <div class="a"><div class="top"><span class="lbl">Daily loss</span><span class="num ${cls(a.todayPnl)}">${money(a.todayPnl)}</span></div><div class="bar"><span class="${lvl(todayUsed, a.dailyKill)}" style="width:${Math.min(100, a.dailyKill ? todayUsed / a.dailyKill * 100 : 0)}%"></span></div><span class="cap">halt at −$${a.dailyKill} · ${(a.dailyKill ? todayUsed / a.dailyKill * 100 : 0).toFixed(0)}% used</span></div>
-      <div class="a"><div class="top"><span class="lbl">Open contracts</span><span class="num">${a.openContracts.toLocaleString()}</span></div><div class="bar"><span class="ok" style="width:${Math.min(100, a.contractCap ? a.openContracts / a.contractCap * 100 : 0)}%"></span></div><span class="cap">cap ${a.contractCap.toLocaleString()} (sum of city caps)</span></div>
+      <div class="a"><div class="top"><span class="lbl">Cumulative drawdown</span><span class="num ${cls(a.cumPnl)}">${money(a.cumPnl)}</span></div><div class="bar"><span class="${lvl(cumUsed, a.cumKill)}" style="transform:scaleX(${(a.cumKill ? Math.min(1, cumUsed / a.cumKill) : 0).toFixed(3)})"></span></div><span class="cap">kill at −$${a.cumKill} · ${(a.cumKill ? cumUsed / a.cumKill * 100 : 0).toFixed(0)}% used</span></div>
+      <div class="a"><div class="top"><span class="lbl">Daily loss</span><span class="num ${cls(a.todayPnl)}">${money(a.todayPnl)}</span></div><div class="bar"><span class="${lvl(todayUsed, a.dailyKill)}" style="transform:scaleX(${(a.dailyKill ? Math.min(1, todayUsed / a.dailyKill) : 0).toFixed(3)})"></span></div><span class="cap">halt at −$${a.dailyKill} · ${(a.dailyKill ? todayUsed / a.dailyKill * 100 : 0).toFixed(0)}% used</span></div>
+      <div class="a"><div class="top"><span class="lbl">Open contracts</span><span class="num">${a.openContracts.toLocaleString()}</span></div><div class="bar"><span class="ok" style="transform:scaleX(${(a.contractCap ? Math.min(1, a.openContracts / a.contractCap) : 0).toFixed(3)})"></span></div><span class="cap">cap ${a.contractCap.toLocaleString()} (sum of city caps)</span></div>
     </div>
   </div>`;
 }
@@ -761,60 +774,70 @@ function positionsTable(rows) {
     ? `<tr><td class="l muted" colspan="8" style="padding:20px 12px">No open positions — all flat.</td></tr>`
     : rows.map(r => `<tr data-pos-ticker="${esc(r.ticker)}"><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.avg}¢</td><td class="hi" data-mark-ticker="${esc(r.ticker)}">${r.mark}¢${r.live ? ` <span class="live-dot" title="live WS mark">●</span>` : ""}</td><td class="${cls(r.unreal)}">${money(r.unreal)}</td><td class="${cls(r.unreal)}">${pct(r.unrealPct)}</td></tr>`).join("");
   const liveN = rows.filter(r => r.live).length;
-  return `<div class="panel"><div class="panel-h"><h3>Current positions</h3><span class="meta">mark = side-adjusted bid · ${rows.length} open${liveN ? ` · ${liveN} live ●` : ""}</span></div><div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Unreal</th><th>%</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Current positions</h3><span class="meta">mark = side-adjusted bid · ${rows.length} open${liveN ? ` · ${liveN} live ●` : ""}</span></div><div class="tbl-scroll" data-scroll-key="positions"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Unreal</th><th>%</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function signalsTable(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="9" style="padding:18px 12px">No signals logged today.</td></tr>`
     : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td>${(r.modelP * 100).toFixed(0)}%</td><td>${(r.mktP * 100).toFixed(0)}%</td><td>${edgeCell(r.edge)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">BUY ${esc(r.side)}</span></td><td><span class="pill-status ${r.placed === "placed" ? "placed" : "skipped"}">${esc(r.placed)}</span></td><td><span class="pill-status ${esc(r.fill)}">${esc(r.fill)}</span></td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "—" : money(r.pnl)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Today's signals → fills</h3><span class="meta">every logged signal · placed? · fill status</span></div><div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Order</th><th>Fill</th><th>P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Today's signals → fills</h3><span class="meta">every logged signal · placed? · fill status</span></div><div class="tbl-scroll" data-scroll-key="signals"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Order</th><th>Fill</th><th>P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function ordersTable(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="7" style="padding:18px 12px">No orders placed today.</td></tr>`
     : rows.map(r => `<tr><td class="l">${esc(r.time)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="hi">${r.fillPx === null ? "—" : r.fillPx + "¢"}</td><td><span class="pill-status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Today's live orders</h3><span class="meta">live_trades view</span></div><div class="tbl-scroll" style="max-height:240px"><table class="dt"><thead><tr><th class="l">Time</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Fill</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Today's live orders</h3><span class="meta">live_trades view</span></div><div class="tbl-scroll" style="max-height:240px" data-scroll-key="orders"><table class="dt"><thead><tr><th class="l">Time</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Fill</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function openOrders(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="5" style="padding:16px 12px">No resting orders.</td></tr>`
     : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="muted">${esc(r.age)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Open orders on Kalshi</h3><span class="meta">${rows.length} resting</span></div><div class="tbl-scroll" style="max-height:200px"><table class="dt"><thead><tr><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Age</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Open orders on Kalshi</h3><span class="meta">${rows.length} resting</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="openorders"><table class="dt"><thead><tr><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Age</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function recentFills(rows) {
   const body = rows.length === 0
     ? `<tr><td class="l muted" colspan="6" style="padding:16px 12px">No fills in the last 7 days.</td></tr>`
     : rows.map(r => `<tr><td class="l">${esc(r.date)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.px}¢</td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "open" : money(r.pnl)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Recent fills (7 days)</h3><span class="meta">${rows.length} fills</span></div><div class="tbl-scroll" style="max-height:200px"><table class="dt"><thead><tr><th class="l">Date</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Px</th><th>Settled P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-h"><h3>Recent fills (7 days)</h3><span class="meta">${rows.length} fills</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="fills"><table class="dt"><thead><tr><th class="l">Date</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Px</th><th>Settled P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function cronAlerts(d) {
-  const dot = s => s === "ok" ? "var(--pos)" : s === "error" ? "var(--neg)" : "var(--warn)";
+  const dot = s => s === "ok" ? "var(--up)" : s === "error" ? "var(--down)" : "var(--warn)";
   const crons = d.crons.map(c => `<div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:${dot(c.status)};flex:none"></span><span class="mono" style="font-size:12px;color:var(--text-hi);min-width:104px">${esc(c.name)}</span><span class="mono" style="font-size:11px;color:var(--text-lo)">${esc(c.last)}</span><span class="mono" style="font-size:11px;color:var(--text-faint);margin-left:auto">${esc(c.desc)}</span></div>`).join("");
-  const alerts = d.alerts.map(a => `<div class="logline ${esc(a.lvl)}" style="display:flex;gap:9px"><span class="tt">${esc(a.ts)}</span><span style="color:${a.lvl === "err" ? "var(--neg)" : a.lvl === "warn" ? "var(--warn)" : "var(--text-mid)"}">${esc(a.msg)}</span></div>`).join("");
+  const alerts = d.alerts.map(a => `<div class="logline ${esc(a.lvl)}" style="display:flex;gap:9px"><span class="tt">${esc(a.ts)}</span><span style="color:${a.lvl === "err" ? "var(--down)" : a.lvl === "warn" ? "var(--warn)" : "var(--text-mid)"}">${esc(a.msg)}</span></div>`).join("");
   return `<div class="panel"><div class="panel-h"><h3>Cron health &amp; alerts</h3><span class="meta">${d.crons.length} daily jobs</span></div><div class="panel-b" style="display:grid;grid-template-columns:1fr 1fr;gap:18px"><div style="display:flex;flex-direction:column;gap:9px">${crons}</div><div style="border-left:1px solid var(--border);padding-left:18px;display:flex;flex-direction:column;gap:8px">${alerts}</div></div></div>`;
 }
 
 function paramsExpander(d) {
   const cities = d.cities.map(c => `<div>— <b style="color:var(--text-hi)">${esc(c.name)}</b> (${esc(c.code)}) — edge ≥ ${esc(c.edgeThresh)}, size ${esc(c.stake)}, daily $${c.risk.todayKill}, cumulative $${c.risk.cumKill}</div>`).join("");
-  return `<details class="params"><summary>Strategy parameters in effect (live from live_trade.py)</summary><div class="pbody"><div><b style="color:var(--text-hi)">Filter:</b> |edge| ≥ per-city threshold, no entry-price floor · <b style="color:var(--text-hi)">Execution:</b> <code>post_inside_spread</code></div><div><b style="color:var(--text-hi)">Aggregate kills:</b> daily loss −$${d.agg.dailyKill}, cumulative drawdown −$${d.agg.cumKill}, 4wk avg spread &gt; 5¢</div><div style="margin-top:6px">${cities}</div><div style="margin-top:8px">Halt files: <code>touch halt/KORD</code> <code>touch halt/KMIA</code> <code>touch halt/ALL</code></div></div></details>`;
+  return `<details class="params"><summary data-focus-key="params-summary">Strategy parameters in effect (live from live_trade.py)</summary><div class="pbody"><div><b style="color:var(--text-hi)">Filter:</b> |edge| ≥ per-city threshold, no entry-price floor · <b style="color:var(--text-hi)">Execution:</b> <code>post_inside_spread</code></div><div><b style="color:var(--text-hi)">Aggregate kills:</b> daily loss −$${d.agg.dailyKill}, cumulative drawdown −$${d.agg.cumKill}, 4wk avg spread &gt; 5¢</div><div style="margin-top:6px">${cities}</div><div style="margin-top:8px">Halt files: <code>touch halt/KORD</code> <code>touch halt/KMIA</code> <code>touch halt/ALL</code></div></div></details>`;
 }
 
 function renderLive() {
   const root = document.getElementById("live-root");
   if (!LIVE) { root.innerHTML = `<div class="loading">Loading live data…</div>`; return; }
   const d = LIVE;
-  // Per-city grid columns = one per card: N city cards + optional Other Cities + the aggregate-risk card.
-  // Generalized from the old 2-city g-3/g-4 special case so any city count (e.g. Dallas → 3 cities → g-5) lays out.
-  const cityGridCols = d.cities.length + (d.otherCities ? 1 : 0) + 1;
+  // Preserve interaction state across the 2s poll rebuild: table scroll positions,
+  // the params disclosure open/closed, and keyboard focus. Without this the
+  // innerHTML swap resets scroll, snaps the params panel shut, and ejects a
+  // keyboard user's focus every poll.
+  const scrollState = {};
+  root.querySelectorAll(".tbl-scroll[data-scroll-key]").forEach(el => { scrollState[el.dataset.scrollKey] = el.scrollTop; });
+  const _pd = root.querySelector("details.params");
+  const paramsOpen = _pd ? _pd.open : false;
+  const _active = document.activeElement;
+  const focusKey = (_active && root.contains(_active)) ? _active.getAttribute("data-focus-key") : null;
   root.innerHTML =
     killBanner(d) + liveHero(d) + statusStrip(d) +
     `<div class="section-label">Per-city · realized + unrealized + risk</div>` +
-    `<div class="grid g-${cityGridCols}">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
+    // breakpoint-free auto-fit row: any count of cards (N cities + optional Other
+    // Cities + the aggregate-risk card) wraps, instead of a .g-N that only exists
+    // for 2-5 and collapsed 6+ (4 cities + Other + agg) to a single column.
+    `<div class="city-grid">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
     `<div class="grid" style="grid-template-columns:1.45fr 1fr">` +
       `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
       positionsTable(d.positions) +
@@ -822,6 +845,10 @@ function renderLive() {
     signalsTable(d.signals) +
     `<div class="grid g-2">${ordersTable(d.orders)}<div class="grid" style="grid-template-rows:auto auto;gap:14px">${openOrders(d.openOrdersTbl)}${recentFills(d.fills)}</div></div>` +
     cronAlerts(d) + paramsExpander(d);
+  // restore preserved interaction state onto the freshly-built DOM
+  root.querySelectorAll(".tbl-scroll[data-scroll-key]").forEach(el => { const v = scrollState[el.dataset.scrollKey]; if (v) el.scrollTop = v; });
+  if (paramsOpen) { const pd2 = root.querySelector("details.params"); if (pd2) pd2.open = true; }
+  if (focusKey) { const fel = root.querySelector('[data-focus-key="' + focusKey + '"]'); if (fel) fel.focus(); }
   wireCharts(root);
   animateLiveDeltas(d);
 }
@@ -932,10 +959,15 @@ function animateLiveDeltas(d) {
 // undefined (not computed yet) / null (too few trades) → muted steel.
 // ====================================================================
 function btSharpeColor(best) {
-  if (!best) return "var(--teal)";
+  if (!best) return "var(--text-lo)";
   const s = best.sharpe;
-  return s >= 2 ? "var(--extreme)" : s >= 1.5 ? "var(--hot)" : s >= 1 ? "var(--warm)"
-       : s >= 0.5 ? "var(--temperate)" : s >= 0.25 ? "var(--cool)" : "var(--cold)";
+  // Quality scale (green=good … red=negative), NOT the thermal ramp — temperature
+  // color stays reserved for °F so a strong Sharpe never reads as loss-red.
+  return s >= 2.5 ? "var(--up)"        // clears the deploy bar
+       : s >= 1.5 ? "var(--temperate)" // strong
+       : s >= 0.8 ? "var(--warn)"      // marginal
+       : s >= 0   ? "var(--text-mid)"  // weak
+       :            "var(--down)";     // negative
 }
 // Inline best-Sharpe stat shown beside the city selector (replaces the map's
 // per-city Sharpe coloring). bestByCity[code] is seeded by recordBest() on load.
@@ -1472,24 +1504,32 @@ function updateLiveIndicator() {
   const lab = document.getElementById("refresh-label");
   const dot = document.querySelector(".refresh-pill .dot");
   const lv = (LIVE && LIVE.live) || { connected: false, marks: 0, ageMs: null };
+  const fs = liveFeedState(lv);
   if (lab) {
-    if (lv.connected) {
-      const age = lv.ageMs != null ? Math.round(lv.ageMs / 1000) + "s" : "—";
-      lab.textContent = `ws · ${lv.marks} live · ${age}`;
-    } else {
-      lab.textContent = "rest · 2s";
-    }
+    lab.textContent = lv.connected
+      ? `ws · ${lv.marks} live · ${fs.ageS != null ? fs.ageS + "s" : "—"}${fs.tag ? " · " + fs.tag : ""}`
+      : "rest · 2s";
   }
-  if (dot) dot.style.background = lv.connected ? "var(--pos)" : "var(--warn)";
+  // dot state drives BOTH colour and pulse via CSS (.dot.live/.stale/.dead) —
+  // green only when marks are genuinely fresh.
+  if (dot) dot.className = "dot " + fs.dot;
 }
 function stopLivePolling() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
 
 function switchTab(name) {
   activeTab = name;
-  document.getElementById("section-live").hidden = name !== "live";
-  document.getElementById("section-backtest").hidden = name !== "backtest";
-  document.getElementById("tab-live").classList.toggle("on", name === "live");
-  document.getElementById("tab-backtest").classList.toggle("on", name === "backtest");
+  const applyTab = () => {
+    document.getElementById("section-live").hidden = name !== "live";
+    document.getElementById("section-backtest").hidden = name !== "backtest";
+    const tl = document.getElementById("tab-live"), tb = document.getElementById("tab-backtest");
+    tl.classList.toggle("on", name === "live");     tl.setAttribute("aria-selected", String(name === "live"));
+    tb.classList.toggle("on", name === "backtest"); tb.setAttribute("aria-selected", String(name === "backtest"));
+  };
+  // Cross-fade the tab swap via the View-Transitions API (the ::view-transition
+  // rules already ship in shell.css); instant fallback when unsupported or the
+  // user prefers reduced motion.
+  if (document.startViewTransition && !RM.matches) document.startViewTransition(applyTab);
+  else applyTab();
   const rl = document.getElementById("refresh-label");
   if (name === "live") {
     startLivePolling();
