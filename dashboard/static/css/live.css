@@ -24,11 +24,12 @@
 #live-root.intro > *:nth-child(8)   { animation-delay: calc(var(--stagger) * 7); }
 #live-root.intro > *:nth-child(n+9) { animation-delay: calc(var(--stagger) * 8); }
 
-/* ---------- HERO P&L band (glass) ---------- */
+/* ---------- HERO P&L band (solid elevated surface, top-lit) ----------
+   De-glassed: a decorative blur over near-black read as ~nothing and cost GPU.
+   A subtle top-lit gradient reads as "raised" honestly. */
 .hero {
   display: grid; grid-template-columns: 1.15fr 1.15fr 0.95fr;
-  background: var(--glass);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   border: 1px solid var(--border-strong); border-radius: var(--r-lg);
   overflow: hidden; box-shadow: var(--shadow);
 }
@@ -48,7 +49,7 @@
 .status-strip { display: flex; gap: 10px; flex-wrap: wrap; }
 .chip {
   display: flex; align-items: center; gap: 10px;
-  background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  background: var(--bg-2);
   border: 1px solid var(--border); border-radius: 100px;
   padding: 9px 14px; min-width: 168px; flex: 1;
 }
@@ -69,12 +70,13 @@
 /* live ● mark dot — pulsing green, gated on r.live in positionsTable */
 .live-dot { color: var(--up); display: inline-block; animation: dot-breathe 2s var(--ease-soft) infinite; }
 
-/* ---------- kill-switch alert banner ---------- */
+/* ---------- kill-switch alert banner ----------
+   Full colored border (no side-stripe accent) + tinted fill + bang icon carry
+   the alarm; the red ⛔ glyph and heading do the rest. */
 .alert {
   display: flex; align-items: center; gap: 14px;
   background: linear-gradient(90deg, var(--down-dim), rgba(244,71,107,0.04));
-  border: 1px solid var(--down-line); border-left: 3px solid var(--down);
-  border-radius: var(--r-lg); padding: 14px 18px;
+  border: 1px solid var(--down); border-radius: var(--r-lg); padding: 14px 18px;
 }
 .alert .bang { font-size: 20px; line-height: 1; color: var(--down); }
 .alert .body { flex: 1; }
@@ -92,8 +94,10 @@
 .badge.active { color: var(--up);   background: var(--up-dim); }
 .badge.halted { color: var(--warn); background: var(--warn-dim); }
 .badge.other  { color: var(--text-lo); background: var(--bg-3); }
-/* "Other Cities" rollup: subtle left accent so it reads as a roll-up, not a live city */
-.city.other { border-left: 2px solid var(--text-faint); }
+/* "Other Cities" rollup: recessed surface (no side-stripe) so it reads as a
+   roll-up sitting behind the live cards, reinforced by the "other" header badge. */
+.city.other { background: var(--bg-0); }
+.city.other .ch { border-bottom-color: var(--border-strong); }
 .city .cbody { display: grid; grid-template-columns: repeat(3, 1fr); }
 .city .cbody .m { padding: 13px 15px; border-right: 1px solid var(--border); }
 .city .cbody .m:last-child { border-right: 0; }
@@ -115,7 +119,9 @@
 .riskrow .rl .name { color: var(--text-lo); font-family: var(--ui); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; font-size: 9.5px; white-space: nowrap; }
 .riskrow .rl .val { white-space: nowrap; color: var(--text-mid); }
 .bar { height: 5px; border-radius: 3px; background: var(--bg-3); overflow: hidden; }
-.bar > span { display: block; height: 100%; border-radius: 3px; background: var(--text-faint); transition: width var(--dur-3) var(--ease-out); }
+/* fill scales on the compositor (transform, not width) — no layout thrash.
+   riskBar() sets transform:scaleX(0..1); the track (.bar) provides the groove. */
+.bar > span { display: block; height: 100%; width: 100%; border-radius: 3px; background: var(--text-faint); transform: scaleX(0); transform-origin: left center; transition: transform var(--dur-3) var(--ease-out); }
 .bar > span.ok   { background: var(--up); }
 .bar > span.warn { background: var(--warn); }
 .bar > span.err  { background: var(--down); }

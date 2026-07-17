@@ -76,13 +76,18 @@
    the strategy-selected model/blend P; the white tick = the market price, so
    the gap between fill-edge and tick reads as the trading edge.
    ===================================================================== */
-.ladder { display: flex; flex-direction: column; }
+/* overflow-x:auto so the fixed 6-column rung grid scrolls inside its own panel
+   on narrow screens instead of forcing the whole page body to scroll sideways. */
+.ladder { display: flex; flex-direction: column; overflow-x: auto; }
 .rung {
   display: grid; grid-template-columns: 118px 1fr 52px 92px 118px 56px;
   align-items: center; gap: 12px; padding: 7px 14px;
   border-bottom: 1px solid var(--border);
   transition: background var(--dur-1) var(--ease-soft);
 }
+/* below tablet the rung can't compress its fixed tracks; give it a floor width
+   and let .ladder scroll to it (page body stays put). */
+@media (max-width: 720px) { .rung { min-width: 520px; } }
 .rung:last-child { border-bottom: 0; }
 .rung:not(.rung-head):hover { background: var(--bg-2); }
 
