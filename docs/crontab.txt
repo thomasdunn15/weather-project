@@ -200,6 +200,13 @@
 # computes realized P&L, prints daily summary to log.
 0 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_live_trades.py >> /var/log/weather/reconcile.log 2>&1
 
+# Account-equity snapshot: 04:15 UTC daily (just after reconcile). Upserts one row/day
+# into account_equity_snapshots (true equity: cash + open MTM, and reconciliation P&L)
+# so the live-tab P&L graph can overlay realized-plus-open equity. Balance-based, read-only
+# vs Kalshi. NOTE: requires scripts/snapshot_account_equity.py present in the main worktree
+# (feat/accounting-tab must be merged to main) — errors harmlessly to the log until then.
+15 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_account_equity.py >> /var/log/weather/equity_snapshot.log 2>&1
+
 # Pipeline health check: 16:00 UTC daily (75 min after paper-trade cron).
 # Alerts on silent failures that would cost data-accumulation days.
 # Empty /var/log/weather/health_alerts.log = healthy. Exit 1 on failure.

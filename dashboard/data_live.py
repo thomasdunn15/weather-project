@@ -80,9 +80,18 @@ def _kalshi_reconciliation(deposits: float = DEPOSITS) -> dict | None:
     try:
         from weather_markets.kalshi_api import KalshiClient
         from analysis.kalshi_reconcile_by_city import reconcile_by_city
+        from dashboard.data_accounting import fetch_transfers, REFERRAL_CREDIT
         client = KalshiClient()
         try:
-            return reconcile_by_city(client, deposits=deposits)
+            # Correct the basis with LIVE transfers: money-in = live deposits +
+            # the audited referral credit; then SUBTRACT live withdrawals. The old
+            # code passed a hardcoded deposits constant with NO withdrawal term, so
+            # after cash was pulled out it understated cumulative P&L by exactly the
+            # withdrawn amount. Falls back to the `deposits` constant if the
+            # transfer fetch returns no rows.
+            tr = fetch_transfers(client)
+            dep_in = (tr["deposits_total"] + REFERRAL_CREDIT) if tr["deposits"] else deposits
+            return reconcile_by_city(client, deposits=dep_in, withdrawals=tr["withdrawals_total"])
         finally:
             client.close()
     except Exception:

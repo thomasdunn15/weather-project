@@ -133,7 +133,8 @@ def _new_city() -> dict:
             "n_settled": 0, "n_open": 0, "n_won": 0}
 
 
-def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) -> dict:
+def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS,
+                      withdrawals: float = 0.0) -> dict:
     """Authoritative per-city live P&L from Kalshi's ledger.
 
     Returns {city: {realized, unrealized, total, today_realized,
@@ -148,7 +149,9 @@ def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) 
                    today_unrealized, today, n_settled, n_won, win_rate}
           the balance-derived ground truth. By construction:
               sum(city.total for real cities) + _residual.total == _account.total
-              _account.total == account_value - deposits
+              _account.total == account_value - deposits + withdrawals
+    (withdrawals default 0.0 — pass live withdrawals so the identity holds after
+     cash is pulled out; omitting it understates realized P&L by the amount pulled.)
     """
     settlements = _paginate(client, "/portfolio/settlements", "settlements")
     positions = client.get_positions().get("market_positions", [])
@@ -159,6 +162,8 @@ def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) 
     # 1) SETTLED markets -> realized (held-to-expiry, self-contained per market).
     #    "today" realized = markets whose cash settled today (Kalshi settled_time).
     settled_realized = 0.0
+    settled_gross = 0.0   # revenue − cost, before Kalshi fees (drives the tax view)
+    settled_fees = 0.0
     today_realized = 0.0
     n_settled = n_won = 0
     for s in settlements:
@@ -167,6 +172,8 @@ def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) 
         cost = _f(s.get("yes_total_cost_dollars")) + _f(s.get("no_total_cost_dollars"))
         fee = _f(s.get("fee_cost"))
         realized = rev - cost - fee
+        settled_gross += rev - cost
+        settled_fees += fee
         city[cc]["realized"] += realized
         city[cc]["n_settled"] += 1
         settled_realized += realized
@@ -209,14 +216,17 @@ def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) 
     cash = _f(bal.get("balance_dollars")) or _f(bal.get("balance")) / 100.0
     pv = _f(bal.get("portfolio_value")) / 100.0
     account_value = cash + pv
-    total = account_value - deposits
+    # Withdrawals are money OUT, not a trading loss: account_value = deposits
+    # − withdrawals + net P&L  ⇒  net P&L = account_value − deposits + withdrawals.
+    # Omitting +withdrawals understates realized P&L by exactly the amount pulled.
+    total = account_value - deposits + withdrawals
     attributed = settled_realized + open_unrealized
     residual = total - attributed   # net intraday round-trip realized P&L
 
     # realized/unrealized split of the grand total (authoritative):
-    #   realized_total = cash - deposits + open_cost_basis  (= settled + intraday)
+    #   realized_total = cash - deposits + withdrawals + open_cost_basis  (settled + intraday)
     #   unrealized_total = portfolio_value - open_cost_basis
-    realized_total = cash - deposits + open_cost_basis
+    realized_total = cash - deposits + withdrawals + open_cost_basis
     unrealized_total = pv - open_cost_basis
 
     result = dict(city)
@@ -232,6 +242,10 @@ def reconcile_by_city(client: KalshiClient, deposits: float = DEFAULT_DEPOSITS) 
         "portfolio_value": round(pv, 2),
         "account_value": round(account_value, 2),
         "deposits": round(deposits, 2),
+        "withdrawals": round(withdrawals, 2),
+        "settled_gross": round(settled_gross, 2),
+        "settled_fees": round(settled_fees, 2),
+        "settled_net": round(settled_realized, 2),
         "open_cost_basis": round(open_cost_basis, 2),
         "realized_total": round(realized_total, 2),
         "unrealized_total": round(unrealized_total, 2),
@@ -252,11 +266,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--deposits", type=float, default=DEFAULT_DEPOSITS,
                     help="Total deposits + non-trade credits ($3,050 + $14.99 referral).")
+    ap.add_argument("--withdrawals", type=float, default=0.0,
+                    help="Total cash withdrawn (money out — corrects the P&L identity).")
     args = ap.parse_args()
 
     c = KalshiClient()
     try:
-        res = reconcile_by_city(c, deposits=args.deposits)
+        res = reconcile_by_city(c, deposits=args.deposits, withdrawals=args.withdrawals)
     finally:
         c.close()
     acct = res.pop("_account")

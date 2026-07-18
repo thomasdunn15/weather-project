@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from dashboard.data_live import get_live_data, _live_trade_config
 from dashboard.data_backtest import fetch_city_payload, list_cities
+from dashboard.data_accounting import get_accounting_data
 from dashboard.kalshi_ws import service as live_service
 from dashboard.ttl_cache import ttl_cache
 
@@ -96,6 +97,19 @@ def api_backtest(
     except ValueError:
         sel = date.today()
     return _json(fetch_city_payload(city, sel, sizing, amount, depth, edge))
+
+
+@ttl_cache(60)
+def _accounting_payload() -> dict:
+    """Accounting: tax reserve + withdrawals + safe-to-withdraw from live Kalshi.
+    60s TTL — funding/settlement data changes slowly and each build makes several
+    read-only Kalshi REST calls."""
+    return get_accounting_data()
+
+
+@app.get("/api/accounting")
+def api_accounting() -> Response:
+    return _json(_accounting_payload())
 
 
 if __name__ == "__main__":
