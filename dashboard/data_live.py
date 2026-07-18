@@ -89,6 +89,46 @@ def _kalshi_reconciliation(deposits: float = DEPOSITS) -> dict | None:
         return None
 
 
+@ttl_cache(300)
+def _daily_realized_series() -> list[dict]:
+    """Full-history ROLLING cumulative realized P&L by settlement date, from
+    Kalshi settlements (the authoritative ledger — same source as the hero's
+    realized total; revenue − cost − fee per settled market, mirroring
+    kalshi_reconcile_by_city). Replaces the old 7-day series that (a) reset to 0
+    at the window start and (b) summed live_trades, whose fills are capped/
+    mis-signed (~half the true realized). Each point: {t: 'YYYY-MM-DD', v:
+    cumulative_dollars}. Cached 300s (paginates the full settlement history, so
+    it must not run on every 2s poll). Returns [] on any failure — the chart
+    then shows an empty state rather than a wrong number.
+    """
+    try:
+        from weather_markets.kalshi_api import KalshiClient
+        from analysis.kalshi_reconcile_by_city import _paginate
+        client = KalshiClient()
+        try:
+            settlements = _paginate(client, "/portfolio/settlements", "settlements")
+        finally:
+            client.close()
+        daily: dict[str, float] = {}
+        for s in settlements:
+            st = (s.get("settled_time") or "")[:10]
+            if not st:
+                continue
+            rev = float(s.get("revenue") or 0) / 100.0
+            cost = float(s.get("yes_total_cost_dollars") or 0) + float(s.get("no_total_cost_dollars") or 0)
+            fee = float(s.get("fee_cost") or 0)
+            daily[st] = daily.get(st, 0.0) + (rev - cost - fee)
+        if not daily:
+            return []
+        series, cum = [], 0.0
+        for d in sorted(daily):
+            cum += daily[d]
+            series.append({"t": d, "v": round(cum, 2)})
+        return series
+    except Exception:
+        return []
+
+
 # ----------------------------------------------------------------------
 # Data adapters: real DB/API → DASH payload shape expected by the design
 # ----------------------------------------------------------------------
@@ -162,14 +202,10 @@ def get_live_data(cfg: dict) -> dict:
         today_realized = today_realized_c / 100.0
         win_rate = (n_won / n_settled) if n_settled else 0.0
 
-        # 7-day cumulative P&L series for the chart
-        cur.execute("""
-            SELECT target_date, COALESCE(SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL), 0)::float / 100 AS pnl
-            FROM live_trades
-            WHERE target_date >= %s AND target_date <= %s
-            GROUP BY target_date ORDER BY target_date
-        """, (today - timedelta(days=7), today))
-        daily = dict(cur.fetchall())
+        # (Cumulative-P&L chart series is built separately from Kalshi
+        # settlements — see _daily_realized_series(). The old 7-day live_trades
+        # window was both truncated and sourced from the capped/mis-signed fills
+        # ledger, so it under-reported by ~half and reset to 0 each week.)
 
         # Per-city realized + today
         per_city_realized = {}
@@ -239,13 +275,8 @@ def get_live_data(cfg: dict) -> dict:
                 "pnl": (pnl / 100.0) if pnl is not None else None,
             })
 
-    # Build 7-day series (zero-fill missing days)
-    series = []
-    cum = 0.0
-    for i in range(8):
-        d = today - timedelta(days=7 - i)
-        cum += daily.get(d, 0.0)
-        series.append({"d": i, "v": round(cum, 2)})
+    # Rolling cumulative realized P&L since first live trade (Kalshi settlements).
+    series = _daily_realized_series()
 
     # Open positions (filled + partial_resting trades for today, marked to
     # market). Used by both the per-city cards AND the bottom Positions panel.
@@ -573,6 +604,13 @@ def _vwap_entry_yes(fills: list[dict], side: str) -> int | None:
     side). Returns None if no net opening volume. This reflects real fills, so it
     updates as you cross for better prices — unlike the bot's stored limit."""
     price_key = "yes_price_dollars" if side == "yes" else "no_price_dollars"
+    # Kalshi records a NO position's OPENING fills as action="sell" (buying NO is
+    # mechanically shorting YES on the YES-denominated book), and a YES position's
+    # opens as action="buy". So the position-OPENING action is side-dependent:
+    # buy for YES, sell for NO. Treat opens as + and closes as − so net_c is the
+    # held quantity and the VWAP is a proper cost average. Before this, NO opens
+    # were counted negative → net_c ≤ 0 → returned None → avg/mark showed 0¢.
+    open_action = "buy" if side == "yes" else "sell"
     net_c = 0.0
     net_cost = 0.0
     for f in fills:
@@ -580,7 +618,7 @@ def _vwap_entry_yes(fills: list[dict], side: str) -> int | None:
             continue
         cnt = float(f.get("count_fp", f.get("count", 0)) or 0)
         price = float(f.get(price_key, 0) or 0)
-        sgn = 1.0 if f.get("action") == "buy" else -1.0
+        sgn = 1.0 if f.get("action") == open_action else -1.0
         net_c += sgn * cnt
         net_cost += sgn * cnt * price
     if net_c <= 0:

@@ -142,15 +142,17 @@ function pnlChartSVG(data) {
   const c = last >= 0 ? "var(--up)" : "var(--down)";
   const line = data.map((d, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(1)},${Y(d.v).toFixed(1)}`).join(" ");
   const area = `${line} L${X(data.length - 1)},${zeroY} L${X(0)},${zeroY} Z`;
-  const dayLabels = ["6d", "5d", "4d", "3d", "2d", "1d", "yest", "today"];
+  // Rolling series: ~6 evenly-spaced date ticks (each point carries t='YYYY-MM-DD').
+  const nLab = Math.min(6, data.length);
+  const labIdx = Array.from({ length: nLab }, (_, k) => Math.round(k * (data.length - 1) / (nLab - 1)));
   const grid = tickVals.map(tv =>
     `<line x1="${padL}" x2="${padL + iw}" y1="${Y(tv)}" y2="${Y(tv)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${Math.abs(tv) < 1e-6 ? "0" : "2 4"}"/><text x="${padL + iw + 8}" y="${Y(tv) + 3.5}" fill="var(--text-faint)" style="font:500 10px var(--mono)">${(tv >= 0 ? "" : "−") + "$" + Math.abs(Math.round(tv))}</text>`).join("");
-  const xlab = data.map((d, i) => `<text x="${X(i)}" y="${height - 8}" text-anchor="middle" fill="var(--text-faint)" style="font:500 9.5px var(--mono)">${dayLabels[i] || i}</text>`).join("");
+  const xlab = labIdx.map(i => `<text x="${X(i)}" y="${height - 8}" text-anchor="middle" fill="var(--text-faint)" style="font:500 9.5px var(--mono)">${(data[i].t || "").slice(5)}</text>`).join("");
   // hover overlay builder (crosshair + dot + cumulative-P&L tooltip)
   CHARTS.pnl = { W: w, n: data.length, X, build: (i) =>
     `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${padT}" y2="${padT + ih}" stroke="var(--border-strong)" stroke-width="1"/><circle cx="${X(i).toFixed(1)}" cy="${Y(data[i].v).toFixed(1)}" r="3.5" fill="${c}" stroke="var(--bg-1)" stroke-width="2"/><g transform="translate(${Math.min(X(i) + 8, padL + iw - 78).toFixed(1)},${padT + 2})"><rect width="74" height="20" rx="4" fill="var(--bg-3)" stroke="var(--border-strong)"/><text x="8" y="14" fill="var(--text-hi)" style="font:600 11px var(--mono)">${money(data[i].v, { sign: true, dp: 0 })}</text></g>`
   };
-  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl" role="img" aria-label="Cumulative P&amp;L, last 7 days"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="pnlrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)" clip-path="url(#pnlrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
+  return `<svg width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" data-chart="pnl" role="img" aria-label="Cumulative realized P&amp;L, since first live trade"><defs><linearGradient id="pnlfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.20"/><stop offset="1" stop-color="${c}" stop-opacity="0.01"/></linearGradient><clipPath id="pnlrev" clipPathUnits="userSpaceOnUse"><rect class="chart-fill-reveal" x="${padL}" y="${padT}" width="${iw}" height="${ih}"/></clipPath></defs>${grid}<line x1="${padL}" x2="${padL + iw}" y1="${zeroY}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1"/><path d="${area}" fill="url(#pnlfill)" clip-path="url(#pnlrev)"/><path class="chart-line" d="${line}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${xlab}<g class="cx"></g></svg>`;
 }
 
 function ensembleChartSVG(d) {
@@ -839,7 +841,7 @@ function renderLive() {
     // for 2-5 and collapsed 6+ (4 cities + Other + agg) to a single column.
     `<div class="city-grid">${d.cities.map(cityCard).join("")}${d.otherCities ? otherCitiesCard(d.otherCities) : ""}${aggRisk(d)}</div>` +
     `<div class="grid" style="grid-template-columns:1.45fr 1fr">` +
-      `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">last 7 days · since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
+      `<div class="panel"><div class="panel-h"><h3>Cumulative P&amp;L</h3><span class="meta">realized · rolling since first live trade</span></div><div style="padding:10px 12px 4px"><div class="chart-wrap">${pnlChartSVG(d.series)}</div></div><div class="panel-b" style="padding-top:0"><div class="chart-legend"><span><span class="sw" style="background:${d.cumulative.total >= 0 ? "var(--up)" : "var(--down)"}"></span>cumulative realized P&amp;L · right axis</span></div></div></div>` +
       positionsTable(d.positions) +
     `</div>` +
     signalsTable(d.signals) +
