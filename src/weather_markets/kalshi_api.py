@@ -187,6 +187,30 @@ class KalshiClient:
             params["min_ts"] = min_ts
         return self._request("GET", "/portfolio/fills", params=params)
 
+    def get_deposits(self, limit: int = 200, cursor: str | None = None) -> dict:
+        """Read-only deposit ledger (ACH / debit funding events).
+
+        Returns {'deposits': [ {amount_cents, fee_cents, status, type,
+        created_ts, finalized_ts, id}, ... ], 'cursor': ...}. status is
+        'applied' for completed transfers. Amounts are integer cents.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/portfolio/deposits", params=params)
+
+    def get_withdrawals(self, limit: int = 200, cursor: str | None = None) -> dict:
+        """Read-only withdrawal ledger (same row shape as get_deposits).
+
+        This is how the account learns about cash pulled out outside the bot —
+        without it the P&L reconciliation (account_value − deposits) silently
+        understates realized gains by the withdrawn amount.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/portfolio/withdrawals", params=params)
+
     def get_market(self, ticker: str) -> dict:
         """Fetch current market state (bid/ask/last) for a ticker. Public data
         but goes through the authenticated path for consistency."""

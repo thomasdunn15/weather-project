@@ -1,0 +1,97 @@
+/* =====================================================================
+   ISOBAR · ACCOUNTING TAB — tax reserve, withdrawals, safe-to-withdraw.
+   Reads shared tokens (tokens.css) + primitives (shell.css .panel/.wrap/
+   .section-label, components.css table.dt, backtest.css .seg/.ctrl). Owns the
+   disclaimer callout, the safe-to-withdraw equation, the capital-flow + tax
+   ledgers, and the federal-rate control. Green/red = money semantics; no glass,
+   no side-stripe borders; ink ramp is WCAG-AA.
+   ===================================================================== */
+
+/* ---------- disclaimer callout (full border + tint, NOT a side-stripe) ---------- */
+.disclaimer {
+  display: flex; gap: 12px; align-items: flex-start;
+  background: var(--warn-dim); border: 1px solid var(--warn-line);
+  border-radius: var(--r-lg); padding: 12px 16px;
+  font: 500 12px/1.55 var(--mono); color: var(--text-mid);
+}
+.disclaimer .i { color: var(--warn); font-size: 15px; line-height: 1.2; flex: none; }
+.disclaimer b { color: var(--warn); font-weight: 600; }
+.disclaimer.fine { background: var(--bg-1); border-color: var(--border); color: var(--text-lo); font-size: 11px; }
+.disclaimer.fine .i { color: var(--text-lo); }
+
+/* ---------- SAFE TO WITHDRAW — an equation, not a decorative hero-metric ---------- */
+.safe-body { padding: 20px 22px; display: flex; flex-direction: column; gap: 16px; }
+.safe-figure { font: 600 46px/1 var(--mono); letter-spacing: -0.02em; }
+.safe-figure.pos { color: var(--up); }
+.safe-figure.neg { color: var(--down); }
+.safe-eq { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.eq-term { display: flex; flex-direction: column; gap: 5px; }
+.eq-term b { font: 600 17px/1 var(--mono); color: var(--text-hi); }
+.eq-term .k { font: 600 9.5px/1 var(--ui); letter-spacing: 0.11em; text-transform: uppercase; color: var(--text-lo); }
+.eq-op { font: 400 20px/1 var(--mono); color: var(--text-lo); align-self: flex-start; margin-top: 2px; }
+
+/* ---------- 4-up balances strip ---------- */
+.acct-metrics { display: grid; grid-template-columns: repeat(4, 1fr); }
+.acct-metrics .m { padding: 15px 18px; border-right: 1px solid var(--border); }
+.acct-metrics .m:last-child { border-right: 0; }
+.acct-metrics .m .ml { font: 600 9.5px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
+.acct-metrics .m .mv { font: 600 22px/1 var(--mono); margin-top: 9px; }
+.acct-metrics .m .ms { font: 500 10.5px/1 var(--mono); color: var(--text-faint); margin-top: 6px; }
+
+/* ---------- capital-flow + tax ledger rows ---------- */
+.ledger { padding: 6px 16px 12px; display: flex; flex-direction: column; }
+.lrow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+        padding: 9px 0; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+.lrow:last-child { border-bottom: 0; }
+.lrow .lbl { color: var(--text-mid); font: 500 12.5px/1.3 var(--ui); }
+.lrow .lbl small { color: var(--text-lo); font-family: var(--mono); font-size: 11px; }
+.lrow .val { font: 600 13px/1 var(--mono); color: var(--text-hi); white-space: nowrap; }
+.lrow.total { border-top: 1px solid var(--border-strong); border-bottom: 0; margin-top: 3px; padding-top: 12px; }
+.lrow.total .lbl { color: var(--text-hi); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; font-size: 11px; }
+.lrow.total .val { font-size: 17px; }
+.lrow .hint { cursor: help; color: var(--text-lo); border-bottom: 1px dotted var(--text-faint); }
+
+/* ---------- federal-rate control ---------- */
+.rate-ctrl { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap;
+             padding: 13px 16px; background: var(--bg-2);
+             border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.rate-ctrl .cl { font: 600 9.5px/1 var(--ui); letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-lo); }
+.rate-input {
+  width: 72px; font: 500 12.5px/1 var(--mono); color: var(--text-hi);
+  background: var(--bg-inset); border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm); padding: 8px 10px; outline: none;
+  transition: border-color var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
+}
+.rate-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,0.16); }
+.rate-suffix { font: 500 12px/1 var(--mono); color: var(--text-lo); margin-left: -8px; }
+
+/* the FL zero-state pill reads as a fact, not an error */
+.state-zero { color: var(--up); }
+
+/* ---------- tax-basis comparison (realized vs withdrawn) ---------- */
+.scen { padding: 2px 16px 14px; border-top: 1px solid var(--border); }
+.scen-head { font: 600 9.5px/1 var(--ui); letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-lo); padding: 12px 0 2px; }
+.scen-note { font: 500 11px/1.55 var(--mono); color: var(--text-lo); margin-top: 9px; }
+
+/* ---------- transfer history: reuse table.dt; direction-tinted amount ---------- */
+.amt-in  { color: var(--up); }
+.amt-out { color: var(--down); }
+
+/* ---------- entrance: reuse the live-tab staggered rise on first paint ---------- */
+#accounting-root.intro > * { animation: rise var(--dur-3) var(--ease-out) both; }
+#accounting-root.intro > *:nth-child(1) { animation-delay: 0ms; }
+#accounting-root.intro > *:nth-child(2) { animation-delay: calc(var(--stagger) * 1); }
+#accounting-root.intro > *:nth-child(3) { animation-delay: calc(var(--stagger) * 2); }
+#accounting-root.intro > *:nth-child(4) { animation-delay: calc(var(--stagger) * 3); }
+#accounting-root.intro > *:nth-child(n+5) { animation-delay: calc(var(--stagger) * 4); }
+
+/* ---------- responsive (self-contained) ---------- */
+@media (max-width: 1180px) {
+  .acct-grid { grid-template-columns: 1fr !important; }
+}
+@media (max-width: 720px) {
+  .acct-metrics { grid-template-columns: repeat(2, 1fr); }
+  .acct-metrics .m:nth-child(2) { border-right: 0; }
+  .safe-figure { font-size: 38px; }
+  .safe-eq { gap: 12px; }
+}

@@ -1518,14 +1518,150 @@ function updateLiveIndicator() {
 }
 function stopLivePolling() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
 
+// ====================================================================
+// ACCOUNTING TAB — tax reserve + withdrawals + safe-to-withdraw.
+// Figures come from /api/accounting (live Kalshi: deposits/withdrawals/
+// settlements/balance/orders). The federal RATE is applied client-side so the
+// control recomputes reserve + safe-to-withdraw with no refetch; every other
+// dollar is server-computed and traces to a live source.
+// ====================================================================
+let ACCT = null;
+let acctFedRate = null;      // seeded from tax.fedRateDefault on first payload
+let acctIntroDone = false;
+
+async function loadAccounting() {
+  const root = document.getElementById("accounting-root");
+  if (!ACCT) root.innerHTML = `<div class="wrap"><div class="loading">Loading accounting…</div></div>`;
+  try {
+    const r = await fetch("/api/accounting");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    ACCT = await r.json();
+    if (acctFedRate === null) acctFedRate = ACCT.tax.fedRateDefault;
+    renderAccounting();
+  } catch (e) {
+    root.innerHTML = `<div class="wrap"><div class="loading">Failed to load accounting: ${esc(String(e))}</div></div>`;
+  }
+}
+
+function acctSetFedRate(rate) {
+  const v = Number(rate);
+  if (!isFinite(v)) return;
+  acctFedRate = Math.min(0.6, Math.max(0, v));   // clamp 0–60%
+  renderAccounting();
+}
+
+function acctMetric(label, value, sub, tone) {
+  return `<div class="m"><div class="ml">${esc(label)}</div><div class="mv ${tone || ""}">${value}</div>${sub != null ? `<div class="ms">${esc(sub)}</div>` : ""}</div>`;
+}
+
+function transferTable(title, rows, dir) {
+  const cls = dir === "in" ? "amt-in" : "amt-out", sign = dir === "in" ? "+" : "−";
+  const body = rows.length === 0
+    ? `<tr><td class="l muted" colspan="3" style="padding:16px 12px">None recorded.</td></tr>`
+    : rows.map(r => `<tr><td class="l">${esc(r.date)}</td><td class="l">${esc(r.type || "—")}</td><td class="${cls}">${sign}${moneyPlain(r.amount)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-h"><h3>${esc(title)}</h3><span class="meta">${rows.length} · live Kalshi</span></div><div class="tbl-scroll" style="max-height:220px"><table class="dt"><thead><tr><th class="l">Date</th><th class="l">Type</th><th>Amount</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+
+function renderAccounting() {
+  const root = document.getElementById("accounting-root");
+  root.classList.remove("intro");                 // clear so a re-render never re-animates
+  if (!ACCT) { root.innerHTML = `<div class="wrap"><div class="loading">Loading accounting…</div></div>`; return; }
+  const d = ACCT, t = d.tax, rate = acctFedRate;
+  const base = Math.max(0, t.realizedNetTaxable);
+  const fedReserve = Math.round(base * rate * 100) / 100;
+  const reserve = Math.round((fedReserve + t.stateTax) * 100) / 100;    // FL state = 0
+  const safe = Math.round((d.cash - reserve - d.openOrderMargin) * 100) / 100;
+  const reserveWithdrawn = Math.round(d.withdrawals.total * rate * 100) / 100;   // illustrative: tax only on withdrawn cash
+  const presets = t.fedRatePresets.map(p =>
+    `<button class="${Math.abs(p.rate - rate) < 1e-9 ? "on" : ""}" onclick="acctSetFedRate(${p.rate})">${esc(p.label)}</button>`).join("");
+  const asOf = (d.asOf || "").replace("T", " ").replace("+00:00", " UTC");
+
+  root.innerHTML = `<div class="wrap">
+    <div class="disclaimer"><span class="i">⚠</span><span><b>Estimate only — not tax advice.</b> Federal treatment of prediction-market income is unsettled (ordinary income vs. §1256 60/40); Kalshi 1099 reporting has varied. Figures are live from Kalshi. Consult a tax professional before filing or withdrawing against this.</span></div>
+
+    <div class="section-label">Withdrawal readiness <span class="sl-sub">live · Kalshi · as of ${esc(asOf)}</span></div>
+
+    <div class="panel">
+      <div class="panel-h"><h3>Safe to withdraw now</h3><span class="meta">cash − tax reserve − open-order margin</span></div>
+      <div class="safe-body">
+        <div class="safe-figure ${safe >= 0 ? "pos" : "neg"}">${moneyPlain(safe)}</div>
+        <div class="safe-eq">
+          <span class="eq-term"><b>${moneyPlain(d.cash)}</b><span class="k">cash</span></span>
+          <span class="eq-op">−</span>
+          <span class="eq-term"><b>${moneyPlain(reserve)}</b><span class="k">tax reserve</span></span>
+          <span class="eq-op">−</span>
+          <span class="eq-term"><b>${moneyPlain(d.openOrderMargin)}</b><span class="k">open-order margin</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel"><div class="acct-metrics">
+      ${acctMetric("Cash", moneyPlain(d.cash), "settled, withdrawable")}
+      ${acctMetric("Portfolio value", moneyPlain(d.portfolioValue), "open positions, marked")}
+      ${acctMetric("Account value", moneyPlain(d.accountValue), "cash + portfolio")}
+      ${acctMetric("Cumulative net P&L", money(d.cumulativePnl), "realized + unrealized", cls(d.cumulativePnl))}
+    </div></div>
+
+    <div class="grid acct-grid" style="grid-template-columns:1fr 1fr">
+      <div class="panel">
+        <div class="panel-h"><h3>Capital flow</h3><span class="meta">live · Kalshi transfers</span></div>
+        <div class="ledger">
+          <div class="lrow"><span class="lbl">Deposits <small>· ${d.deposits.rows.length} transfers</small></span><span class="val amt-in">+${moneyPlain(d.deposits.total)}</span></div>
+          <div class="lrow"><span class="lbl">Referral credit <small>· audited, non-API</small></span><span class="val amt-in">+${moneyPlain(d.referralCredit)}</span></div>
+          <div class="lrow"><span class="lbl">Withdrawals <small>· ${d.withdrawals.rows.length}</small></span><span class="val amt-out">−${moneyPlain(d.withdrawals.total)}</span></div>
+          <div class="lrow total"><span class="lbl">Net external capital</span><span class="val">${moneyPlain(d.netExternalCapital)}</span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-h"><h3>Estimated tax reserve · ${t.year}</h3><span class="meta">realized · net of fees</span></div>
+        <div class="ledger" style="padding-bottom:6px">
+          <div class="lrow"><span class="lbl">Settled realized <small>· gross · ${t.nSettled} markets</small></span><span class="val amt-in">+${moneyPlain(t.settledGross)}</span></div>
+          <div class="lrow"><span class="lbl">Kalshi fees</span><span class="val amt-out">−${moneyPlain(t.settledFees)}</span></div>
+          <div class="lrow"><span class="lbl">Settled realized <small>· net</small></span><span class="val ${cls(t.settledNet)}">${money(t.settledNet)}</span></div>
+          <div class="lrow"><span class="lbl">Intraday round-trips <small class="hint" title="Net realized P&amp;L of contracts bought and sold before expiry. Derived from the account identity — Kalshi's per-fill feed is capped and mis-signed, so it can't be itemized. All account activity is in ${t.year}, so this realized cash is current-year.">round-trip realized ⓘ</small></span><span class="val ${cls(t.intradayRealized)}">${money(t.intradayRealized)}</span></div>
+          <div class="lrow total"><span class="lbl">${t.year} realized net (taxable base)</span><span class="val ${cls(t.realizedNetTaxable)}">${money(t.realizedNetTaxable)}</span></div>
+        </div>
+        <div class="rate-ctrl">
+          <span class="cl">Federal rate</span>
+          <span class="seg">${presets}</span>
+          <input class="rate-input" type="number" min="0" max="60" step="0.1" value="${(rate * 100).toFixed(1)}" onchange="acctSetFedRate(this.value/100)" aria-label="Custom federal rate percent" />
+          <span class="rate-suffix">%</span>
+        </div>
+        <div class="ledger">
+          <div class="lrow"><span class="lbl">Florida state tax <small>· no state income tax</small></span><span class="val state-zero">$0.00</span></div>
+          <div class="lrow"><span class="lbl">Federal reserve <small>· ${(rate * 100).toFixed(1)}% × ${moneyPlain(base)}${t.realizedNetTaxable < 0 ? " · no liability on a net loss" : ""}</small></span><span class="val">${moneyPlain(fedReserve)}</span></div>
+          <div class="lrow total"><span class="lbl">Estimated reserve to set aside</span><span class="val warn">${moneyPlain(reserve)}</span></div>
+        </div>
+        <div class="scen">
+          <div class="scen-head">Tax-basis comparison · × ${(rate * 100).toFixed(1)}%</div>
+          <div class="lrow"><span class="lbl">On realized gains <small>· standard for a taxable account</small></span><span class="val">${moneyPlain(reserve)}</span></div>
+          <div class="lrow"><span class="lbl">On withdrawn cash only <small>· ${moneyPlain(d.withdrawals.total)} withdrawn to date</small></span><span class="val">${moneyPlain(reserveWithdrawn)}</span></div>
+          <div class="scen-note">Withdrawing from a taxable account isn't itself a taxable event — realized gains are taxed in the year they're realized (the "tax on withdrawal" rule is for tax-deferred retirement accounts, not Kalshi). Shown for comparison only; the reserve and safe-to-withdraw above use the realized-gains basis.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid acct-grid" style="grid-template-columns:1fr 1fr">
+      ${transferTable("Withdrawal history", d.withdrawals.rows, "out")}
+      ${transferTable("Deposit history", d.deposits.rows, "in")}
+    </div>
+
+    <div class="disclaimer fine"><span class="i">ⓘ</span><span>Taxable base = all realized net gains for ${t.year} (settled + intraday round-trips), net of Kalshi fees; open positions and withdrawals are not taxable events and are excluded. The federal rate is an adjustable assumption, not a determination. This tool does not file, remit, or advise.</span></div>
+  </div>`;
+
+  if (!acctIntroDone) { root.classList.add("intro"); acctIntroDone = true; }   // one-shot entrance
+}
+
 function switchTab(name) {
   activeTab = name;
   const applyTab = () => {
-    document.getElementById("section-live").hidden = name !== "live";
-    document.getElementById("section-backtest").hidden = name !== "backtest";
-    const tl = document.getElementById("tab-live"), tb = document.getElementById("tab-backtest");
-    tl.classList.toggle("on", name === "live");     tl.setAttribute("aria-selected", String(name === "live"));
-    tb.classList.toggle("on", name === "backtest"); tb.setAttribute("aria-selected", String(name === "backtest"));
+    ["live", "backtest", "accounting"].forEach(n => {
+      const sec = document.getElementById("section-" + n);
+      if (sec) sec.hidden = n !== name;
+      const btn = document.getElementById("tab-" + n);
+      if (btn) { btn.classList.toggle("on", n === name); btn.setAttribute("aria-selected", String(n === name)); }
+    });
   };
   // Cross-fade the tab swap via the View-Transitions API (the ::view-transition
   // rules already ship in shell.css); instant fallback when unsupported or the
@@ -1536,15 +1672,18 @@ function switchTab(name) {
   if (name === "live") {
     startLivePolling();
     if (rl) rl.textContent = "live";
-  } else {
-    stopLivePolling();
-    if (rl) rl.textContent = "backtest";
+    return;
+  }
+  stopLivePolling();
+  if (rl) rl.textContent = name;
+  if (name === "backtest") {
     // First-reveal hook: the backtest payload is prefetched in init() while the
-    // Live tab is showing, so its first render happens hidden (no animation).
-    // On the FIRST switch to Backtest, force a re-render so the entrance ramp
-    // (count-ups + curve draw + panel reveal) fires now that the tab is visible.
-    if (!BT) loadBacktest();                 // still loading → its render will animate (tab now visible)
+    // Live tab is showing, so its first render happens hidden (no animation). On
+    // the FIRST switch, force a re-render so the entrance ramp fires now visible.
+    if (!BT) loadBacktest();
     else if (!btIntroDone) { _btLastKey = null; renderBacktest(); }
+  } else if (name === "accounting") {
+    loadAccounting();   // lazy-load fresh each open (60s server cache bounds cost)
   }
 }
 

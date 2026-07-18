@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="/static/css/components.css?v=8">
 <link rel="stylesheet" href="/static/css/live.css?v=8">
 <link rel="stylesheet" href="/static/css/backtest.css?v=8">
+<link rel="stylesheet" href="/static/css/accounting.css?v=10">
 <link rel="stylesheet" href="/static/css/responsive.css?v=8">
 </head>
 <body>
@@ -32,6 +33,7 @@
   <nav class="tabbar" role="tablist" aria-label="Dashboard views">
     <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')">Live Trading</button>
     <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')">Backtest</button>
+    <button id="tab-accounting" role="tab" aria-selected="false" aria-controls="section-accounting" onclick="switchTab('accounting')">Accounting</button>
   </nav>
 
   <main>
@@ -41,8 +43,11 @@
     <section id="section-backtest" role="tabpanel" aria-label="Backtest" hidden>
       <div id="backtest-root"><div class="wrap"><div class="loading">Loading backtest…</div></div></div>
     </section>
+    <section id="section-accounting" role="tabpanel" aria-label="Accounting" hidden>
+      <div id="accounting-root"><div class="wrap"><div class="loading">Loading accounting…</div></div></div>
+    </section>
   </main>
 </div>
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>
