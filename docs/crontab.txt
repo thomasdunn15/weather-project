@@ -204,3 +204,11 @@
 # Alerts on silent failures that would cost data-accumulation days.
 # Empty /var/log/weather/health_alerts.log = healthy. Exit 1 on failure.
 0 16 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/check_pipeline_health.py >> /var/log/weather/health_check.log 2>&1
+
+# ===== NON-WEATHER: NotebookLM auth keepalive (added 2026-07-12) =====
+# Refreshes the file-based Google session token every 15 min so
+# ~/.notebooklm/profiles/default/storage_state.json stays valid (no browser on
+# this box; auth is file-based). Writes a UTC heartbeat to
+# ~/.notebooklm/refresh-last-success.txt on success. Unrelated to trading —
+# kept here only because docs/crontab.txt is the authoritative crontab source.
+*/15 * * * * /home/tdunn/.notebooklm/refresh-cron.sh
