@@ -7,6 +7,8 @@ Checks (in order; multiple can fire per run):
   2. Today's 00Z ECMWF forecast is in the DB (model='ifs', expected by ~07 UTC).
   3. Most recent observation is within 36 hours.
   4. Most recent Kalshi price snapshot is within 30 minutes.
+  5. No uvicorn dashboard is running from outside this repo (worktree dev
+     servers stack up and OOM the box).
 
 On any failure: append to /var/log/weather/health_alerts.log and exit 1.
 On all passing: write nothing (empty alert log = healthy pipeline).
@@ -17,6 +19,7 @@ or set MAILTO in crontab to get email on non-zero exit.
 Run with: uv run python scripts/check_pipeline_health.py
 """
 from datetime import datetime, time, timedelta, timezone
+import pathlib
 from pathlib import Path
 
 from weather_markets.db import get_connection
@@ -31,6 +34,7 @@ EXPECTED_FORECAST_INIT_HOUR = 0
 STATION_ID = "KNYC"
 OBSERVATION_MAX_DAYS_BEHIND = 2     # Allow 1 day natural lag (CF6 publishes after midnight ET)
 PRICE_SNAPSHOT_MAX_AGE_MINUTES = 30
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def emit_alert(now: datetime, symptom: str) -> None:
@@ -118,6 +122,36 @@ def check_price_snapshot_freshness(now: datetime, alerts: list[str]) -> None:
         )
 
 
+def check_stray_dashboards(now: datetime, alerts: list[str]) -> None:
+    """Only the repo's own dashboard should be running.
+
+    Worktree dev servers (wt-*/) are the recurring cause: each uvicorn holds
+    several hundred MB, the box has no swap, and stacking them OOM-killed prod
+    Postgres on 2026-06-19 while live trading was running. Reads /proc directly
+    so there is no dependency on pgrep/ps output formats.
+    """
+    # One dashboard spawns ~3 processes (shell -> uv -> python), so group by
+    # directory or a single stray server reports as three alerts.
+    stray: dict[pathlib.Path, list[str]] = {}
+    for proc in pathlib.Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmdline = (proc / "cmdline").read_bytes().replace(b"\x00", b" ").decode()
+            if "uvicorn" not in cmdline or "dashboard.app" not in cmdline:
+                continue
+            cwd = (proc / "cwd").resolve()
+        except (OSError, PermissionError):
+            continue        # process exited mid-scan, or belongs to another user
+        if cwd != REPO_ROOT:
+            stray.setdefault(cwd, []).append(proc.name)
+    for cwd, pids in sorted(stray.items()):
+        alerts.append(
+            f"stray dashboard running from {cwd} (expected {REPO_ROOT}) — "
+            f"kill {' '.join(sorted(pids))} before it OOMs Postgres"
+        )
+
+
 def main() -> None:
     now = datetime.now(tz=timezone.utc)
     alerts: list[str] = []
@@ -126,6 +160,7 @@ def main() -> None:
     check_forecast_freshness(now, alerts)
     check_observation_freshness(now, alerts)
     check_price_snapshot_freshness(now, alerts)
+    check_stray_dashboards(now, alerts)
 
     if not alerts:
         print(f"[{now.isoformat()}] all checks passed")
