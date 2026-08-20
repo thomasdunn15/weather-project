@@ -26,7 +26,7 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from weather_markets.alerts import send_alert
+from weather_markets.alerts import clear_critical_marker, send_alert
 from weather_markets.ibkr import IBKRClient, IBKRError
 
 STATE_FILE = Path(__file__).resolve().parents[1] / "data" / "ibkr_session_state"
@@ -70,6 +70,9 @@ def main() -> int:
 
     if changed:
         if alive:
+            # Clear the marker too, or the login banner nags about an outage
+            # that has already been fixed and stops being believed.
+            clear_critical_marker()
             send_alert(f"IBKR gateway session restored ({detail})",
                        severity="info", source="ibkr_keepalive")
         else:
