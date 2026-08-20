@@ -7,14 +7,16 @@ PolymarketClient.create_order — they fill at-or-better immediately or cancel,
 and never rest on the book.
 
 Hard rails (change deliberately, log in docs/decisions/):
-  - 25 contracts/signal, max 2 signals/day (largest |edge| first)
+  - 150 contracts/signal, max 2 signals/day (largest |edge| first)
   - entry bound 5..95 cents; edge threshold 0.25
   - halt file halt/PMKMIA aborts every run (touch it to stop trading)
-  - cumulative realized P&L < -$150 -> writes halt/PMKMIA itself and aborts
-  - daily spend cap $50 notional
+  - cumulative realized P&L < -$300 -> writes halt/PMKMIA itself and aborts
+  - daily spend cap $300 notional
 Settlement: each run first scores yesterday's unsettled rows from observations
 (PM bracket semantics via kalshi_equivalent_bracket, PM taker fee 6bps formula)
-so the cumulative kill switch sees current P&L.
+so the cumulative kill switch sees current P&L. It depends on fill_count, which
+scripts/reconcile_pm_trades.py writes at 13:05 and 20:05 — without that cron
+every trade reads as a no-fill and the kill switch can never fire.
 
   uv run python scripts/live_trade_polymarket.py --live      # REAL ORDERS
   uv run python scripts/live_trade_polymarket.py             # dry-run (default)
@@ -40,14 +42,17 @@ EDGE_THRESHOLD = 0.25
 MODEL_SOURCE = "PM live probe Miami combined 00Z"
 MAX_QUOTE_AGE_MIN = 30
 
-CONTRACTS_PER_SIGNAL = 100   # operator sizing decision 2026-08-12 (was 25 probe default)
+CONTRACTS_PER_SIGNAL = 150   # 2026-08-21: raised from 100 on measured book depth
+                             # (median 265 within +2c; 150 fully fillable on 75% of
+                             # snapshot-days). See docs/decisions/2026-08-21-pm-size-150.md
+                             # — that doc records the one contrary datapoint.
 MAX_SIGNALS_PER_DAY = 2
 ENTRY_MIN, ENTRY_MAX = 5, 95
 SLIPPAGE_ALLOWANCE_CENTS = 2  # IOC bound = quoted entry + 2c: reaches the ~120-200
                               # contracts within 2c of touch (measured 2026-08-12)
                               # instead of only the ~30-55 at the very top level.
                               # Worst-case fill price is still hard-capped at +2c.
-DAILY_SPEND_CAP_CENTS = 200 * 100   # 2 signals x 100 x <=95c
+DAILY_SPEND_CAP_CENTS = 300 * 100   # 2 signals x 150 x <=95c
 CUMULATIVE_KILL_CENTS = -300 * 100  # 30% of the $1k bankroll
 HALT_FILE = Path(__file__).resolve().parents[1] / "halt" / "PMKMIA"
 
@@ -89,14 +94,22 @@ def settle_unsettled(conn, today: date) -> float:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT t.id, t.intent, t.fill_count, t.fill_avg_price_cents,
-                   c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
+                   c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f,
+                   t.target_date
             FROM pm_live_trades t
             JOIN contracts c ON c.ticker = t.ticker
             LEFT JOIN observations o ON o.date = t.target_date AND o.station_id = %s
             WHERE t.settlement IS NULL AND t.target_date < %s""", (STATION, today))
-        for tid, intent, fills, favg, bt, sl, sh, hf in cur.fetchall():
+        for tid, intent, fills, favg, bt, sl, sh, hf, td in cur.fetchall():
             if fills == 0:
-                cur.execute("UPDATE pm_live_trades SET settlement='no_fill', realized_pnl_cents=0 WHERE id=%s", (tid,))
+                # fill_count is written by scripts/reconcile_pm_trades.py, not by
+                # this script. A row it has not reached yet is indistinguishable
+                # from a genuine no-fill, and zeroing it would hide a real filled
+                # trade from the cumulative kill switch. Wait 2 days before
+                # believing a zero; the reconciler runs twice daily.
+                if (today - td).days >= 2:
+                    cur.execute("UPDATE pm_live_trades SET settlement='no_fill', "
+                                "realized_pnl_cents=0 WHERE id=%s", (tid,))
                 continue
             if hf is None:
                 continue  # obs not in yet; retry next run
