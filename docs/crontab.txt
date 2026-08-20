@@ -140,6 +140,14 @@
 # docs/decisions/2026-08-12-polymarket-live-probe.md for rationale + scaling ladder.
 47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
 
+# Reconcile Polymarket fills + settlement. WITHOUT THIS THE PM KILL SWITCH IS
+# DEAD: live_trade_polymarket reads cumulative realized_pnl_cents to decide
+# whether to halt, and nothing else ever writes that column. 20:05 catches the
+# day's fills; 13:05 scores settlement once ingest_observations (06/12/18) has
+# landed the CLI high. Idempotent, so running twice is free.
+5 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_pm_trades.py --apply >> /var/log/weather/reconcile_pm.log 2>&1
+5 13 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_pm_trades.py --apply >> /var/log/weather/reconcile_pm.log 2>&1
+
 # ----- LIVE TRADING (real money) -----
 # Each fires after paper trade so the cron-evaluated signals are already in paper_trades for the day.
 # live_trade.py has all risk controls baked in (halt file, cumulative drawdown, daily loss, contract cap, spread regime).
