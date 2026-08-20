@@ -68,7 +68,16 @@ CUMULATIVE_KILL_DOLLARS = 200.0     # whole-probe stop; this is not a P&L play
 
 
 def halted(city: str) -> str | None:
-    for f in (HALT_DIR / "ALL", HALT_DIR / city, HALT_DIR / f"FX_{city}"):
+    """halt/ALL stops everything; halt/FX_<CITY> stops one city on this venue.
+
+    Deliberately does NOT read halt/<CITY>. Those are Kalshi halts, and
+    ForecastEx settles on Weather Underground rather than the NWS CLI — a
+    different bet on the same city, with its own measured edge. Dallas is the
+    case in point: halted on Kalshi after -$615, yet the strongest ForecastEx
+    city at t=2.98 even charging the full spread on every fill. Cascading the
+    Kalshi halt would silently suppress the best signal we have here.
+    """
+    for f in (HALT_DIR / "ALL", HALT_DIR / f"FX_{city}"):
         if f.exists():
             return f"{f.name} present: {f.read_text().strip()[:120]}"
     return None

@@ -275,6 +275,30 @@
 # INSTALLED 2026-08-17.
 0 5 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/analysis/forecastex_backtest.py --all --json >> /var/log/weather/forecastex_backtest.log 2>&1
 
+# ---- ForecastEx LIVE probe via IBKR (2026-08-21) -----------------------------
+# 25 contracts/city, POSTED (not crossed) inside the last print by half the
+# measured spread. The point is measuring whether posted orders fill: that gap
+# is t=1.84 (always cross) vs t=3.77 (always post) on Miami, and it decides
+# whether ForecastEx is worth scaling at all. An unfilled order is a RESULT.
+#
+# Each city fires at ITS OWN decision time, so these are separate entries --
+# running both at one time would price one city off the wrong snapshot.
+30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KMIA --live >> /var/log/weather/live_trade_fx.log 2>&1
+32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KDFW --live >> /var/log/weather/live_trade_fx.log 2>&1
+
+# Reconcile fills + settlement. WITHOUT THIS THE $200 PROBE KILL SWITCH IS DEAD:
+# live_trade_forecastex reads cumulative realized_pnl_cents and nothing else
+# writes it. 20:10 catches fills; 05:30 scores settlement once the 05:00 backtest
+# refresh has cached ForecastEx's own (Weather Underground) settled highs.
+10 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
+30 5 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
+
+# Gateway keepalive every 5 min. /tickle defeats the ~5-minute IDLE timeout; it
+# CANNOT defeat IBKR's ~24h SSO expiry, which needs a browser login. So the real
+# job here is alerting on state change, so a dead session is known in the morning
+# rather than discovered as a 401 at 15:30.
+*/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ibkr_keepalive.py --quiet >> /var/log/weather/ibkr_keepalive.log 2>&1
+
 # Ops-copilot digest: 04:30 UTC daily (after reconcile 04:00 + equity snapshot
 # 04:15, so settlement + equity data for yesterday is fresh). READ-ONLY —
 # reasons over our own DB + Kalshi's read-only portfolio endpoints via the B0
