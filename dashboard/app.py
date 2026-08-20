@@ -10,6 +10,8 @@ Endpoints:
     GET /api/backtest/cities    -> [{code,label}] for the city dropdown
     GET /api/backtest?city=&date=&sizing=&amount=&depth=&edge=
                                 -> one city's backtest payload (5min TTL)
+    GET /api/accounting         -> tax reserve / withdrawals payload (60s TTL)
+    GET /api/digest             -> latest ops-copilot digest, read-only (5min TTL)
 
 Run:
     uv run uvicorn dashboard.app:app --host 127.0.0.1 --port 8000
@@ -30,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from dashboard.data_live import get_live_data, _live_trade_config
 from dashboard.data_backtest import fetch_city_payload, list_cities
 from dashboard.data_accounting import get_accounting_data
+from dashboard.data_digest import get_digest_data
 from dashboard.kalshi_ws import service as live_service
 from dashboard.ttl_cache import ttl_cache
 
@@ -110,6 +113,47 @@ def _accounting_payload() -> dict:
 @app.get("/api/accounting")
 def api_accounting() -> Response:
     return _json(_accounting_payload())
+
+
+@ttl_cache(60)
+def _polymarket_payload() -> dict:
+    """Polymarket tab: live-probe rails/trades + 5-city paper tracking.
+    60s TTL — pure local DB reads, cache just bounds per-poll query cost."""
+    from dashboard.data_polymarket import get_polymarket_data
+    return get_polymarket_data()
+
+
+@app.get("/api/polymarket")
+def api_polymarket() -> Response:
+    return _json(_polymarket_payload())
+
+
+@ttl_cache(60)
+def _forecastex_payload() -> dict:
+    """ForecastEx tab: collector health + liquidity + the cached backtest.
+    The backtest itself is NEVER computed here (it downloads settlement
+    ladders) — data_forecastex reads data/forecastex_backtest.json and
+    reports its age. 60s TTL bounds the per-poll DB cost."""
+    from dashboard.data_forecastex import get_forecastex_data
+    return get_forecastex_data()
+
+
+@app.get("/api/forecastex")
+def api_forecastex() -> Response:
+    return _json(_forecastex_payload())
+
+
+@ttl_cache(300)
+def _digest_payload() -> dict:
+    """Ops-copilot digest: reads the latest cron-written file, no LLM call
+    here. 5min TTL — it's just a file read, cached only to avoid re-parsing
+    markdown on every poll."""
+    return get_digest_data()
+
+
+@app.get("/api/digest")
+def api_digest() -> Response:
+    return _json(_digest_payload())
 
 
 if __name__ == "__main__":

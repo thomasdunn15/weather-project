@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Are GEFS + ECMWF-IFS + HRRR the best forecast models for this strategy — or should others be added?</title>
+<style>
+:root { --fg:#1a1a1a; --muted:#666; --accent:#0b8457; --border:#e2e2e2;
+  --bg:#fff; --code-bg:#f6f8fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:#fafafa; color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65; font-size:16px; }
+.paper { max-width:820px; margin:48px auto; padding:56px 64px; background:var(--bg);
+  border:1px solid var(--border); border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+h1 { font-size:2rem; line-height:1.2; margin:0 0 .25em;
+  border-bottom:2px solid var(--fg); padding-bottom:.3em; }
+h2 { font-size:1.35rem; margin:1.8em 0 .6em;
+  border-bottom:1px solid var(--border); padding-bottom:.2em; }
+h3 { font-size:1.1rem; margin:1.4em 0 .5em; }
+em { color:var(--muted); }
+a { color:#0366d6; text-decoration:none; }
+a:hover { text-decoration:underline; }
+table { border-collapse:collapse; width:100%; margin:1.2em 0; font-size:.93rem; }
+th, td { border:1px solid var(--border); padding:8px 12px; text-align:left; }
+th { background:var(--code-bg); font-weight:600; }
+tr:nth-child(even) td { background:#fbfbfb; }
+code { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.88em;
+  background:var(--code-bg); padding:.15em .4em; border-radius:4px; }
+pre { background:var(--code-bg); border:1px solid var(--border); border-radius:6px;
+  padding:14px 16px; overflow:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:1.2em 0; padding:.4em 1em; border-left:4px solid var(--accent);
+  background:#f7fbf9; color:var(--muted); }
+hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+@media print { body { background:#fff; }
+  .paper { border:none; box-shadow:none; margin:0; max-width:none; } }
+</style>
+</head>
+<body>
+<main class="paper">
+<h1 id="are-gefs-ecmwf-ifs-hrrr-the-best-forecast-models-for-this-strategy-or-should-others-be-added">Are GEFS + ECMWF-IFS + HRRR the best forecast models for this strategy — or should others be added?</h1>
+<p><em>2026-06-20 · status: draft</em></p>
+<h2 id="question">Question</h2>
+<p>The daily-high strategy feeds three forecast models into its EMOS→blend pipeline: <strong>GEFS</strong> (NOAA, ~31 members), <strong>ECMWF-IFS ENS</strong> (~50 members), and <strong>HRRR</strong> (deterministic, folded in as one member, Chicago only). The CLAUDE.md notes this set "was an initial recommendation, not an exhaustive model-selection study." This paper asks: <strong>of the models we already use, which actually carry skill at our scale (day-ahead, station, daily-max), and are there models we don't use — physics or AI — that would add <em>independent</em> skill and are <em>free to ingest</em>?</strong> It matters now because forecast quality is the one upstream input that feeds every city, and the AI-weather landscape (AIFS, GenCast, GraphCast) has changed materially in the last 18 months.</p>
+<h2 id="tldr-verdict">TL;DR / Verdict</h2>
+<p><strong>Medium confidence.</strong> GEFS+IFS+HRRR is a <em>defensible</em> core but not optimal, and the highest-value gaps are not "another global ensemble":</p>
+<ol>
+<li><strong>IFS &gt; GEFS</strong> after calibration (EMOS CRPS 1.327 vs 1.472), <strong>combined beats either single</strong> (1.268), and <strong>HRRR is the single most accurate <em>raw</em> model at day-ahead</strong> (MAE 2.57°F) — yet HRRR is wired into only one city. The multi-model ensemble is justified by the data; GEFS and IFS errors correlate only <strong>r = 0.61</strong>, so they genuinely diversify.</li>
+<li>The dominant skill deficit is <strong>at coastal/terrain stations</strong> (KLAS MAE 6.0, KSFO 5.0, KPHX 4.4, KLAX 4.2°F) where a 0.25–0.4° global grid physically cannot resolve the microclimate. That is a <strong>resolution/downscaling</strong> problem, best solved by <strong>NBM</strong> (NOAA's free, Herbie-native, 2.5 km <em>calibrated</em> daily-Tmax blend), not by adding more coarse global members.</li>
+<li>The best <em>free, commercially-licensed, decorrelated</em> additions are <strong>ECMWF AIFS / AIFS-ENS</strong> (same ECMWF Open Data channel we already use for IFS) and <strong>GEM</strong> (independent Canadian core). GFS-deterministic and ECMWF-HRES should be <strong>skipped</strong> — they share cores with GEFS/IFS and add little.</li>
+</ol>
+<p><strong>Biggest caveat:</strong> <em>better forecast skill ≠ trading edge.</em> Prior findings (no-edge ECMWF-00Z; market does 56–95% of the blend work; edge concentrated in Chicago/Miami/Seattle) mean these additions will measurably lower CRPS but may move P&amp;L only modestly, because the market price already embeds most public-forecast information. Validate skill-first; treat edge impact as a separate, lower-prior question.</p>
+<h2 id="methods-data">Methods &amp; Data</h2>
+<p><strong>Internal — read-only.</strong> All numbers from a new analysis script, <code>scripts/analysis/forecast_model_skill.py</code>, run via <code>uv run</code>. It reproduces the production daily-high path (<code>aggregation.compute_daily_highs</code>): 00Z init, target = same UTC calendar day D; per ensemble member, daily high = <code>MAX(tmax_f)</code> over local-day-D valid times (station IANA tz); realized truth = CF6 <code>observations.high_temp_f</code>. Sample: all <strong>13 stations</strong>, IFS/GEFS back to 2024-04, HRRR from 2025-05. Metrics:
+- <strong>Ensemble-mean bias / MAE / RMSE</strong> vs realized high. (MAE/RMSE of the ensemble mean is what external benchmarks — WeatherBench-2, ECMWF scorecards — publish for 2 m temperature, so it is the cross-comparable metric.)
+- <strong>Fair (PWM) ensemble CRPS</strong> — distributional skill from the raw member spread; reduces to abs-error for deterministic HRRR.
+- <strong>Rolling-45-day EMOS-calibrated Gaussian CRPS</strong>, out-of-sample, reusing <code>emos.fit_emos</code> / <code>crps_gaussian</code> exactly as production does — the production-relevant number.
+- <strong>GEFS↔IFS ensemble-mean error correlation</strong> (Pearson) — quantifies how much <em>independent</em> signal a new model could add.
+- <strong>Matched samples</strong> so comparisons are apples-to-apples (e.g. HRRR scored only on days where all three models are present).</p>
+<p><strong>External — web search + fetch, every numeric claim verified against its primary source</strong> (peer-reviewed papers, lab blogs, ECMWF/NOAA/DWD/ECCC docs, Herbie + Open-Meteo docs, vendor pricing pages). Three angles: (a) AI/ML models for station Tmax; (b) physics NWP + NOAA's NBM blend; (c) Open-Meteo as a unified ingestion layer + the four major paid point-forecast APIs.</p>
+<h2 id="internal-findings">Internal Findings</h2>
+<h3 id="1-per-model-day-ahead-skill-00z-init-same-day-high-all-stations-pooled">1. Per-model day-ahead skill (00Z init, same-day high, all stations pooled)</h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">n</th>
+<th style="text-align: right;">Bias (°F)</th>
+<th style="text-align: right;">MAE</th>
+<th style="text-align: right;">RMSE</th>
+<th style="text-align: right;">Ens-CRPS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GEFS</td>
+<td style="text-align: right;">4630</td>
+<td style="text-align: right;">−1.40</td>
+<td style="text-align: right;">3.06</td>
+<td style="text-align: right;">3.88</td>
+<td style="text-align: right;">2.523</td>
+</tr>
+<tr>
+<td>IFS</td>
+<td style="text-align: right;">4884</td>
+<td style="text-align: right;">−2.12</td>
+<td style="text-align: right;">2.91</td>
+<td style="text-align: right;">3.65</td>
+<td style="text-align: right;">2.420</td>
+</tr>
+<tr>
+<td>HRRR</td>
+<td style="text-align: right;">3653</td>
+<td style="text-align: right;">−1.47</td>
+<td style="text-align: right;"><strong>2.57</strong></td>
+<td style="text-align: right;">3.59</td>
+<td style="text-align: right;">2.566</td>
+</tr>
+<tr>
+<td><strong>combined</strong> (gefs+ifs)</td>
+<td style="text-align: right;">4630</td>
+<td style="text-align: right;">−1.85</td>
+<td style="text-align: right;">2.75</td>
+<td style="text-align: right;"><strong>3.44</strong></td>
+<td style="text-align: right;"><strong>2.117</strong></td>
+</tr>
+<tr>
+<td>combined + HRRR</td>
+<td style="text-align: right;">3363</td>
+<td style="text-align: right;">−2.02</td>
+<td style="text-align: right;">2.86</td>
+<td style="text-align: right;">3.56</td>
+<td style="text-align: right;">2.195</td>
+</tr>
+</tbody>
+</table>
+<p>Two structural facts jump out. <strong>(a) Every raw ensemble runs cold</strong> — it under-forecasts the daily high by 1.4–2.1°F. This is exactly why EMOS exists, and it means <em>raw</em> MAE penalizes IFS for its larger cold bias even though IFS is the better model once corrected. <strong>(b) HRRR's deterministic 3 km run has the lowest raw MAE</strong> at this short lead — high resolution wins the nowcast — but its single member barely moves the 81-member pooled mean (combined vs combined+HRRR MAE 2.75→2.86 reflects a sample shift, not HRRR hurting; see matched sample below).</p>
+<h3 id="2-emos-calibrated-crps-the-production-relevant-ranking">2. EMOS-calibrated CRPS — the production-relevant ranking</h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">n_eval</th>
+<th style="text-align: right;">Mean CRPS (°F)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GEFS</td>
+<td style="text-align: right;">4079</td>
+<td style="text-align: right;">1.472</td>
+</tr>
+<tr>
+<td>IFS</td>
+<td style="text-align: right;">4331</td>
+<td style="text-align: right;"><strong>1.327</strong></td>
+</tr>
+<tr>
+<td>combined (gefs+ifs)</td>
+<td style="text-align: right;">4080</td>
+<td style="text-align: right;"><strong>1.268</strong></td>
+</tr>
+<tr>
+<td>combined + HRRR</td>
+<td style="text-align: right;">2812</td>
+<td style="text-align: right;">1.238</td>
+</tr>
+</tbody>
+</table>
+<p>After calibration: <strong>IFS beats GEFS by ~10%</strong>, <strong>combining beats the best single model by ~4.4%</strong> (and GEFS-alone by ~14%), and <strong>adding HRRR lowers CRPS a further ~2.4%</strong> (on a smaller, more recent eval window — see Limitations). This is the cleanest evidence that the multi-model ensemble is doing real work and that HRRR adds signal where it is present.</p>
+<h3 id="3-how-much-room-is-there-for-a-new-model-error-correlation">3. How much room is there for a <em>new</em> model? Error correlation</h3>
+<blockquote>
+<p><strong>GEFS-mean error vs IFS-mean error: Pearson r = 0.614 (n = 4630).</strong></p>
+</blockquote>
+<p>Two of the world's leading global systems still share only ~38% of their error variance. The variance of an equal average of two models scales as σ²(1+ρ)/2; at ρ=0.61 that is a ~10% RMSE reduction ceiling from a <em>second</em> equally-skilled, similarly-correlated model — and the observed combined-vs-IFS RMSE gain (3.65→3.44, −5.7%) is consistent with that (GEFS is weaker than IFS, so the realized gain is below the ceiling). <strong>Implication:</strong> a <em>third</em> model helps only to the extent its errors decorrelate from the GEFS+IFS pool, and the marginal gain diminishes fast. A same-lineage model (GFS-det shares GEFS's FV3 core; HRES shares IFS) will be ~highly correlated → near-zero marginal value. An independent core (GEM, ICON) or an ERA5-trained AI model (AIFS) is where decorrelation — and therefore value — actually lives.</p>
+<h3 id="4-where-the-models-actually-fail-per-station-mae-of-the-ensemble-mean-f">4. Where the models actually fail: per-station MAE of the ensemble mean (°F)</h3>
+<table>
+<thead>
+<tr>
+<th>Station</th>
+<th style="text-align: right;">GEFS</th>
+<th style="text-align: right;">IFS</th>
+<th style="text-align: right;">combined</th>
+<th style="text-align: right;">combined+HRRR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KAUS</td>
+<td style="text-align: right;">2.51</td>
+<td style="text-align: right;">2.75</td>
+<td style="text-align: right;">2.43</td>
+<td style="text-align: right;">2.55</td>
+</tr>
+<tr>
+<td>KDEN</td>
+<td style="text-align: right;">2.93</td>
+<td style="text-align: right;">2.51</td>
+<td style="text-align: right;">2.56</td>
+<td style="text-align: right;">2.87</td>
+</tr>
+<tr>
+<td>KDFW</td>
+<td style="text-align: right;">2.71</td>
+<td style="text-align: right;">2.73</td>
+<td style="text-align: right;">2.48</td>
+<td style="text-align: right;">2.47</td>
+</tr>
+<tr>
+<td><strong>KLAS</strong></td>
+<td style="text-align: right;"><strong>6.05</strong></td>
+<td style="text-align: right;">3.43</td>
+<td style="text-align: right;">4.39</td>
+<td style="text-align: right;">4.33</td>
+</tr>
+<tr>
+<td><strong>KLAX</strong></td>
+<td style="text-align: right;">3.07</td>
+<td style="text-align: right;"><strong>4.18</strong></td>
+<td style="text-align: right;">2.94</td>
+<td style="text-align: right;">3.66</td>
+</tr>
+<tr>
+<td>KMDW</td>
+<td style="text-align: right;">2.71</td>
+<td style="text-align: right;">2.72</td>
+<td style="text-align: right;">2.53</td>
+<td style="text-align: right;"><strong>2.52</strong></td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td style="text-align: right;">2.67</td>
+<td style="text-align: right;">3.37</td>
+<td style="text-align: right;">3.06</td>
+<td style="text-align: right;">3.08</td>
+</tr>
+<tr>
+<td>KMSY</td>
+<td style="text-align: right;">2.01</td>
+<td style="text-align: right;">3.44</td>
+<td style="text-align: right;">2.90</td>
+<td style="text-align: right;">2.89</td>
+</tr>
+<tr>
+<td>KNYC</td>
+<td style="text-align: right;">2.72</td>
+<td style="text-align: right;">2.67</td>
+<td style="text-align: right;">2.51</td>
+<td style="text-align: right;">2.75</td>
+</tr>
+<tr>
+<td>KORD</td>
+<td style="text-align: right;">2.62</td>
+<td style="text-align: right;">2.94</td>
+<td style="text-align: right;">2.62</td>
+<td style="text-align: right;">2.64</td>
+</tr>
+<tr>
+<td><strong>KPHX</strong></td>
+<td style="text-align: right;"><strong>4.38</strong></td>
+<td style="text-align: right;">2.19</td>
+<td style="text-align: right;">2.95</td>
+<td style="text-align: right;">2.93</td>
+</tr>
+<tr>
+<td>KSEA</td>
+<td style="text-align: right;">2.26</td>
+<td style="text-align: right;">2.22</td>
+<td style="text-align: right;">1.88</td>
+<td style="text-align: right;">1.89</td>
+</tr>
+<tr>
+<td><strong>KSFO</strong></td>
+<td style="text-align: right;"><strong>5.03</strong></td>
+<td style="text-align: right;">3.07</td>
+<td style="text-align: right;">3.87</td>
+<td style="text-align: right;">3.73</td>
+</tr>
+</tbody>
+</table>
+<p>The skill is wildly station-dependent. Flat inland stations (KSEA 1.9, KMDW/KDFW/KAUS ~2.5) are easy; <strong>coastal-marine and desert-basin stations are 2–3× worse</strong> (KLAS, KSFO, KPHX, KLAX), and <em>which</em> model wins flips by station (GEFS is terrible at KLAS/KSFO/KPHX; IFS is terrible at KLAX/KMSY/KMIA). This is the fingerprint of <strong>unresolved terrain and land/sea contrast</strong> at 0.25–0.4° — not something a fourth global ensemble fixes, but exactly what a 2.5 km statistically-downscaled product (NBM) targets.</p>
+<p>Note also that <strong>combined+HRRR independently replicates the documented per-city HRRR result</strong>: it <em>improves</em> KMDW/KDFW (2.53→2.52, 2.48→2.47) but <em>hurts</em> KNYC (2.51→2.75) and KLAX (2.94→3.66) — i.e. "HRRR helps Chicago, not NYC," recovered here from a clean-room computation.</p>
+<h2 id="external-context">External Context</h2>
+<h3 id="ai-ml-global-models-verified">AI / ML global models (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Type</th>
+<th>Temporal out</th>
+<th>Free + commercial to ingest?</th>
+<th>2 m-temp skill vs IFS (verified)</th>
+<th>Key limitation for station Tmax</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ECMWF AIFS Single</strong></td>
+<td>Deterministic, 0.25°</td>
+<td>6-hourly</td>
+<td><strong>Yes — CC-BY-4.0, ECMWF Open Data + Open-Meteo + Herbie</strong></td>
+<td><strong>&gt;15% lower T2m RMSE than IFS at 1.5-day vs SYNOP stations</strong> (midday, flat terrain) [7]</td>
+<td>Smoother than IFS; weaker over complex terrain</td>
+</tr>
+<tr>
+<td><strong>AIFS-ENS</strong></td>
+<td>Ensemble (CRPS-trained), 0.25°</td>
+<td>6-hourly</td>
+<td><strong>Yes — CC-BY-4.0</strong> [5]</td>
+<td>Beats IFS-ENS on most CRPS targets [11]</td>
+<td>Same smoothing; operational since Jul 2025</td>
+</tr>
+<tr>
+<td><strong>GenCast</strong> (DeepMind)</td>
+<td>Ensemble (diffusion), 0.25°</td>
+<td><strong>12-hourly</strong></td>
+<td>Weights <strong>CC-BY-NC-SA — no commercial</strong> [9]</td>
+<td>More skillful than ENS on <strong>97.2% of 1320 targets</strong> (CRPS, global) [3][4]</td>
+<td><strong>12-hourly output cannot resolve a sub-daily Tmax</strong></td>
+</tr>
+<tr>
+<td><strong>GraphCast</strong> (DeepMind)</td>
+<td>Deterministic, 0.25°</td>
+<td>6-hourly</td>
+<td>Weights <strong>CC-BY-NC-SA — no commercial</strong> [1][2]</td>
+<td>Beat HRES on "&gt;90% of 1380 targets" (global, not T2m-specific)</td>
+<td>RMSE-trained → blurs extremes</td>
+</tr>
+<tr>
+<td><strong>Aurora</strong> (Microsoft)</td>
+<td>Deterministic, 0.1°</td>
+<td>6-hourly</td>
+<td>Weights open; <strong>no free live feed</strong></td>
+<td>Beats IFS-HRES on 2m-temp at <strong>13,000+ ISD stations</strong>, all leads to 10d [14]</td>
+<td>Must self-run; op/licensing for trading unverified</td>
+</tr>
+<tr>
+<td><strong>WeatherNext / 2</strong> (Google)</td>
+<td>Ensemble</td>
+<td>sub-daily</td>
+<td><strong>Cloud-gated</strong> (BigQuery/Earth Engine/Vertex) [15][16]</td>
+<td>v2 beats v1 on "99.9% of vars/leads" (not vs IFS directly)</td>
+<td>Licensing + cost; ERA5-lineage smoothing</td>
+</tr>
+<tr>
+<td>Pangu-Weather; FourCastNet</td>
+<td>Deterministic, 0.25°</td>
+<td>1–6h</td>
+<td>Research weights; no managed feed</td>
+<td>Pangu &gt; IFS on T2M (2023) [10]; FourCastNet weaker</td>
+<td>Self-host only</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The crucial caveat for our use case:</strong> every AI model is trained on <strong>ERA5/HRES gridbox-average</strong> fields and verified at headline level against <em>gridded analysis</em>, not US-airport daily-Tmax. They <strong>systematically smooth and under-predict extremes</strong> — precisely the tails a daily-Tmax market trades on — and several emit only <strong>6–12-hourly</strong> output, which cannot capture a sub-daily maximum (fatal for GenCast at 12-hourly). Their bias <em>structure</em> differs from physics NWP (AIFS avoids IFS's wintertime warm bias [7]), which is the decorrelation we want, but it must be measured locally before trusting it.</p>
+<h3 id="physics-nwp-noaas-nbm-verified">Physics NWP + NOAA's NBM (verified)</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Center</th>
+<th>Independent of GEFS/IFS?</th>
+<th>Res</th>
+<th>Free + Herbie / Open-Meteo?</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GFS-det</td>
+<td>NCEP</td>
+<td><strong>No</strong> (shares FV3 + GDAS with GEFS)</td>
+<td>13 km</td>
+<td>Herbie ✓</td>
+<td><strong>Skip</strong> — correlated</td>
+</tr>
+<tr>
+<td>ECMWF HRES</td>
+<td>ECMWF</td>
+<td><strong>No</strong> (same IFS)</td>
+<td>9 km</td>
+<td>Herbie ✓</td>
+<td><strong>Skip</strong> — adds little over IFS-ENS</td>
+</tr>
+<tr>
+<td><strong>GEM / GDPS / GEPS</strong></td>
+<td><strong>ECCC (Canada)</strong></td>
+<td><strong>Yes</strong> (independent GEM core)</td>
+<td>15 km global; <strong>HRDPS 2.5 km</strong> NA</td>
+<td>Herbie ✓ (beta); Open-Meteo ✓</td>
+<td><strong>Best independent add</strong></td>
+</tr>
+<tr>
+<td><strong>ICON (global)</strong></td>
+<td><strong>DWD (Germany)</strong></td>
+<td><strong>Yes</strong></td>
+<td>~13 km</td>
+<td>Herbie ✗; <strong>Open-Meteo ✓</strong></td>
+<td>Good diversity member (ICON-EU/D2 are <strong>Europe-only</strong> — useless for US)</td>
+</tr>
+<tr>
+<td><strong>ARPEGE</strong></td>
+<td><strong>Météo-France</strong></td>
+<td><strong>Yes</strong></td>
+<td>~0.25°</td>
+<td>Open-Meteo ✓</td>
+<td>Secondary diversity member</td>
+</tr>
+<tr>
+<td>UKMET / MOGREPS</td>
+<td>UKMO</td>
+<td><strong>Yes</strong></td>
+<td>10 km</td>
+<td>Herbie ✗; Open-Meteo ✓</td>
+<td>Independent but US ingestion is the friction</td>
+</tr>
+<tr>
+<td>NAM / RAP</td>
+<td>NCEP</td>
+<td>Partial</td>
+<td>3 km / 13 km</td>
+<td>Herbie ✓</td>
+<td>RAP subsumed by HRRR; NAM short-range only</td>
+</tr>
+<tr>
+<td>JMA GSM</td>
+<td>JMA</td>
+<td>Yes</td>
+<td>~55 km</td>
+<td>Open-Meteo ✓</td>
+<td>Too coarse for station Tmax</td>
+</tr>
+<tr>
+<td><strong>NBM</strong></td>
+<td><strong>NOAA/MDL</strong></td>
+<td>Blend (not independent)</td>
+<td><strong>2.5 km CONUS</strong></td>
+<td><strong>Herbie ✓; AWS/NOMADS free</strong></td>
+<td><strong>Best practical add for hard stations</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>NBM (National Blend of Models)</strong> is NOAA/MDL's "calibrated… blend of NWS and non-NWS NWP and <strong>post-processed</strong> model guidance" — it ingests GFS/ECMWF/CMC/NAM/HRRR, then <strong>bias-corrects and terrain-downscales to a 2.5 km CONUS grid</strong>, emitting calibrated <strong>daily Tmax/Tmin plus percentiles</strong>. It is free (<code>s3://noaa-nbm-grib2-pds</code>/NOMADS) and <code>Herbie(model="nbm")</code>-native. It directly attacks our worst stations (KSFO/KLAS/KLAX/KPHX/KSEA) because its statistical downscaling resolves marine-layer gradients and basin inversions a coarse grid misses. <strong>Caveat:</strong> NBM partly blends the same GFS/IFS we already use, so it is a <em>calibrated downscaler / feature</em>, not a decorrelated independent member — and it ships an already-calibrated distribution that may overlap our own EMOS layer.</p>
+<h3 id="ingestion-layer-paid-apis-verified">Ingestion layer &amp; paid APIs (verified)</h3>
+<ul>
+<li><strong>Open-Meteo is the single best ingestion path.</strong> Its free API serves 30+ NWP models and an <strong>Ensemble API with individual members</strong> (GEFS, IFS-ENS, <strong>ICON-EPS, GEM, AIFS-ENS, UKMO</strong>), serves <strong>AI models</strong> (AIFS, a GFS-GraphCast), and — critically — offers a <strong>free Historical Forecast / "Previous Runs" archive</strong> (forecasts-as-issued, ~2021/2024 onward) that solves the honest-backtest problem. Data is <strong>CC-BY 4.0</strong> (commercial OK with attribution); but the <strong>free tier is non-commercial</strong> and member-level + history needs the <strong>Professional tier or self-hosting</strong> the AGPL server. Member <em>history</em> is only ~3 days, so a rolling-archive cron is needed [1–6, ingestion].</li>
+<li><strong>The four paid point-forecast APIs (Tomorrow.io, Weatherbit, Visual Crossing, AccuWeather) are low value here.</strong> All are <strong>deterministic single-point</strong> forecasts — <strong>no per-member ensemble → no native CRPS</strong> — and none offers a cheap, bulk <em>forecast-as-issued</em> archive for backtesting (they sell <em>observation</em> history). They are MOS-style and may beat <em>raw</em> GEFS/IFS at a station, but as one correlated number they cannot substitute for an ensemble. At most, Visual Crossing's free 1,000 records/day is a cheap single MOS <em>feature</em> to A/B — not a core source.</li>
+</ul>
+<h2 id="limitations-threats-to-validity">Limitations &amp; Threats to Validity</h2>
+<ul>
+<li><strong>Skill ≠ edge — the load-bearing caveat.</strong> Every internal number here is forecast <em>accuracy</em>, not P&amp;L. The market-blend finding (market carries 56–95% of weight; β_model negative at KAUS/KLAX) and the per-city diagnostic (edge concentrated in Chicago/Miami/Seattle) mean a CRPS improvement may not convert to edge. A better model helps most where our model still has <em>independent</em> signal versus the market — which is a smaller set than "all stations."</li>
+<li><strong>Short lead only.</strong> We measured the ~12–36h day-ahead horizon the strategy trades. Rankings (especially HRRR's raw-MAE win) would shift at longer leads, where global ensembles and AI models dominate and HRRR isn't available.</li>
+<li><strong>Raw MAE penalizes bias; EMOS corrects it.</strong> The raw-MAE tables understate IFS (largest cold bias) relative to its post-calibration skill. The EMOS-CRPS table is the fairer production-relevant view.</li>
+<li><strong>HRRR / combined+HRRR eval samples are smaller and more recent</strong> (HRRR from 2025-05/12; EMOS n_eval 2812 vs 4080). The "+2.4% CRPS from HRRR" is suggestive, not matched-sample definitive. The per-station replication of the Chicago-yes/NYC-no pattern is the more robust HRRR result.</li>
+<li><strong>External skill figures are global/gridded, not station-Tmax.</strong> The headline AI claims ("beats IFS on 90%+ of targets") are global, multi-variable averages against analysis — not US-airport daily-max at 12–36h. The single most on-point external number is AIFS's SYNOP-station T2m RMSE [7]; the rest must be re-validated locally before being trusted for trading.</li>
+<li><strong>AI extreme-smoothing</strong> biases the tails this market resolves on; an AI model could improve mean CRPS yet <em>worsen</em> bracket-boundary calibration. Must be checked with Brier/reliability at bracket edges, not just CRPS.</li>
+<li><strong>No model fixes the binding constraint directly.</strong> Per the standing "grow data, not sophistication" principle, the value of these additions is partly that they <em>grow the data</em> (more independent members, more stations resolved) — but they remain upstream of a market that already prices most of it.</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p><strong>Do not act now — CONFIG FREEZE is in effect until 2026-07-10.</strong> The following are <strong>backlog proposals</strong>, ranked by expected skill-per-integration-effort, to be validated <strong>skill-first</strong> (per-station CRPS/Brier vs the current combined baseline on a matched sample) <em>before</em> any edge/backtest claim. Each is appended to <code>docs/backlog.md</code>.</p>
+<ol>
+<li><strong>NBM (National Blend of Models)</strong> — highest immediate value. Free, <code>Herbie</code>-native, 2.5 km <strong>calibrated daily-Tmax</strong>; directly targets our worst stations (KSFO/KLAS/KLAX/KPHX). Integrate as a <strong>calibrated feature / EMOS covariate</strong>, not a raw member (it's already post-processed). Validate it most where the global grid fails — but temper expectations: those are not currently our edge-positive cities.</li>
+<li><strong>ECMWF AIFS + AIFS-ENS</strong> — lowest integration cost (same ECMWF Open Data channel + Herbie we already use for IFS), <strong>free and commercially licensed (CC-BY-4.0)</strong>, and structurally <strong>decorrelated</strong> from physics NWP. The one AI model whose licensing and station-level T2m evidence both clear the bar. Add as ensemble members; check bracket-edge calibration, not just CRPS.</li>
+<li><strong>GEM (GDPS + GEPS, HRDPS 2.5 km)</strong> — the best <em>truly independent</em> dynamical add (independent core, free, Herbie beta, native North-America high-res). Highest decorrelation of the physics options.</li>
+<li><strong>(Lower priority) ICON-global and ARPEGE via Open-Meteo</strong> as further diversity members; adopt <strong>Open-Meteo's Ensemble + Historical-Forecast API</strong> as the unified ingestion + backtest-archive layer (note: commercial/member-level needs the Professional tier or self-hosting).</li>
+<li><strong>Explicitly skip:</strong> GFS-deterministic and ECMWF-HRES (lineage-correlated with GEFS/IFS), RAP (subsumed by HRRR), JMA GSM (too coarse), and <strong>all four paid point-forecast APIs</strong> (deterministic, no ensemble, no cheap forecast history). GenCast/GraphCast/WeatherNext are non-commercial-licensed or cloud-gated → not usable for live trading even though GenCast's <em>research</em> skill is state-of-the-art.</li>
+</ol>
+<p><strong>Suggested validation protocol</strong> (for after the freeze): ingest NBM + AIFS for the 13 stations over a backfilled window; recompute the §2 rolling-EMOS CRPS and bracket-boundary Brier for <code>combined</code>, <code>combined+NBM</code>, <code>combined+AIFS</code>, <code>combined+NBM+AIFS</code>; <strong>adopt an addition only if it lowers per-station CRPS <em>and</em> improves (or holds) bracket-edge reliability</strong> at a city that is already edge-relevant — and only then test whether it moves blended P&amp;L.</p>
+<h2 id="sources">Sources</h2>
+<p><strong>Internal (reproducible):</strong>
+- <code>scripts/analysis/forecast_model_skill.py</code> — <code>cd /home/tdunn/weather-project &amp;&amp; uv run python scripts/analysis/forecast_model_skill.py</code> (all §1–§4 tables).
+- <code>aggregation.compute_daily_highs</code>, <code>emos.fit_emos</code>, <code>emos.crps_gaussian</code>, <code>evaluation.brier_score</code> (production scoring paths reused).
+- DB: <code>psql -d weather</code> — <code>forecasts</code> (model/member coverage), <code>observations</code> (CF6 highs). 13 stations; IFS/GEFS 2024-04→2026-06, HRRR 2025-05→.
+- Project context: <code>docs/context/decisions.md</code> (model rationale, per-city HRRR), memories <code>project_market_blend_finding</code>, <code>project_per_city_diagnostic_finding</code>, <code>project_no_edge_ecmwf_00z_finding</code>.</p>
+<p><strong>External (verified):</strong>
+1. GraphCast — DeepMind: https://deepmind.google/discover/blog/graphcast-ai-model-for-faster-and-more-accurate-global-weather-forecasting/
+2. GraphCast — Lam et al., <em>Science</em> 382, 1416 (2023): https://www.science.org/doi/10.1126/science.adi2336
+3. GenCast — Price et al., <em>Nature</em> (2024): https://www.nature.com/articles/s41586-024-08252-9
+4. GenCast — DeepMind (97.2% claim): https://deepmind.google/discover/blog/gencast-predicts-weather-and-the-risks-of-extreme-conditions-with-sota-accuracy/
+5. ECMWF AIFS ML data (CC-BY-4.0, commercial OK): https://www.ecmwf.int/en/forecasts/dataset/aifs-machine-learning-data
+6. ECMWF Open Data: https://www.ecmwf.int/en/forecasts/datasets/open-data
+7. ECMWF AIFS blog — SYNOP-station 2 m-temp verification: https://www.ecmwf.int/en/about/media-centre/aifs-blog/2025/verifying-2-m-temperature-forecasts-wintertime-anticyclonic
+8. Open-Meteo ECMWF/AIFS API: https://open-meteo.com/en/docs/ecmwf-api
+9. GraphCast/GenCast GitHub (weights CC-BY-NC-SA): https://github.com/google-deepmind/graphcast
+10. Pangu-Weather — Bi et al., <em>Nature</em> 619, 533 (2023): https://www.nature.com/articles/s41586-023-06185-3
+11. AIFS-ENS / AIFS-CRPS — arXiv:2412.15832: https://arxiv.org/abs/2412.15832
+12. FourCastNet — arXiv:2202.11214; code https://github.com/NVlabs/FourCastNet
+13. Aurora — Microsoft Research: https://www.microsoft.com/en-us/research/blog/introducing-aurora-the-first-large-scale-foundation-model-of-the-atmosphere/
+14. Aurora — Bodnar et al., <em>Nature</em> (2025), 13,000+ station 2m-temp: https://www.nature.com/articles/s41586-025-09005-y
+15. WeatherNext — DeepMind: https://deepmind.google/science/weathernext/
+16. WeatherNext 2 — Google: https://blog.google/technology/google-deepmind/weathernext-2/
+17. AWS Open Data — NOAA NBM: https://registry.opendata.aws/noaa-nbm/
+18. NWS MDL / VLab — National Blend of Models: https://vlab.noaa.gov/web/mdl/nbm
+19. Herbie NBM gallery: https://herbie.readthedocs.io/en/stable/gallery/noaa_models/nbm.html
+20. Herbie model gallery (supported models): https://herbie.readthedocs.io/en/stable/gallery/index.html
+21. DWD ICON description: https://www.dwd.de/EN/research/weatherforecasting/num_modelling/01_num_weather_prediction_modells/icon_description.html
+22. Open-Meteo DWD ICON API: https://open-meteo.com/en/docs/dwd-api
+23. ECCC MSC Open Data — GDPS: https://eccc-msc.github.io/open-data/msc-data/nwp_gdps/readme_gdps_en/
+24. Open-Meteo GEM (Canada) API: https://open-meteo.com/en/docs/gem-api
+25. Open-Meteo Forecast API: https://open-meteo.com/en/docs
+26. Open-Meteo Ensemble API (per-member): https://open-meteo.com/en/docs/ensemble-api
+27. Open-Meteo Historical Forecast / Previous Runs API: https://open-meteo.com/en/docs/historical-forecast-api
+28. Open-Meteo pricing + licence (CC-BY-4.0 data / AGPL code): https://open-meteo.com/en/pricing
+29. Tomorrow.io pricing / ToS: https://support.tomorrow.io/hc/en-us/articles/23554984091156-Tomorrow-io-Pricing-Overview
+30. Weatherbit pricing: https://www.weatherbit.io/pricing
+31. Visual Crossing editions/pricing: https://www.visualcrossing.com/weather-data-editions/
+32. AccuWeather developer packages: https://developer.accuweather.com/packages</p>
+</main>
+</body>
+</html>

@@ -29,33 +29,55 @@ def dollars_to_cents(dollar_str: str) -> int:
     """Convert Kalshi's dollar string format (e.g., '0.0500') to cents (5)."""
     return int(round(float(dollar_str) * 100))
 
-def fetch_markets(series_ticker: str, status: str = "open", limit: int = 200) -> list[dict]:
+def fetch_markets(series_ticker: str, status: str = "open", limit: int = 200,
+                  max_pages: int | None = None) -> list[dict]:
     url = "https://api.elections.kalshi.com/trade-api/v2/markets"
     base_params = {
         "series_ticker": series_ticker,
         "status": status,
         "limit": 200,  # max per page
     }
-    
+
     all_markets = []
     cursor = None
-    
+    pages = 0
+
     while True:
         params = dict(base_params)
         if cursor:
             params["cursor"] = cursor
-        
+
         response = httpx.get(url, params=params, timeout=30.0)
         response.raise_for_status()
         data = response.json()
-        
+
         all_markets.extend(data.get("markets", []))
-        
+
+        pages += 1
+        cursor = data.get("cursor", "")
+        if not cursor or (max_pages is not None and pages >= max_pages):
+            break
+
+    return all_markets
+
+
+def fetch_series_list(category: str) -> list[dict]:
+    """All Kalshi series in one category (public /series endpoint, paginated)."""
+    url = "https://api.elections.kalshi.com/trade-api/v2/series"
+    out: list[dict] = []
+    cursor = None
+    while True:
+        params: dict = {"category": category, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        response = httpx.get(url, params=params, timeout=30.0)
+        response.raise_for_status()
+        data = response.json()
+        out.extend(data.get("series", []))
         cursor = data.get("cursor", "")
         if not cursor:
             break
-    
-    return all_markets
+    return out
 
 def parse_contracts(raw_markets: list[dict], station_id: str = "KNYC") -> list[tuple]:
 

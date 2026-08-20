@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     # Polymarket, NOT Polymarket US weather contracts. Kept for completeness.)
     polymarketdata_api_key: str | None = None
 
+    # IBKR Client Portal Web API — ForecastEx execution only (market data comes
+    # from forecastex.com, which needs no auth). Default points at the local
+    # Client Portal Gateway; hosted OAuth would be https://api.ibkr.com/v1/api.
+    ibkr_api_base: str = "https://localhost:5000/v1/api"
+    ibkr_account_id: str | None = None
+
+    # Claude API (reasoning engine). Falls back to ANTHROPIC_API_KEY env if unset.
+    anthropic_api_key: str | None = None
+
+    # Claude Code CLI (subscription backend for human-triggered research).
+    # Generate with `claude setup-token`. Falls back to the process env.
+    claude_code_oauth_token: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

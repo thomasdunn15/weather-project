@@ -99,7 +99,8 @@ class PolymarketClient:
             r = self._client.post(url, headers=headers, params=params, json=json_body)
         else:
             raise NotImplementedError(f"unsupported method: {method}")
-        r.raise_for_status()
+        if r.is_error:
+            raise RuntimeError(f"{r.status_code} {r.reason_phrase} for {url}: {r.text}")
         return r.json()
 
     # === Historical price data (Polymarket DOES have this) ===
@@ -139,6 +140,33 @@ class PolymarketClient:
         return self._request("GET", f"/v1/markets/{slug}/bbo")
 
     # === Account ===
+
+    def create_order(self, slug: str, intent: str, price_usd: float, quantity: float,
+                     tif: str = "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
+                     max_block_secs: int = 10) -> dict:
+        """POST /v1/orders — synchronous IOC marketable limit by default.
+
+        IOC + limit means: fill at or better than price_usd immediately, cancel
+        the rest — the order NEVER rests on the book. intent is one of
+        ORDER_INTENT_BUY_LONG (buy YES) / ORDER_INTENT_BUY_SHORT (buy NO);
+        price_usd is the bound for the side being bought (YES price for LONG,
+        NO price for SHORT). Response includes `executions` (synchronous mode).
+        """
+        body = {
+            "marketSlug": slug,
+            "type": "ORDER_TYPE_LIMIT",
+            "price": {"value": f"{price_usd:.2f}", "currency": "USD"},
+            "quantity": quantity,
+            "tif": tif,
+            "intent": intent,
+            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+            "synchronousExecution": True,
+            "maxBlockTime": str(max_block_secs),
+        }
+        return self._request("POST", "/v1/orders", json_body=body)
+
+    def get_order(self, order_id: str) -> dict:
+        return self._request("GET", f"/v1/orders/{order_id}")
 
     def get_balance(self) -> dict:
         """GET /v1/account/balances — account balance."""

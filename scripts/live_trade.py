@@ -113,35 +113,40 @@ CITY_CONFIG = {
         "daily_loss_limit_dollars":    150.0,   # UP from $75 (matches 3 × $50)
         "cumulative_kill_dollars":     500.0,   # UP from $200 (more runway at higher sizing)
         "max_open_contracts":         5000,
-        "is_active": True,                      # dashboard status indicator
+        "is_active": False,                     # RETIRED 2026-08-17 — see docs/decisions/2026-08-17-retire-halted-cities.md
     },
     "KMIA": {
         "city_name": "Miami",
-        # RESUMED 2026-06-10 per docs/decisions/precommits/miami-resume-2026-06-10.md.
+        # SWITCHED TO RAW@0.10 2026-08-17 per docs/decisions/2026-08-17-miami-raw-config-switch.md.
         # Original halt (2026-06-04) was based on RAW strategy showing t=-0.49
-        # over the prior 90 days. Rolling 90-day BLEND backtest at 10% edge
-        # shows consistent profitability across all 7 windows (t=+4.10 to
-        # +9.21), passes Bonferroni for 6-city correction. Most recent 90-day
-        # window: t=+4.10, +$16.53, 61% wins (n=61).
-        # SIZING: matches KORD framework — unit=500 contracts. Earlier draft
-        # used Amount $15/trade ("conservative"); user noted it under-deployed
-        # given Miami's t-stat strength. Same 500-unit sizing as KORD on the
-        # rationale that Miami's edge is comparable per trade.
+        # over the prior 90 days, which is why 2026-06-10 moved Miami to
+        # BLEND-only. Forward-test since then (2026-06-03..08-17, real-time
+        # logged rows only) shows that reasoning has flipped: RAW@0.10 nets
+        # $7,415/114 trades (57.9% win, Sharpe 5.70) vs BLEND-only's
+        # $1,120/12 trades (83.3% win) over the same window — and RAW is
+        # stable across both halves (first half $2,955/51.8%, second half
+        # $4,460/63.8% — improving, not decaying). BLEND-only was leaving the
+        # much larger raw edge on the table. UNION (raw25 OR blend10) was
+        # considered but blend only contributes ~4 incremental trades beyond
+        # raw@0.25 — not worth the added complexity vs raw@0.10 alone, which
+        # nets more total profit than either.
+        # SIZING: unchanged — unit=500 contracts (matches KORD framework).
         "models": ["gefs", "ifs"],
         "emos_model": "combined",
         "model_source": "EMOS combined 00Z Miami (rolling 45d)",
         "paper_model_source": "EMOS combined 00Z Miami (rolling 45d)",
-        "live_model_source_tag": "EMOS combined BLEND-only 00Z Miami (rolling 45d) [LIVE]",
+        "live_model_source_tag": "EMOS combined RAW10 00Z Miami (rolling 45d) [LIVE]",
         "decision_hour": 15,
         "decision_minute": 30,
-        "use_union": False,                     # BLEND ONLY (raw has no edge)
-        "use_blend": True,
-        "edge_threshold": 1.00,                 # raw threshold disabled (impossibly high)
-        "blend_edge_threshold": 0.10,           # the only filter that fires (UNCHANGED — same trades fire)
-        "smart_cross_edge_threshold": 0.10,     # exec: cross at ≥10% edge. Blend edges are ~10-15%; the
-                                                # default 40% meant KMIA NEVER crossed → passive maker orders
-                                                # chronically missed fills (2026-06-17). This makes the trades
-                                                # the 10% filter already selects actually take liquidity.
+        "use_union": False,                     # RAW ONLY (blend's edge is a subset of raw's, not worth the union)
+        "use_blend": False,
+        "edge_threshold": 0.10,                 # raw threshold (10%) — the forward-validated value
+        "blend_edge_threshold": 1.00,           # blend disabled (moot: raw-only)
+        "smart_cross_edge_threshold": 0.10,     # exec: cross at >=10% edge. Every signal that fires already
+                                                # clears 10% by construction, so this crosses everything
+                                                # (no maker resting) — same behavior as the prior blend-only
+                                                # config, now applied to a much larger raw signal set. Revisit
+                                                # if fill data suggests posting captures meaningful savings.
         "sizing_mode": "unit",                  # matches KORD framework
         "unit_contracts": 500,                  # matches KORD: same backtest-validated unit
         "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
@@ -194,7 +199,7 @@ CITY_CONFIG = {
         "daily_loss_limit_dollars":    150.0,   # KORD/KMIA parity (scaled from $25)
         "cumulative_kill_dollars":     500.0,   # KORD/KMIA parity (scaled from $75)
         "max_open_contracts":         5000,     # KORD/KMIA parity (scaled from 500)
-        "is_active": True,                      # LIVE per operator override 2026-06-22 (full size)
+        "is_active": False,                     # RETIRED 2026-08-17 — see docs/decisions/2026-08-17-retire-halted-cities.md
     },
     "KPHX": {
         "city_name": "Phoenix",
@@ -238,13 +243,68 @@ CITY_CONFIG = {
         "daily_loss_limit_dollars":   125.0,    # scaled 5× with size (was $25 at 50-unit)
         "cumulative_kill_dollars":    375.0,    # scaled 5× with size (was $75 at 50-unit)
         "max_open_contracts":         2500,     # 10× unit
-        "is_active": True,                      # LIVE per operator override 2026-07-10 (250-unit)
+        "is_active": False,                     # RETIRED 2026-08-17 — see docs/decisions/2026-08-17-retire-halted-cities.md
+    },
+    "KMSY": {
+        "city_name": "New Orleans",
+        # OFFBOARDED 2026-08-17, same day it was added — never traded live.
+        # See docs/decisions/2026-08-17-miami-only-concentration.md.
+        # Per-city realized P&L showed Miami alone made +$2,135 while Chicago/
+        # Dallas/Phoenix lost -$2,075 combined, i.e. every non-Miami city has
+        # been a net tax. KMSY's own evidence was already the weakest kept
+        # (raw@0.15 declining H1 +$2,895 -> H2 +$1,585, no capacity study), and
+        # it is effectively untradeable on ForecastEx (12 of 99 days with ANY
+        # flow), so it cannot participate in the two-venue split that makes the
+        # Miami book work. Config retained for reference / future re-test.
+        #
+        # ORIGINAL RATIONALE (2026-08-17, superseded):
+        # OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar.
+        # See docs/decisions/2026-08-17-new-orleans-live-override.md.
+        # Forward-test only (real-time logged paper_trades, 2026-06-26..08-17):
+        # raw|edge|>=0.15 -> 67 trades, 55.2% win, +$4,480 total, Sharpe 5.12 at
+        # 500-contract scoring. Split-half: first half +$2,895/58.1% win/Sharpe
+        # 6.98, second half +$1,585/52.8% win/Sharpe 3.40 -- DECLINING but both
+        # halves positive (contrast with raw@0.25, which breaks negative in the
+        # second half: +$2,290 -> -$270). 0.15 was chosen over 0.25 specifically
+        # because it stays positive across the full window instead of decaying
+        # through it. Blend is unusable (n=1 total forward row) -> raw-only.
+        # UNVALIDATED: no capacity/walk-book study has been run for KMSY (unlike
+        # KORD/KMIA/KDFW/KPHX before their go-lives). Sized at 250 units (Phoenix
+        # parity) rather than the 500-unit KORD/KMIA/KDFW standard specifically
+        # because of that gap plus the weaker/declining split-half shape. `touch
+        # halt/KMSY` to stop.
+        "models": ["gefs", "ifs"],
+        "emos_model": "combined",
+        "model_source": "EMOS combined 00Z New Orleans (rolling 45d)",
+        "paper_model_source": "EMOS combined 00Z New Orleans (rolling 45d)",
+        "live_model_source_tag": "EMOS combined RAW15 00Z New Orleans (rolling 45d) [LIVE]",
+        "decision_hour": 14,                    # 14:58 UTC -- after KPHX (14:52), before KMIA (15:30),
+        "decision_minute": 58,                  # off the 45-59/5 monitor-loop-spawn minutes (45/50/55).
+        "use_union": False,                     # RAW-ONLY (blend n=1 forward row -- unusable)
+        "use_blend": False,
+        "edge_threshold": 0.15,                 # raw threshold (15%) -- the forward-validated value
+        "blend_edge_threshold": 1.00,           # blend disabled (moot: raw-only)
+        "smart_cross_edge_threshold": 0.15,     # cross every firing signal (no book-depth data yet to
+                                                # justify resting maker orders on an unproven city --
+                                                # prioritize actually getting filled). Revisit once fills
+                                                # are observed, same as KMIA's RAW10 switch.
+        "sizing_mode": "unit",
+        "unit_contracts": 250,                  # conservative: Phoenix parity, not KORD/KMIA/KDFW's 500,
+                                                # pending a capacity study and more forward weeks.
+        "amount_dollars": 50.0,                 # unused (sizing_mode=unit)
+        "max_contracts_per_trade": 250,         # depth cap (= unit_contracts)
+        "daily_loss_limit_dollars":    75.0,    # half of KORD/KMIA/KDFW's $150 (250/500 size ratio)
+        "cumulative_kill_dollars":    250.0,    # half of KORD/KMIA/KDFW's $500
+        "max_open_contracts":         2500,     # 10x unit (KPHX parity)
+        "is_active": False,                     # OFFBOARDED 2026-08-17 — Miami-only concentration
     },
 }
 
 # Aggregate (cross-city) limits.
-AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 575.0    # = Chicago $150 + Miami $150 + Dallas $150 + Phoenix $125
-AGGREGATE_CUMULATIVE_KILL_DOLLARS = 1875.0    # = Chicago $500 + Miami $500 + Dallas $500 + Phoenix $375
+AGGREGATE_DAILY_LOSS_LIMIT_DOLLARS = 150.0    # Miami-only book (2026-08-17): matches KMIA's own
+AGGREGATE_CUMULATIVE_KILL_DOLLARS = 500.0     # limits. Redundant with the per-city check by design —
+                                              # tightened from 650/2125 so a future re-activation
+                                              # cannot silently inherit a 4-city risk envelope.
 SPREAD_REGIME_MAX_CENTS = 5.0
 
 # Execution: how aggressive to be with the limit price when placing.
@@ -783,6 +843,11 @@ def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
             "exec_path": exec_path,                            # what smart resolved to: cross_at_ask / post_inside_spread / etc
             "market_mid": market_mid, "edge": edge, "p_win": p_win,
             "post_only": post_only_safe,
+            # Context carried for the agent-advisor experiment + paper AB logging
+            # (scripts/agent_advisor_log.py). Metadata only — nothing above reads these.
+            "yes_bid": int(bid), "yes_ask": int(ask), "market_snapshot_at": snap,
+            "ensemble_mean": ensemble_mean, "ensemble_std": ensemble_std,
+            "emos_mu": emos_mu, "emos_sigma": emos_sigma,
         })
 
     # Sort by edge magnitude DESCENDING for display purposes only.
@@ -911,6 +976,18 @@ def main() -> int:
             print("  no actionable signals; clean exit.")
             return 0
 
+        # AGENT ADVISOR (experiment — docs/decisions/2026-07-22-agent-advisor-experiment.md).
+        # OFF unless BOTH cfg["agent_advisor"] is set (no city sets it) AND the
+        # city is in reasoning.advisor.ADVISOR_LIVE_CITIES (empty). When off this
+        # branch never executes and behavior is byte-for-byte baseline. The
+        # advisor is fail-safe: any error inside returns signals unchanged.
+        if cfg.get("agent_advisor", False):
+            from weather_markets.reasoning.advisor import advise_signals_for_live
+            signals = advise_signals_for_live(city, cfg, signals, conn, today)
+            if not signals:
+                print("  agent advisor skipped all signals; clean exit.")
+                return 0
+
         try:
             balance = client.get_balance().get("balance", 0)
         except Exception as e:
@@ -934,6 +1011,9 @@ def main() -> int:
         placed = 0; rejected = 0; total_contracts = 0
         for s in signals:
             count = size_trade(city, s, per_trade_stake_cents)
+            # Agent-advisor resize (experiment): key absent on the baseline path,
+            # so this is count * 1.0 == count unless the advisor is live-enabled.
+            count = int(count * s.get("agent_multiplier", 1.0))
             if count < 1:
                 print(f"  {s['ticker']}: size=0, skipping (per-trade stake too low for this price)")
                 rejected += 1

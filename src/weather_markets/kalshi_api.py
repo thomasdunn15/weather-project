@@ -211,6 +211,20 @@ class KalshiClient:
             params["cursor"] = cursor
         return self._request("GET", "/portfolio/withdrawals", params=params)
 
+    def get_settlements(self, ticker: str | None = None, limit: int = 200,
+                        cursor: str | None = None) -> dict:
+        """Read-only settlement ledger — the authoritative realized-P&L source
+        (unlike get_fills, whose action/side labels are unreliable for older
+        markets). Returns {'settlements': [ {revenue, yes_total_cost_dollars,
+        no_total_cost_dollars, fee_cost, settled_time, ticker, market_result,
+        ...}, ... ], 'cursor': ...}."""
+        params: dict[str, Any] = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/portfolio/settlements", params=params)
+
     def get_market(self, ticker: str) -> dict:
         """Fetch current market state (bid/ask/last) for a ticker. Public data
         but goes through the authenticated path for consistency."""
@@ -300,8 +314,14 @@ class KalshiClient:
         return self._request("POST", "/portfolio/events/orders", json=body)
 
     def cancel_order(self, order_id: str) -> dict:
-        """Cancel an open order by Kalshi order_id. Returns the updated order."""
-        return self._request("DELETE", f"/portfolio/orders/{order_id}")
+        """Cancel an open order by Kalshi order_id.
+
+        Same V2 migration as place_limit_order: the v1 /portfolio/orders/{id}
+        path now returns 410 Gone. Returns {'order_id', 'reduced_by', 'ts_ms'} —
+        reduced_by is the quantity actually pulled, NOT an order dict. A 404
+        means the order is no longer open (already executed or cancelled).
+        """
+        return self._request("DELETE", f"/portfolio/events/orders/{order_id}")
 
     def get_order(self, order_id: str, ticker: str | None = None) -> dict:
         """Fetch a single order by id.

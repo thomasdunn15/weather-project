@@ -1,0 +1,75 @@
+{
+  "name": "breadth-expansion",
+  "description": "Where to grow by breadth: new cities, new venues, new market categories. The market is efficient; smarter/bigger/faster model angles are already ruled out.",
+  "points": [
+    {
+      "id": "data",
+      "name": "Data availability",
+      "description": "Is there an NWP-grade public/legal predictive data source for the underlying?",
+      "sub_points": [
+        {"id": "data.nwp", "name": "NWP / public model coverage"},
+        {"id": "data.obs", "name": "Ground-truth observations for calibration"}
+      ]
+    },
+    {
+      "id": "tract",
+      "name": "Forecast tractability",
+      "description": "Does an EMOS-style calibrated distribution apply to the underlying?",
+      "sub_points": [
+        {"id": "tract.emos", "name": "EMOS / calibration fit"},
+        {"id": "tract.bracket", "name": "Bracket probability mapping"}
+      ]
+    },
+    {
+      "id": "resolution",
+      "name": "Resolution clarity",
+      "description": "Authoritative settlement source and rules.",
+      "sub_points": [
+        {"id": "resolution.source", "name": "Settlement source"},
+        {"id": "resolution.timing", "name": "Settlement timing"}
+      ]
+    },
+    {
+      "id": "market",
+      "name": "Market efficiency & liquidity",
+      "description": "Kalshi depth caps out ~500-700 contracts/city here — is the candidate thin, or actually mispriced?",
+      "sub_points": [
+        {"id": "market.depth", "name": "Depth / capacity ceiling"},
+        {"id": "market.spread", "name": "Spreads"},
+        {"id": "market.volume", "name": "Volume / open interest"}
+      ]
+    },
+    {
+      "id": "fees",
+      "name": "Fee structure",
+      "description": "ForecastEx is roughly half the Kalshi fee; maker vs taker economics decide viability of thin edges.",
+      "sub_points": [
+        {"id": "fees.maker", "name": "Maker economics"}
+      ]
+    },
+    {
+      "id": "durability",
+      "name": "Edge durability",
+      "description": "Would the edge persist, based on our own paper/live evidence?",
+      "sub_points": [
+        {"id": "durability.evidence", "name": "Paper / live evidence"}
+      ]
+    },
+    {
+      "id": "capital",
+      "name": "Capital efficiency",
+      "description": "Settlement cycle, margin, capital lock-up.",
+      "sub_points": [
+        {"id": "capital.cycle", "name": "Settlement cycle"}
+      ]
+    },
+    {
+      "id": "regulatory",
+      "name": "Regulatory / geoblock",
+      "description": "US-person access status. Geoblocks are never circumvented.",
+      "sub_points": [
+        {"id": "regulatory.access", "name": "Access status"}
+      ]
+    }
+  ]
+}

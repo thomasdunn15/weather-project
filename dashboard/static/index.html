@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/static/css/live.css?v=8">
 <link rel="stylesheet" href="/static/css/backtest.css?v=8">
 <link rel="stylesheet" href="/static/css/accounting.css?v=10">
+<link rel="stylesheet" href="/static/css/digest.css?v=1">
 <link rel="stylesheet" href="/static/css/responsive.css?v=8">
 </head>
 <body>
@@ -33,7 +34,10 @@
   <nav class="tabbar" role="tablist" aria-label="Dashboard views">
     <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')">Live Trading</button>
     <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')">Backtest</button>
+    <button id="tab-polymarket" role="tab" aria-selected="false" aria-controls="section-polymarket" onclick="switchTab('polymarket')">Polymarket</button>
+    <button id="tab-forecastex" role="tab" aria-selected="false" aria-controls="section-forecastex" onclick="switchTab('forecastex')">ForecastEx</button>
     <button id="tab-accounting" role="tab" aria-selected="false" aria-controls="section-accounting" onclick="switchTab('accounting')">Accounting</button>
+    <button id="tab-digest" role="tab" aria-selected="false" aria-controls="section-digest" onclick="switchTab('digest')">Digest</button>
   </nav>
 
   <main>
@@ -43,11 +47,20 @@
     <section id="section-backtest" role="tabpanel" aria-label="Backtest" hidden>
       <div id="backtest-root"><div class="wrap"><div class="loading">Loading backtest…</div></div></div>
     </section>
+    <section id="section-polymarket" role="tabpanel" aria-label="Polymarket" hidden>
+      <div id="polymarket-root"><div class="wrap"><div class="loading">Loading Polymarket…</div></div></div>
+    </section>
+    <section id="section-forecastex" role="tabpanel" aria-label="ForecastEx" hidden>
+      <div id="forecastex-root"><div class="wrap"><div class="loading">Loading ForecastEx…</div></div></div>
+    </section>
     <section id="section-accounting" role="tabpanel" aria-label="Accounting" hidden>
       <div id="accounting-root"><div class="wrap"><div class="loading">Loading accounting…</div></div></div>
     </section>
+    <section id="section-digest" role="tabpanel" aria-label="Digest" hidden>
+      <div id="digest-root"><div class="wrap"><div class="loading">Loading digest…</div></div></div>
+    </section>
   </main>
 </div>
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>

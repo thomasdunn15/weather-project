@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimizing the Trading Desk Frontend for Strategy Decisions</title>
+<style>
+:root { --fg:#1a1a1a; --muted:#666; --accent:#0b8457; --border:#e2e2e2;
+  --bg:#fff; --code-bg:#f6f8fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:#fafafa; color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65; font-size:16px; }
+.paper { max-width:820px; margin:48px auto; padding:56px 64px; background:var(--bg);
+  border:1px solid var(--border); border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+h1 { font-size:2rem; line-height:1.2; margin:0 0 .25em;
+  border-bottom:2px solid var(--fg); padding-bottom:.3em; }
+h2 { font-size:1.35rem; margin:1.8em 0 .6em;
+  border-bottom:1px solid var(--border); padding-bottom:.2em; }
+h3 { font-size:1.1rem; margin:1.4em 0 .5em; }
+em { color:var(--muted); }
+a { color:#0366d6; text-decoration:none; }
+a:hover { text-decoration:underline; }
+table { border-collapse:collapse; width:100%; margin:1.2em 0; font-size:.93rem; }
+th, td { border:1px solid var(--border); padding:8px 12px; text-align:left; }
+th { background:var(--code-bg); font-weight:600; }
+tr:nth-child(even) td { background:#fbfbfb; }
+code { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.88em;
+  background:var(--code-bg); padding:.15em .4em; border-radius:4px; }
+pre { background:var(--code-bg); border:1px solid var(--border); border-radius:6px;
+  padding:14px 16px; overflow:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:1.2em 0; padding:.4em 1em; border-left:4px solid var(--accent);
+  background:#f7fbf9; color:var(--muted); }
+hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+@media print { body { background:#fff; }
+  .paper { border:none; box-shadow:none; margin:0; max-width:none; } }
+</style>
+</head>
+<body>
+<main class="paper">
+<h1 id="optimizing-the-trading-desk-frontend-for-strategy-decisions">Optimizing the Trading Desk Frontend for Strategy Decisions</h1>
+<p><em>2026-06-20 · status: draft</em></p>
+<blockquote>
+<p>Scope confirmed with the user: <strong>research + recommendations only</strong> (no code changes this
+session), with a <strong>balanced</strong> emphasis on live-ops <em>and</em> strategy-diagnostics. All trading
+config is read-only and untouched; this paper respects the CONFIG FREEZE (2026-06-12 →
+2026-07-10). The redesign is frontend-only; nothing here changes a threshold, sizing rule,
+or risk number.</p>
+</blockquote>
+<h2 id="question">Question</h2>
+<p>The current ISOBAR dashboard (<code>dashboard/static/</code>) is visually strong but built as a generic
+"P&amp;L + positions + backtest playground." As a quant operating this stack, <strong>what should the
+frontend surface to (a) decide whether the edge is real before the 2026-07-10 re-evaluation,
+and (b) confirm the live system is safe and executing well right now</strong> — while trimming dead
+weight and keeping a modern, professionally-animated look?</p>
+<p>The binding question behind every panel: <em>does this pixel help me prove or disprove a positive
+edge after fees, or keep the live book inside its risk envelope?</em> If not, it is fat.</p>
+<h2 id="tldr-verdict">TL;DR / Verdict</h2>
+<p><strong>Confidence: high</strong> on the diagnosis (it is grounded in this repo's own data and findings),
+<strong>medium</strong> on the exact layout (design is iterative; numbers below should be A/B-validated in
+the browser).</p>
+<p>The UI is <strong>rendering the wrong headline and hiding the decisive evidence.</strong> Three changes
+carry ~80% of the value:</p>
+<ol>
+<li><strong>Replace the 9-metric "democratic" hero with a decision hero.</strong> Today win-rate leads — and
+   it is <em>actively misleading</em>: the live book is <strong>+$100.04 net of fees on 22 settled trades but
+   wins only 6 of 22 by count</strong> (27%). The edge is expectancy-driven (a few large NO-side
+   payoffs), so the headline must be <strong>net realized edge after fees + risk headroom + expectancy
+   / profit factor</strong>, not win-rate.</li>
+<li><strong>Add the one panel that answers "is the edge real": a calibration / reliability view</strong> of
+   <code>model_P</code> vs <code>blend_P</code> vs <code>market_P</code> against outcomes. All the data exists (21,734 paper rows
+   over 722 days); the backend just never computes it. This is the single highest-value creative
+   addition.</li>
+<li><strong>Add a paper-vs-live divergence monitor.</strong> The open risk to scaling is that Chicago's <em>live</em>
+   fills have diverged from <em>paper</em> expectation. The dashboard should make that gap, plus the
+   fill-rate haircut, impossible to miss.</li>
+</ol>
+<p>Trim: the dead Polymarket toggle, the hard-coded <code>crons[]="ok"</code> / <code>brier=0.20</code> placeholders
+(they manufacture false confidence), and the prominence of the frozen param-sweep. Keep the
+thermal-glass aesthetic and the diff-driven motion — both are good; just point them at the
+metrics that matter and fix the over-aggressive reduced-motion handling.</p>
+<h2 id="methods-data">Methods &amp; Data</h2>
+<p><strong>Internal — frontend &amp; backend map (read-only):</strong>
+- Read <code>dashboard/static/{index.html, app.js (1,405 LOC), css/*.css}</code> and the build notes;
+  catalogued every render function, component, CSS token, and animation.
+- Read <code>dashboard/{app.py, data_live.py, data_backtest.py, kalshi_ws.py}</code> and
+  <code>docs/context/dashboard.md</code>; inventoried the full <code>/api/live</code> and <code>/api/backtest</code> payloads,
+  including fields computed but <strong>not surfaced</strong>.
+- Read <code>docs/context/{strategy,goals-metrics,decisions,data-model}.md</code>.</p>
+<p><strong>Internal — live data reality (<code>psql -d weather</code>, SELECT-only):</strong>
+- <code>live_trades</code> overview, by-city, fill-status/settlement distributions.
+- <code>paper_trades</code> coverage (rows, date span, distinct tickers), per-city average edge.
+- Schema of <code>prices</code> / <code>forecasts</code> for freshness fields.</p>
+<p><strong>Internal — prior findings (this repo's memory):</strong> per-city diagnostic (2026-06-20),
+market-blend (2026-06-09), fill-rate forward test (2026-06-05).</p>
+<p><strong>External — verified against source:</strong> NN/G <em>8 Design Guidelines for Complex Applications</em>
+[1]; trader-dashboard hierarchy / F-pattern / space-rule guidance [2]; NN/G chartjunk &amp;
+preattentive-processing guidance [3]; reliability-diagram / calibration verification literature
+(AMS consistency bars; PNAS CORP) [4][5]; Smashing Magazine accessible-animation practice
+(<code>prefers-reduced-motion</code> = reduce, not remove; adapt essential motion) [6].</p>
+<h2 id="internal-findings">Internal Findings</h2>
+<h3 id="f1-the-live-book-is-small-but-expectancy-positive-and-win-rate-misrepresents-it">F1 — The live book is small but <em>expectancy-positive</em>, and win-rate misrepresents it</h3>
+<p><code>live_trades</code>, all cities, 2026-06-04 → 2026-06-19:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orders placed</td>
+<td>28</td>
+</tr>
+<tr>
+<td>Filled (filled/partial)</td>
+<td>22</td>
+</tr>
+<tr>
+<td>Settled</td>
+<td>22</td>
+</tr>
+<tr>
+<td><strong>Net realized P&amp;L (after fees)</strong></td>
+<td><strong>+$100.04</strong></td>
+</tr>
+<tr>
+<td>Fees paid</td>
+<td>$23.30</td>
+</tr>
+<tr>
+<td>Wins by count</td>
+<td>6 / 22 (<strong>27%</strong>)</td>
+</tr>
+<tr>
+<td>Fill-status mix</td>
+<td>20 filled · 2 partial · 4 cancelled · 2 rejected</td>
+</tr>
+<tr>
+<td>Settlement mix</td>
+<td>14 NO · 8 YES · 6 open</td>
+</tr>
+</tbody>
+</table>
+<p>The book makes money while losing most individual bets — classic NO-side bracket payoff
+structure (small frequent losses, occasional large win). <strong>A win-rate headline (the current
+hero) tells the operator the strategy is failing when it is not.</strong> The correct headline metrics
+are net-edge-after-fees, expectancy ($/settled trade ≈ +$4.55), profit factor, and avg-win ÷
+avg-loss. Fees are <strong>~19% of net realized</strong> — material enough to deserve a permanent line, never
+hidden.</p>
+<h3 id="f2-edge-is-concentrated-in-3-cities-most-of-the-map-should-read-do-not-trade">F2 — Edge is concentrated in 3 cities; most of the map should read "do not trade"</h3>
+<p>From the per-city diagnostic (fee-aware net P&amp;L reconstructed over 21,318 settled signals, 11
+city series):</p>
+<table>
+<thead>
+<tr>
+<th>Universe</th>
+<th>Net P&amp;L</th>
+<th>Sharpe</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>11-city baseline (|edge|≥0.10)</td>
+<td><strong>−$149</strong></td>
+<td>−2.62</td>
+<td>loses after fees</td>
+</tr>
+<tr>
+<td>Robust subset (Chicago, Miami, Seattle)</td>
+<td><strong>+$46.51</strong></td>
+<td><strong>2.37</strong></td>
+<td>P/DD 3.50; profitable at baseline, in both history halves, <em>and</em> walk-forward</td>
+</tr>
+<tr>
+<td>No-edge cities (NY/DEN/AUS/NOLA/LV/PHX)</td>
+<td>negative OOS</td>
+<td>—</td>
+<td>do not trade</td>
+</tr>
+</tbody>
+</table>
+<p>6 of 11 cities have an in-sample-profitable config that flips negative out-of-sample → per-city
+tuning is mostly overfitting, and <strong>edge is decaying (H2 ≪ H1).</strong> The map on the backtest tab
+currently colors every city by Sharpe as if all are tradable; it should <em>visually privilege the
+robust subset and mark the rest "do not trade."</em></p>
+<h3 id="f3-the-market-does-most-of-the-work-the-model-is-anti-informative-in-2-cities">F3 — The market does most of the work; the model is anti-informative in 2 cities</h3>
+<p>Benter-style logistic blend on settled <code>paper_trades</code>, 70/30 time-split, test-set Brier:</p>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>β_model</th>
+<th>β_market</th>
+<th>Market share</th>
+<th>Test Brier (model → blend)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KORD</td>
+<td>+0.19</td>
+<td>+0.38</td>
+<td>67%</td>
+<td>0.204 → 0.143 (<strong>−30%</strong>)</td>
+</tr>
+<tr>
+<td>KNYC</td>
+<td>+0.19</td>
+<td>+0.91</td>
+<td>83%</td>
+<td>0.219 → 0.124 (−43%)</td>
+</tr>
+<tr>
+<td>KMIA</td>
+<td>+0.55</td>
+<td>+0.70</td>
+<td>56%</td>
+<td>0.221 → 0.179 (−19%)</td>
+</tr>
+<tr>
+<td>KDEN</td>
+<td>+0.20</td>
+<td>+1.04</td>
+<td>84%</td>
+<td>0.203 → 0.138 (−32%)</td>
+</tr>
+<tr>
+<td>KAUS</td>
+<td><strong>−0.10</strong></td>
+<td>+1.17</td>
+<td>92%</td>
+<td>0.169 → 0.151 (−11%)</td>
+</tr>
+<tr>
+<td>KLAX</td>
+<td><strong>−0.07</strong></td>
+<td>+1.22</td>
+<td>95%</td>
+<td>0.183 → 0.130 (−29%)</td>
+</tr>
+</tbody>
+</table>
+<p>The dashboard already returns blend coefficients (<code>blend.{alpha,betaModel,betaMarket,marketShare,
+nTrain}</code>) but buries them in a single mini-bar. <strong>A senior reader wants this table front-and-center
+with the negative-β cities flagged red</strong> — it is the cleanest statement of "where our model adds
+value vs where we are just riding the market."</p>
+<h3 id="f4-execution-mode-is-an-expectancy-decision-the-ui-should-monitor-not-hide">F4 — Execution mode is an expectancy decision the UI should monitor, not hide</h3>
+<p>Fill-rate forward test (332 resolved trades, dashboard empirical comparison):</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Fill rate</th>
+<th>$/filled</th>
+<th>Final return</th>
+<th>Max DD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>post_inside_spread</strong></td>
+<td><strong>75%</strong></td>
+<td><strong>+$35</strong></td>
+<td>+291%</td>
+<td>−24%</td>
+</tr>
+<tr>
+<td>cross_at_ask</td>
+<td>99%</td>
+<td>+$6</td>
+<td>+69%</td>
+<td>−66%</td>
+</tr>
+<tr>
+<td>cross_with_premium=1</td>
+<td>99%</td>
+<td>+$3</td>
+<td>+35%</td>
+<td>−72%</td>
+</tr>
+<tr>
+<td>Live <code>live_trades</code> (current)</td>
+<td>22/28 ≈ 79% by order</td>
+<td>+$4.55 net</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>The 80 trades crossing catches but the maker misses <strong>lose ~$80 each</strong> (adverse selection) —
+missing them is <em>net beneficial</em>. So fill-rate is not a number to maximize; it is a
+expectancy-coupled diagnostic. The live tab should show <strong>today's realized fill % and average
+slippage-vs-mid per city</strong>, so a drift (e.g. fill rate dropping &lt;60%) is caught early.</p>
+<h3 id="f5-paper-vs-live-divergence-is-the-unresolved-risk-to-scaling">F5 — Paper-vs-live divergence is the unresolved risk to scaling</h3>
+<p>The per-city diagnostic flagged Chicago <strong>live −$124 (n=17 fills, 2 wk) vs paper +$21</strong> at the
+time of that study — the central open tension ("resolve fills/slippage vs variance before
+scaling"). Whatever its current sign (aggregate book is +$100 net today), <strong>the gap between what
+paper predicts and what live realizes is the most decision-relevant number on the system, and it
+appears nowhere in the UI.</strong> This is the second flagship addition.</p>
+<h3 id="f6-the-backend-already-computes-more-than-the-ui-shows">F6 — The backend already computes more than the UI shows</h3>
+<p>Available in payloads but under-surfaced or placeholder:</p>
+<table>
+<thead>
+<tr>
+<th>Field(s)</th>
+<th>Where</th>
+<th>Status</th>
+<th>Opportunity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>emosMu</code>, <code>emosSigma</code>, <code>ensMean</code>, <code>ensSpread</code>, per-bracket <code>modelP/blendP/mktP</code> + <code>observed</code></td>
+<td><code>/api/backtest</code></td>
+<td>shown only as scalars</td>
+<td>feeds a <strong>reliability diagram</strong> / PIT view directly</td>
+</tr>
+<tr>
+<td><code>blend.{betaModel,betaMarket,marketShare}</code></td>
+<td><code>/api/backtest</code></td>
+<td>tiny mini-bar</td>
+<td>promote to F3 table</td>
+</tr>
+<tr>
+<td><code>live.{connected,ageMs,marks,source}</code>, <code>hrrr.age</code>, <code>nextCron</code>, <code>killArmed</code></td>
+<td><code>/api/live</code></td>
+<td>small pill / footer</td>
+<td>promote to a <strong>system-health + risk-headroom</strong> strip</td>
+</tr>
+<tr>
+<td><code>cities[].risk.{cumUsed,cumKill,todayUsed,todayKill}</code>, <code>agg.*</code></td>
+<td><code>/api/live</code></td>
+<td>conic dials only</td>
+<td><strong>kill-switch headroom gauges</strong> (how close to halt)</td>
+</tr>
+<tr>
+<td><code>strat[].brier = 0.20</code></td>
+<td><code>/api/backtest</code></td>
+<td><strong>hard-coded placeholder</strong></td>
+<td>remove or compute real Brier (the calibration work yields it)</td>
+</tr>
+<tr>
+<td><code>crons[].status = "ok"</code>, <code>last = "—"</code></td>
+<td><code>/api/live</code></td>
+<td><strong>hard-coded</strong></td>
+<td>replace with real last-run/exit, or remove the green ticks (false safety)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="external-context">External Context</h2>
+<ul>
+<li><strong>Lead with one number, not nine.</strong> Eye-tracking shows users scan dense screens in an
+  <strong>F-pattern</strong>; guidance is to give the single most important metric the most space/contrast
+  (the "40-30-20-10" space rule) and avoid the "democratic layout" where every metric is equal
+  weight — benchmark layouts against a <strong>time-to-answer &lt; 30 s</strong> [2]. The current 9-up equal hero
+  is exactly the anti-pattern. [1] (NN/G) similarly stresses easing the transition between
+  primary and secondary info (hover tooltips for precise values) and <strong>reducing clutter without
+  reducing capability</strong> via staged/progressive disclosure — the right home for the frozen
+  param-sweep.</li>
+<li><strong>Cut chartjunk; use preattentive encodings.</strong> NN/G: remove ornamental gradients/3D/decoration;
+  communicate quantity with <strong>length and 2-D position</strong>, which the visual system reads
+  pre-attentively [3]. The thermal ramp and glass are fine <em>as long as</em> color encodes data
+  (edge/temperature) rather than decoration.</li>
+<li><strong>Calibration is a picture, and there is a right way to draw it.</strong> Reliability diagrams plot
+  predicted probability against observed frequency; <strong>consistency/uncertainty bars</strong> let you see
+  whether deviations are significant rather than noise [4], and the modern <strong>CORP</strong> method
+  (isotonic/PAV regression) yields provably consistent, reproducible, optimally-binned diagrams
+  [5]. This is the discipline's standard answer to "is the probability model honest" — precisely
+  the question this project must answer by 2026-07-10.</li>
+<li><strong>Animation should be functional, and reduced-motion means <em>reduce</em>, not <em>delete</em>.</strong> Keep motion
+  that conveys state/relationship (count-ups that show a delta, draw-on that shows a series);
+  drop purely decorative motion. For <code>prefers-reduced-motion</code>, <strong>adapt</strong> essential animations
+  (slow/soften) rather than zeroing them, because some motion carries meaning, and excessive or
+  fast motion can trigger vestibular discomfort [6]. Typical UI durations sit in the 200–500 ms
+  band [6].</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p>A frontend-only redesign in three priority tiers. <strong>None of these change trading config</strong>;
+items needing a backend computation are additive (new read-only analytics), not strategy
+changes. The one idea that touches strategy posture — <em>stop trading no-edge cities</em> — is already
+in the backlog from the per-city diagnostic; the UI here only <em>visualizes</em> it.</p>
+<h3 id="p0-re-point-the-existing-ui-at-the-right-metrics-cheap-no-backend-work">P0 — Re-point the existing UI at the right metrics (cheap, no backend work)</h3>
+<ol>
+<li><strong>Decision hero (Live tab).</strong> Replace the 9-equal-metric band with an F-pattern hero:
+   - <strong>Primary (largest, top-left):</strong> <em>Net realized edge after fees</em> (cumulative), with the
+     7-day sparkline already available (<code>series[]</code>) and a permanent <code>after $X fees</code> subline.
+   - <strong>Secondary (top-right):</strong> <em>Risk headroom</em> — two horizontal fuel-gauges (cum P&amp;L vs −$1,000;
+     today vs −$300) built from <code>agg.*</code>; turns amber/red as <code>killArmed</code> approaches. This is the
+     glanceable "are we safe" answer.
+   - <strong>Secondary:</strong> <em>Expectancy</em> ($/settled trade), <em>profit factor</em>, <em>avg win ÷ avg loss</em> —
+     computed client-side from <code>fills[]</code>/positions. Demote win-rate to a small subline.
+   - <strong>Tertiary strip:</strong> balance / cash / portfolio + system health (WS <code>source·ageMs</code>,
+     <code>hrrr.age</code>, <code>nextCron</code> countdown).</li>
+<li><strong>Per-city: live cities first.</strong> Render KORD &amp; KMIA as full cards (realized, unrealized,
+   risk-headroom gauge, <strong>today's fill % + avg slippage</strong>), and collapse paper/backtest cities
+   into a secondary "watchlist" row. Add a <strong>paper-vs-live Δ</strong> chip per live city (F5).</li>
+<li><strong>Honest motion.</strong> Fix the reduced-motion block: instead of <code>0.001ms</code> on everything (which
+   kills the count-ups that <em>convey</em> the delta), keep essential count-ups/draw-on but <strong>slow and
+   soften</strong> them under <code>prefers-reduced-motion</code>, and drop only decorative motion (map pulse,
+   shimmer) [6]. Gate live-poll tweens so a 2 s poll never restarts the 2,400 ms entrance draw.</li>
+<li><strong>Promote the blend table (Backtest tab).</strong> Turn <code>blend.*</code> into the F3 table with
+   <strong>negative-β cities flagged</strong>, and a one-line "market does N% of the work here" callout.</li>
+</ol>
+<h3 id="p1-the-two-flagship-additions-need-a-small-read-only-backend-analytics-endpoint">P1 — The two flagship additions (need a small read-only backend analytics endpoint)</h3>
+<ol start="5">
+<li><strong>Calibration / reliability panel</strong> — the "is the edge real" centerpiece. New endpoint
+   aggregates settled <code>paper_trades ⋈ observations</code> into reliability bins for <code>model_P</code>,
+   <code>blend_P</code>, <code>market_P</code>, with consistency bars and Brier/Brier-skill per series, per city and
+   pooled [4][5]. Render as the lead visual of the (renamed) <strong>Research</strong> tab: three overlaid
+   reliability curves on the 45° line + a Brier table. Also retires the hard-coded <code>brier=0.20</code>.</li>
+<li><strong>Paper-vs-live divergence monitor</strong> — per live city, plot <em>cumulative paper-expected</em> vs
+   <em>cumulative live-realized</em> P&amp;L on one axis, annotate the running gap and the realized fill-rate
+   haircut (F4/F5). This is the panel that tells you whether it is safe to scale.</li>
+<li><strong>Edge-decay strip</strong> — rolling Brier (or rolling realized net-edge) over the 722-day span to
+   show H1 vs H2 decay (F2), so "is the edge eroding" is a glance, not a query.</li>
+</ol>
+<h3 id="p2-trim-the-fat-polish">P2 — Trim the fat &amp; polish</h3>
+<ol start="8">
+<li><strong>Remove dead/misleading controls:</strong> the <strong>Polymarket toggle</strong> (venue expansion is future;
+   ForecastEx, not Polymarket, is the live candidate — backlog), the <strong>hard-coded <code>crons[]</code>
+   green ticks</strong> (wire real cron last-run/exit or delete — false safety is worse than no panel),
+   and the placeholder chart legends.</li>
+<li><strong>Demote the param-sweep under the freeze.</strong> Move strategy/edge/sizing pickers into a
+   collapsed "What-if (config frozen until 2026-07-10)" drawer with a freeze banner — progressive
+   disclosure [1], and it stops the UI from inviting changes that are frozen.</li>
+<li><strong>Map encodes the thesis:</strong> highlight the robust subset (CHI/MIA/SEA) with the selection
+    treatment and tag the rest "do not trade" (F2), instead of coloring all cities as tradable.</li>
+<li><strong>Housekeeping:</strong> retire legacy CSS aliases (<code>--pos/--neg/...</code>), wire the unused <code>.skeleton</code>
+    shimmer into backfill loading states, add hover tooltips for precise values on every chart
+    [1], and add <code>z-index</code> management to map-dot hover labels.</li>
+</ol>
+<h3 id="proposed-live-tab-hero-annotated-mockup">Proposed Live-tab hero (annotated mockup)</h3>
+<pre><code>┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  NET REALIZED EDGE (after fees)          RISK HEADROOM                 EXPECTANCY       │
+│   +$100.04   ▁▂▃▄▅▆█  ▲ today +$x         cum  ███████░░░ 90% to kill   +$4.55 /trade   │
+│   after $23.30 fees · 22 settled          day  ████░░░░░░ 41% used      PF 1.7 · W/L 4.2│
+│                                                                          win 27% (6/22) │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  bal $3,150  cash $2,940  port $210   │ ws·2 live·1.2s │ HRRR 45m │ next live_trade 3:12│
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│  KORD Chicago  [LIVE]      paper↔live Δ +$x   │  KMIA Miami [LIVE]   paper↔live Δ −$y   │
+│   realized +$.. unreal +$..  risk ███░ 30%    │   realized +$.. unreal +$..  risk ██░ 22%│
+│   fill 79% · slip +0.4¢ · edge≥25%/10% blend  │   fill 83% · slip +0.2¢ · blend≥10%      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+  watchlist (paper): KSEA ·· KAUS ·· KDEN ·· KLAX ·· KPHX            [expand ▸]
+</code></pre>
+<h3 id="proposed-research-tab-lead-annotated-mockup">Proposed Research-tab lead (annotated mockup)</h3>
+<pre><code>┌─ CALIBRATION — is the probability honest? ───────────┬─ BLEND CONTRIBUTION ─────────────┐
+│ obs freq                                             │ city  β_model β_mkt  mkt-share   │
+│ 1.0│                              ·· market          │ KORD  +0.19  +0.38   67%  ✓      │
+│    │                        ·▵ blend (Brier .143)    │ KMIA  +0.55  +0.70   56%  ✓      │
+│ .5 │              ·▵·  ____/  model (Brier .204)     │ KAUS  −0.10  +1.17   92%  ⚠ model│
+│    │        __·▵·/      consistency bars ▕▏          │ KLAX  −0.07  +1.22   95%  ⚠ anti-│
+│ 0  └────────────────────────────────→ predicted p   │           &quot;market does the work&quot; │
+├─ EDGE DECAY (rolling Brier) ─────────────────────────┴──────────────────────────────────┤
+│ H1 ▁▂▂▃  →  H2 ▄▅▆▆   edge eroding; robust subset = Chicago · Miami · Seattle only      │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+   What-if (config frozen until 2026-07-10)  ▸                          [bracket ladder ▾]
+</code></pre>
+<h3 id="effort-impact-summary">Effort / impact summary</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Change</th>
+<th>Backend?</th>
+<th>Effort</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Decision hero (edge/headroom/expectancy)</td>
+<td>no</td>
+<td>M</td>
+<td>★★★</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Live-cities-first + fill/slip + paper↔live Δ</td>
+<td>no</td>
+<td>M</td>
+<td>★★★</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Calibration / reliability panel</td>
+<td>small additive</td>
+<td>L</td>
+<td>★★★</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Paper-vs-live divergence monitor</td>
+<td>small additive</td>
+<td>M</td>
+<td>★★★</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Honest reduced-motion + poll-gating</td>
+<td>no</td>
+<td>S</td>
+<td>★★</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Promote blend table, flag negative-β</td>
+<td>no</td>
+<td>S</td>
+<td>★★</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Edge-decay strip</td>
+<td>small additive</td>
+<td>M</td>
+<td>★★</td>
+</tr>
+<tr>
+<td>8–11</td>
+<td>Trim Polymarket/placeholders, demote sweep, map, housekeeping</td>
+<td>no</td>
+<td>S–M</td>
+<td>★★</td>
+</tr>
+</tbody>
+</table>
+<h2 id="limitations-threats-to-validity">Limitations &amp; Threats to Validity</h2>
+<ul>
+<li><strong>Live sample is tiny (22 settled).</strong> Every live-derived number (expectancy, fill rate,
+  paper-vs-live Δ) is high-variance; the UI must show n and confidence, not imply precision.</li>
+<li><strong>Design is iterative.</strong> The mockups encode the <em>information hierarchy</em>, not final visuals;
+  the exact hero metrics and gauge thresholds should be A/B'd in-browser against a time-to-answer
+  benchmark [2], not shipped on assertion.</li>
+<li><strong>Calibration/divergence panels assume a new read-only aggregation endpoint</strong> over
+  <code>paper_trades ⋈ observations</code>; they are additive analytics, but they are not free, and must be
+  built to avoid look-ahead (use the same walk-forward discipline as <code>walkforward_blends</code>).</li>
+<li><strong>Freeze boundary.</strong> This paper deliberately stops at <em>visualizing</em> the edge-concentration and
+  execution findings. Acting on them (dropping no-edge cities, changing execution mode) is a
+  strategy decision reserved for the 2026-07-10 re-evaluation and already tracked in the backlog.</li>
+<li><strong>Memory point-in-time risk.</strong> The Chicago live −$124 figure (F5) is a prior snapshot; the
+  current aggregate book is +$100 net. The recommendation depends only on the <em>existence</em> of a
+  paper-vs-live gap worth monitoring, not on that specific number.</li>
+</ul>
+<h2 id="sources">Sources</h2>
+<p><strong>External (verified against source):</strong>
+1. NN/G — <em>8 Design Guidelines for Complex Applications</em> (progressive/staged disclosure; ease
+   primary↔secondary; reduce clutter without reducing capability).
+   https://www.nngroup.com/articles/complex-application-design/
+2. <em>Top Dashboard Design Best Practices for Traders</em> (F-pattern, 40-30-20-10 space rule, inverted
+   pyramid, time-to-answer &lt; 30 s). https://chartswatcher.com/pages/blog/top-dashboard-design-best-practices-for-traders-in-2025
+3. NN/G — <em>Clutter-Free Charts / Data Visualizations for Dashboards</em> (chartjunk; preattentive
+   length + 2-D position). https://www.nngroup.com/videos/chartjunk/ ·
+   https://www.nngroup.com/videos/data-visualizations-dashboards/
+4. Bröcker &amp; Smith — <em>Increasing the Reliability of Reliability Diagrams</em>, Weather and Forecasting
+   22(3), 2007 (consistency bars). https://journals.ametsoc.org/view/journals/wefo/22/3/waf993_1.xml
+5. Dimitriadis, Gneiting &amp; Jordan — <em>Stable reliability diagrams for probabilistic classifiers</em>,
+   PNAS 2021 (CORP / PAV isotonic binning). https://www.pnas.org/doi/10.1073/pnas.2016191118
+6. Smashing Magazine — <em>Creating Accessible UI Animations</em>, 2023 (<code>prefers-reduced-motion</code> =
+   reduce not remove; adapt essential motion; durations).
+   https://www.smashingmagazine.com/2023/11/creating-accessible-ui-animations/</p>
+<p><strong>Internal (this session, read-only; reproducible):</strong>
+- <code>psql -d weather</code> — <code>live_trades</code> overview / by-city / fill-status &amp; settlement;
+  <code>paper_trades</code> coverage &amp; per-city edge; <code>\d prices</code>, <code>\d forecasts</code>.
+- Frontend map: <code>dashboard/static/{index.html, app.js, css/*.css}</code> (+ build notes).
+- Backend contract: <code>dashboard/{app.py, data_live.py, data_backtest.py, kalshi_ws.py}</code>;
+  <code>docs/context/{dashboard,strategy,goals-metrics,decisions,data-model}.md</code>.
+- Memory findings: <code>project_per_city_diagnostic_finding</code>, <code>market-blend-finding</code>,
+  <code>fill-rate-forward-test</code>.</p>
+</main>
+</body>
+</html>

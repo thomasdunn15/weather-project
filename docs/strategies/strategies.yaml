@@ -1,0 +1,108 @@
+# Strategy registry for the strategy-assess engine (scripts/expansion_scout.py).
+# Each entry is a candidate strategy; `applies_to` are candidate-id globs (fnmatch)
+# naming the markets it can be assessed against. `question_frame` is .format()ed
+# with {market}, {venue}, {avg_volume}. Add a strategy here after ingesting its
+# paper into docs/strategies/corpus/ (explicit-tagged, re-verified guardrails).
+
+- id: s1-flb-harvest
+  title: Passive market-making / favorite-longshot harvest
+  preconditions: >-
+    Needs a favorite/longshot regime (contracts trading >=50c vs <30c) and naive
+    YES-longshot retail flow to fade. Structural, not forecasting-based — the
+    edge that travels beyond weather.
+  applies_to: ["kalshi-*", "forecastex-*"]
+  question_frame: >-
+    Should we backtest the passive-MM / favorite-longshot-harvest strategy on {market}
+    (venue {venue}, avg volume {avg_volume})? The edge is: be the favorite side (>=50c),
+    never the longshot. Decide go/no-go for a PAPER-FIRST probe. Address: does the
+    net-of-fee edge survive here, is the naive YES-longshot flow actually present, how
+    many contracts can it absorb before the edge decays, and what is the exact probe?
+
+- id: s2-benter-netfee
+  title: Benter two-step model+market blend, net of fee
+  preconditions: >-
+    Needs a predictive model that beats naive priors (weather EMOS yes; BTC direction
+    no). Only worth testing where a calibrated model exists.
+  applies_to: ["kalshi-*", "forecastex-*"]
+  question_frame: >-
+    Should we backtest a Benter two-step model+market blend on {market} (venue {venue},
+    avg volume {avg_volume})? Only if a calibrated model beats the market prior here.
+    Decide: net-of-fee edge (not just Brier), out-of-sample not in-sample, the scale
+    ceiling, and the exact probe. If no model beats the prior here, say NO.
+
+- id: s3-xvenue-arb
+  title: Kalshi <-> ForecastEx cross-venue arbitrage
+  preconditions: >-
+    Needs an equivalent contract on a second venue (same underlying + settlement).
+    Kalshi <-> ForecastEx is the only legally-executable pair (Polymarket geoblocked).
+  applies_to: ["forecastex-*"]
+  question_frame: >-
+    Should we backtest Kalshi <-> ForecastEx cross-venue arbitrage on {market}?
+    Requires an equivalent 2nd-venue contract and a spread that survives BOTH
+    commissions and settlement/basis risk. Decide feasibility, capacity, and the probe.
+
+# --- Perp strategies (Kalshi /margin API, 2026-08-05 probe). Pure cash-and-carry
+# was killed by arithmetic before reaching the engine: short-KXBTCPERP carry is
+# +4.1%/yr gross < T-bill, alts are long-side receive 1-6%/yr — no engine run needed.
+
+- id: s5-perp-xvenue-funding
+  title: Cross-venue funding-spread capture (Kalshi perps vs US-legal incumbent)
+  preconditions: >-
+    Needs (a) Kalshi's measured funding asymmetry to persist (alts negative =
+    longs receive, BTC positive = shorts receive), (b) a US-legal second perp
+    venue with the OPPOSITE sign on the same asset, (c) the combined funding
+    spread to clear BOTH venues' fees and the basis/liquidation risk of running
+    two leveraged legs. Market-neutral: no directional crypto view required.
+  applies_to: ["kalshi-*-perp*"]
+  question_frame: >-
+    Should we forward-test cross-venue funding-spread capture on {market} (venue
+    {venue})? The trade: long the Kalshi alt perp (measured funding: longs RECEIVE
+    1-6%/yr since launch) and short the same asset on a US-legal incumbent perp venue
+    (where alt funding is typically positive = shorts receive), collecting both legs
+    market-neutral. Decide go/no-go for a PAPER-FIRST probe. Address: is the incumbent
+    leg actually accessible US-legally, does the combined spread survive both venues'
+    fees + funding-flip risk + liquidation/margin management, and what is the exact probe?
+
+- id: s6-perp-mm
+  title: Passive market-making on Kalshi perps (retail-flow capture)
+  preconditions: >-
+    Needs maker spread capture > adverse selection against informed flow. Measured
+    2026-08-05: spreads already 0.3-11bps with professional MMs present; median
+    trade $103 (retail flow IS present). Our guardrail says fast-market MM is
+    HFT-gated — this run decides whether Kalshi perps are an exception.
+  applies_to: ["kalshi-*-perp*"]
+  question_frame: >-
+    Should we test passive market-making on {market} (venue {venue})? Retail flow is
+    measured present (median trade $103) but top-of-book spreads are 0.3-11bps with
+    professional MMs already competing, and our guardrail says fast-market MM is
+    HFT/latency-gated. Decide go/no-go. Address: what edge could a non-colocated
+    single operator have over incumbent MMs, adverse selection net of the ~1bp spread,
+    and whether ANY probe is worth capital here.
+
+- id: s7-flb-perp-hedged
+  title: Sell overpriced crypto one-touch longshots, tail-hedged with the perp
+  preconditions: >-
+    Needs our measured FLB on Kalshi monthly one-touch crypto (flb_regime:
+    KXBTCMAXMON/SOL/XRP <30c longshots overpriced +6-9pp) to still be present, and
+    the perp hedge to cost less than the harvested premium. Previously parked as an
+    unhedgeable premium/tail trade — the perp adds a same-venue US-legal hedge leg.
+  applies_to: ["kalshi-*-perp*"]
+  question_frame: >-
+    Should we backtest selling overpriced <30c crypto one-touch longshots
+    (KXBTCMAXMON-family, measured +6-9pp FLB) with the tail delta-hedged using {market}
+    (venue {venue})? The perp converts the parked naked-tail FLB trade into a hedged
+    premium harvest on one venue. Decide go/no-go for a backtest. Address: hedge cost
+    near the barrier (gamma/whipsaw) vs the 6-9pp premium, perp fees + funding drag on
+    the hedge leg, correlated-tail risk across strikes, and the exact probe design.
+
+- id: s4-labor-flb-fade
+  title: FLB-fade on Kalshi labor / unemployment longshots
+  preconditions: >-
+    Needs a labor/economics market with <30c longshots carrying naive flow. The edge
+    is fading overpriced longshots, NOT out-forecasting the jobs number.
+  applies_to: ["kalshi-*"]
+  question_frame: >-
+    Should we backtest fading overpriced <30c longshots on {market} (labor/unemployment,
+    venue {venue})? The edge is structural favorite-longshot bias, NOT forecasting.
+    Decide: net-of-fee edge, whether the longshot flow is present, the scale ceiling,
+    and the exact probe. Do not propose out-forecasting the number.

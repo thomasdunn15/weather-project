@@ -344,8 +344,12 @@ def get_live_data(cfg: dict) -> dict:
             }
     else:
         # Fallback: live_trades-derived "Other Cities" (manual rows only).
+        # Derive the live universe from CITY_CONFIG rather than hardcoding it —
+        # the old ("KORD","KMIA","KDFW") tuple went stale as cities were added
+        # (KPHX 2026-07-10, KMSY 2026-08-17) and silently mis-bucketed their
+        # positions into "Other Cities".
         oc_unreal = round(sum(p["unreal"] for p in positions_rows
-                              if p["city"] not in ("KORD", "KMIA", "KDFW")), 2)
+                              if p["city"] not in city_config), 2)
         if (oc_n_settled or 0) > 0 or oc_unreal:
             labels = ", ".join(SERIES_CITY.get(s, (s or "").replace("KXHIGH", ""))
                                for s in sorted(oc_series or []))

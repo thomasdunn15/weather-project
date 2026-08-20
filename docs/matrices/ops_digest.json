@@ -1,0 +1,50 @@
+{
+  "name": "ops-digest",
+  "description": "Daily operator digest: read-only reasoning over our own trading data to surface regime shifts, config drift, and execution anomalies. Analytics only — never places or adjusts trades; every suggestion requires explicit operator approval.",
+  "points": [
+    {
+      "id": "calibration_drift",
+      "name": "Calibration drift",
+      "description": "Is model_prob_yes still well-calibrated against realized settlement outcomes, per city, vs the rolling 45-day baseline?",
+      "sub_points": [
+        {"id": "calibration_drift.brier", "name": "Brier score, recent vs prior window"}
+      ]
+    },
+    {
+      "id": "regime_detection",
+      "name": "Regime detection",
+      "description": "Has forecast error or trading edge shifted meaningfully per city, recent window vs prior?",
+      "sub_points": [
+        {"id": "regime_detection.forecast_error", "name": "Forecast error trend"},
+        {"id": "regime_detection.edge", "name": "Edge magnitude trend"}
+      ]
+    },
+    {
+      "id": "execution_anomalies",
+      "name": "Execution anomalies",
+      "description": "Fill rate vs expectation, spread/cross regime, signs of adverse selection.",
+      "sub_points": [
+        {"id": "execution_anomalies.fill_rate", "name": "Fill rate vs baseline"},
+        {"id": "execution_anomalies.adverse_selection", "name": "Cross-price gap / adverse selection"}
+      ]
+    },
+    {
+      "id": "config_drift",
+      "name": "Config drift",
+      "description": "Is a live city's realized performance diverging from the profile committed in its decision doc?",
+      "sub_points": [
+        {"id": "config_drift.pnl", "name": "Realized P&L / naive Sharpe"},
+        {"id": "config_drift.rationale", "name": "Committed backtest rationale"}
+      ]
+    },
+    {
+      "id": "data_health",
+      "name": "Data health",
+      "description": "Is ingestion current (forecasts, observations, price snapshots) and does the account-equity reconciliation tie out?",
+      "sub_points": [
+        {"id": "data_health.ingest", "name": "Ingest freshness"},
+        {"id": "data_health.account", "name": "Account-equity reconciliation"}
+      ]
+    }
+  ]
+}

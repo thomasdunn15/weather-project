@@ -1,0 +1,69 @@
+{
+  "name": "strategy-eval",
+  "description": "Is an external strategy worth backtesting on a given market? Adversarial: the market is efficient and fee-eaten by default; a claim earns a probe only by surviving mechanism, fit, evidence, economics, scalability, access, and testability. Output is triage (worth a backtest + the exact probe), never 'implement'.",
+  "points": [
+    {
+      "id": "mechanism",
+      "name": "Mechanism validity",
+      "description": "What is the edge and does it survive our reality — measured net of fees, out-of-sample, not gross/in-sample?",
+      "sub_points": [
+        {"id": "mechanism.netfee", "name": "Edge measured after fees, not gross"},
+        {"id": "mechanism.oos", "name": "Out-of-sample, not in-sample (Brier-only = WEAK, not proof)"}
+      ]
+    },
+    {
+      "id": "market_fit",
+      "name": "Market fit / preconditions",
+      "description": "Does this market have the regime the edge needs?",
+      "sub_points": [
+        {"id": "market_fit.preconditions", "name": "FLB needs a favorite/longshot regime; Benter needs a model that beats naive priors (weather yes, BTC no); arb needs an equivalent 2nd-venue contract"},
+        {"id": "market_fit.flow", "name": "Is the naive YES-longshot flow the edge feeds on actually present?"}
+      ]
+    },
+    {
+      "id": "our_evidence",
+      "name": "Our internal evidence",
+      "description": "What do our own paper/live trades say for THIS market?",
+      "sub_points": [
+        {"id": "our_evidence.paper", "name": "paper_trades economics (empty -> probe first)"},
+        {"id": "our_evidence.live", "name": "Fills / paper-vs-live divergence / prior verdicts"}
+      ]
+    },
+    {
+      "id": "economics",
+      "name": "Fee & adverse-selection economics",
+      "description": "Does the edge clear fees and survive toxic flow?",
+      "sub_points": [
+        {"id": "economics.fees", "name": "Clears Kalshi 2c/1c, ForecastEx ~half"},
+        {"id": "economics.adverse_selection", "name": "Single-name toxicity, ~33% return SD, one-sided-flow / inventory risk"}
+      ]
+    },
+    {
+      "id": "scalability",
+      "name": "Scalability",
+      "description": "How many contracts can this absorb, and how far does that scale?",
+      "sub_points": [
+        {"id": "scalability.absorption", "name": "Catalog avg_volume/OI (real) + snapshot depth"},
+        {"id": "scalability.decay", "name": "Edge degrades with size (larger maker posts less-advantageous prices)"},
+        {"id": "scalability.ceiling", "name": "Realistic max contracts/day + scaling PATH (deepen vs add-markets) + proxy-vs-measured flag"}
+      ]
+    },
+    {
+      "id": "access",
+      "name": "Access / regulatory",
+      "description": "Can a US person trade it via a real API?",
+      "sub_points": [
+        {"id": "access.regulatory", "name": "Venue access, geoblock (Polymarket NEVER circumvented), US-person, API"}
+      ]
+    },
+    {
+      "id": "testability",
+      "name": "Testability",
+      "description": "Can we actually run the probe cheaply?",
+      "sub_points": [
+        {"id": "testability.probe", "name": "The exact backtest / data check"},
+        {"id": "testability.data", "name": "Do we have or can we cheaply get the data?"}
+      ]
+    }
+  ]
+}

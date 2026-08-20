@@ -10,3 +10,4 @@ logs/
 scratch_*.py
 *.egg-info/
 Research.md
+halt/

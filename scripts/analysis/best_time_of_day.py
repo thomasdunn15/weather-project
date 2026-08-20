@@ -47,14 +47,14 @@ CITY_CONFIGS = {
         "max_contracts": 500,
         "size_edge_cap": 0.40,
     },
-    "KMIA": {
+    "KMIA": {                                      # production config as of 2026-08-17
         "model_source": "EMOS combined 00Z Miami (rolling 45d)",
-        "strategy": "blend",
-        "raw_edge_threshold": 1.00,                # disabled
-        "blend_edge_threshold": 0.10,
-        "max_signals_per_day": 1,
-        "sizing_mode": "amount",
-        "amount_dollars": 15.0,
+        "strategy": "raw",                         # was blend-only; switched 2026-08-17
+        "raw_edge_threshold": 0.10,
+        "blend_edge_threshold": 1.00,              # disabled (raw-only)
+        "max_signals_per_day": 99,                 # production applies no anti-stacking cap
+        "sizing_mode": "unit",
+        "unit_contracts": 500,
         "max_contracts": 500,
         "size_edge_cap": 0.40,
     },
@@ -72,7 +72,7 @@ CITY_CONFIGS = {
 }
 
 def logit(p): p = max(0.001, min(0.999, p)); return math.log(p/(1-p))
-def inv_logit(x): return 1/(1+math.exp(-x))
+def inv_logit(x): return 1/(1+math.exp(-max(-500.0, min(500.0, x))))  # clamp: raw-only cities can drive |x| past exp() range
 
 def yes_wins(bt, sl, sh, h):
     if bt == "greater_than": return h > sl

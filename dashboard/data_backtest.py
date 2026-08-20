@@ -31,7 +31,7 @@ from weather_markets.aggregation import (
     fetch_contracts_for_date,
 )
 from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
-from weather_markets.evaluation import contract_resolved_yes
+from weather_markets.evaluation import contract_resolved_yes, kalshi_equivalent_bracket
 from weather_markets.stations import get as get_station, all_stations
 
 import sys as _sys
@@ -58,8 +58,14 @@ def fetch_city_payload(
     DB on first call per cache key. Live prices update every 5 min anyway, so
     this matches the natural data cadence.
     """
+    # "-PM" suffixed codes are Polymarket variants of a base station: same
+    # forecast/EMOS/observations, but PM contracts + PM paper configs. PM
+    # bracket strikes are normalized to Kalshi semantics AT FETCH so every
+    # downstream consumer (labels, resolution, sims) works unchanged.
+    is_pm = city_code.endswith("-PM")
+    base_code = city_code[:-3] if is_pm else city_code
     try:
-        station = get_station(city_code)
+        station = get_station(base_code)
         city_name = station.city
     except KeyError:
         city_name = city_code
@@ -78,13 +84,13 @@ def fetch_city_payload(
             # Ensemble members + EMOS fit
             try:
                 ensemble_values = compute_combined_daily_highs(
-                    init_time, selected_date, conn, station_id=city_code, models=["gefs", "ifs"],
+                    init_time, selected_date, conn, station_id=base_code, models=["gefs", "ifs"],
                 )
                 members = [round(float(v), 1) for v in ensemble_values]
                 if len(members) >= 2:
                     ens_mean = round(statistics.mean(members), 2)
                     ens_spread = round(statistics.stdev(members), 2)
-                emos = fit_emos_rolling(selected_date, conn, window_days=45, station_id=city_code,
+                emos = fit_emos_rolling(selected_date, conn, window_days=45, station_id=base_code,
                                         model="combined", init_hour=0)
                 if emos is not None and ens_mean:
                     emos_mu = round(emos["a"] + emos["b"] * ens_mean, 2)
@@ -98,14 +104,27 @@ def fetch_city_payload(
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT high_temp_f FROM observations WHERE date=%s AND station_id=%s",
-                    (selected_date, city_code),
+                    (selected_date, base_code),
                 )
                 row = cur.fetchone()
                 if row:
                     observed = int(row[0])
 
             # Contracts + paper-trade snapshot for this date
-            contracts = fetch_contracts_for_date(selected_date, conn, station_id=city_code, series=station.kalshi_series)
+            if is_pm:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT ticker, bracket_type, strike_low, strike_high
+                           FROM contracts
+                           WHERE platform='polymarket' AND station_id=%s AND target_date=%s""",
+                        (base_code, selected_date),
+                    )
+                    contracts = [
+                        kalshi_equivalent_bracket("polymarket", bt, sl, sh) | {"ticker": t}
+                        for t, bt, sl, sh in cur.fetchall()
+                    ]
+            else:
+                contracts = fetch_contracts_for_date(selected_date, conn, station_id=base_code, series=station.kalshi_series)
             ms_for_city = _paper_source_for(city_code, city_name)
             # Cron decision time for this city — drives the Edge-by-bracket
             # snapshot cutoff. Edge MUST reflect prices AS-OF the cron fire
@@ -168,6 +187,14 @@ def fetch_city_payload(
                     selected_date - timedelta(days=365),
                 ))
                 settled_trades = cur.fetchall()
+                if is_pm:
+                    # Normalize PM [lo,hi) strikes to Kalshi-inclusive once here;
+                    # labels, resolution and sims below then read them correctly.
+                    settled_trades = [
+                        r[:9] + (lambda b: (b["bracket_type"], b["strike_low"], b["strike_high"]))(
+                            kalshi_equivalent_bracket("polymarket", r[9], r[10], r[11])) + r[12:]
+                        for r in settled_trades
+                    ]
     except Exception:
         pass
 
@@ -178,7 +205,8 @@ def fetch_city_payload(
     # trades on that date; None until MIN_N_FIT prior samples exist.
     from weather_markets.blend import walkforward_blends as _wf_blends
     ms = _paper_source_for(city_code, city_name)
-    wf_blends = _wf_blends(city_code, city_name, paper_model_source=ms) if station.kalshi_series else {}
+    wf_blends = ({} if is_pm else
+                 (_wf_blends(city_code, city_name, paper_model_source=ms) if station.kalshi_series else {}))
 
     def _blend_for(d) -> "object | None":
         """Blend fit to use for a trade/display on date d: the fit trained on
@@ -291,7 +319,8 @@ def fetch_city_payload(
 
     return {
         "code": city_code,
-        "city": city_name,
+        "city": city_name + (" · PM" if is_pm else ""),
+        "venue": "polymarket" if is_pm else "kalshi",
         "date": selected_date.strftime("%Y-%m-%d"),
         "members": members,
         "nMembers": len(members),
@@ -321,7 +350,12 @@ def _paper_source_for(city_code: str, city_name: str) -> str:
     For cities where the LIVE cron uses a different EMOS variant (e.g.,
     KORD uses combined_hrrr with HRRR added), read that from CITY_CONFIG
     so the backtest reflects what live trading actually does.
+    "-PM" codes map to the Polymarket paper configs (one source of truth:
+    the paper logger's STATIONS dict, loaded via data_polymarket).
     """
+    if city_code.endswith("-PM"):
+        from dashboard.data_polymarket import _PAPER
+        return _PAPER.STATIONS[city_code[:-3]]
     try:
         import live_trade
         cfg = live_trade.CITY_CONFIG.get(city_code, {})
@@ -355,6 +389,9 @@ def _city_cron_datetime(city_code: str, target_date: date) -> datetime:
     cities (not in CITY_CONFIG) uses _BACKTEST_DECISION_UTC; falls back to
     14:46 UTC (KORD default).
     """
+    if city_code.endswith("-PM"):
+        # PM paper logger cron fires 14:46 UTC for all PM cities.
+        return datetime(target_date.year, target_date.month, target_date.day, 14, 46, tzinfo=timezone.utc)
     try:
         import live_trade
         cfg = live_trade.CITY_CONFIG.get(city_code, {})
@@ -462,8 +499,16 @@ def _compute_sims(rows: list, edge_filter: float, amount_dollars: float, depth_c
 
 
 def list_cities() -> list[dict]:
-    """Code + label + lat/lon for every Kalshi-series station. Drives both the
-    dropdown and the clickable US map in the backtest tab."""
-    return [{"code": s.station_id, "label": s.city,
-             "lat": s.latitude, "lon": s.longitude}
-            for s in all_stations() if s.kalshi_series]
+    """Code + label + lat/lon for every Kalshi-series station, plus the five
+    Polymarket variants ("-PM" codes — same station, PM contracts + PM paper
+    configs). Drives both the dropdown and the clickable US map."""
+    kalshi = [{"code": s.station_id, "label": s.city,
+               "lat": s.latitude, "lon": s.longitude}
+              for s in all_stations() if s.kalshi_series]
+    pm = []
+    for sid in ("KMIA", "KNYC", "KLAX", "KSFO", "KMDW"):
+        s = get_station(sid)
+        # lon nudged +1.2° so PM map dots sit beside (not under) the Kalshi dot
+        pm.append({"code": f"{sid}-PM", "label": f"{s.city} · PM",
+                   "lat": s.latitude, "lon": s.longitude + 1.2})
+    return kalshi + pm

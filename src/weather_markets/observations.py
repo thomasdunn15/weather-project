@@ -20,15 +20,23 @@ def fetch_cf6_year(year: int, station_id: str = "KNYC") -> dict:
     return response.json()
 
 
+def _cf6_float(value) -> float | None:
+    """CF6 marks missing data 'M' (and trace 'T'); treat any non-numeric as absent."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_observations(raw_data: dict, station_id: str) -> list[tuple]:
     rows = []
     for entry in raw_data['results']:
-        high = entry.get('high')
+        high = _cf6_float(entry.get('high'))
         if high is None:
             continue
-        low = entry.get('low')
+        low = _cf6_float(entry.get('low'))
         d = date.fromisoformat(entry['valid'])
-        rows.append((d, station_id, float(high), float(low) if low is not None else None))
+        rows.append((d, station_id, high, low))
     return rows
 
 def insert_observations(rows: list[tuple], conn) -> int:

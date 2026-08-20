@@ -1,4 +1,26 @@
 
+def kalshi_equivalent_bracket(platform: str | None, bracket_type: str,
+                              strike_low, strike_high) -> dict:
+    """Normalize a contract's strikes to Kalshi conventions (what
+    contract_resolved_yes and gaussian_to_bracket_probs expect).
+
+    Polymarket US slugs use half-open semantics: gte{a}lt{b} = [a, b),
+    gte{a} = T >= a, lt{b} = T < b — stored RAW in contracts. Kalshi uses
+    between INCLUSIVE both ends and greater_than strictly-above. Scoring PM
+    strikes with Kalshi rules is off-by-one (the lows-bug class of artifact).
+    """
+    if platform == "polymarket":
+        if bracket_type == "between":       # [a, b) -> integers a..b-1
+            return {"bracket_type": bracket_type, "strike_low": strike_low,
+                    "strike_high": strike_high - 1}
+        if bracket_type == "greater_than":  # T >= a  ->  T > a-1
+            return {"bracket_type": bracket_type, "strike_low": strike_low - 1,
+                    "strike_high": strike_high}
+        # less_than: T < b — identical convention on both venues
+    return {"bracket_type": bracket_type, "strike_low": strike_low,
+            "strike_high": strike_high}
+
+
 def contract_resolved_yes(observed_high: int, contract: dict) -> bool:
     """
     Did the YES side of this contract resolve true?

@@ -5,6 +5,33 @@ date, idea, evidence that prompted it. Nothing here is a commitment.
 
 ## Open
 
+- **2026-07-07 · Time-series foundation models (TimesFM / Kronos) → SKIP.**
+  Per `docs/research/md/2026-07-07-timesfm-kronos-foundation-models.md`. (A) Generic univariate TS-FMs
+  LOSE to NWP+EMOS at short-range station temperature — WEATHER-5K (NeurIPS 2024): ECMWF-HRES beats all
+  16 data-driven models on temp MAE (1.94 full-horizon vs best TSF 2.49; the pretrained TS-FM analog
+  Timer 2.27@24h is worst at the extremes brackets price). Structurally blind to the atmospheric state
+  our GEFS+IFS+HRRR→EMOS stack already uses → a downgrade. (B) Kronos reads the candlestick tape, but a
+  weather bracket's value is an EXOGENOUS physical outcome not in the tape; binary-event movement is
+  near-random to ML (no model beat a 0.539 coin-flip), and 6 frontier models lost money live-trading
+  Kalshi (avg −13.8%). Skill≠edge again, in a costlier form. **Only** frontier ML-weather move = consume
+  AIFS/GenCast open-data OUTPUTS as an extra ensemble member (data plumbing; AIFS already ingested), NOT
+  hosting a model. Separate cited lead worth its own study: **favorite-longshot bias** (≥50¢ Kalshi
+  contracts earn statistically-significant positive returns; passive MM ~2.6% after commission — Whelan
+  2025). Priority unchanged = breadth/venues (ForecastEx access, Polymarket depth).
+
+- **2026-06-29 · Polymarket viability re-survey → WAIT (narrow), NO for live universe.**
+  Per `docs/research/md/2026-06-29-polymarket-weather-trading-viability.md`. Binding constraint =
+  **coverage + liquidity-at-size**, NOT access/timing/fees/API (those are now green: Polymarket US
+  is same-day not T+1, fiat ACH 0% funding, full REST+gRPC+FIX Ed25519 order API, taker −0.75¢ +
+  maker rebate −0.31¢ vs Kalshi). Killers: (a) Polymarket lists only **5 cities** (NYC/Miami/
+  Chicago-**Midway**/LA/SF) → of our universe only **KMIA** is fungible; **KDFW + KSEA absent**,
+  KORD≠KMDW; (b) live book-walk → buying 500 in a body bracket costs **+1.5↔+15.6¢ (median ≈+11¢)**
+  slippage, spreads 3–7¢ vs Kalshi 1¢. Cross-venue **arb refuted** on Miami (mid gap ~1–1.5¢ <
+  combined spreads, −2¢ before fees). Cheaper fees narrow loss, do NOT create edge (gross ≈0).
+  *Only* residual path: Miami-only, **maker-only**, small-size *measurement pilot* — must still clear
+  OOS Sharpe>2.5 on maker-fill-adjusted exec. PREREQ: start Polymarket order-book **depth** snapshots
+  (we have 0 history). Do NOT trade Polymarket for Dallas/Seattle/Chicago. (Respect FREEZE → 2026-07-10.)
+
 - **2026-06-20 · Add NBM + ECMWF-AIFS as forecast sources (validate skill-first).**
   Forecast-model-selection study (`docs/research/md/2026-06-20-forecast-model-selection.md`):
   current GEFS+IFS+HRRR is defensible but not optimal. After EMOS, IFS>GEFS (CRPS 1.327 vs

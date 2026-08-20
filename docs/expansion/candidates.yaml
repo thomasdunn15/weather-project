@@ -1,0 +1,70 @@
+# Seed candidates for the breadth scout (scripts/expansion_scout.py).
+# Auto-discovery (`rank --discover`) adds Kalshi series from the synced catalog
+# that nothing here tracks. `prior` records earlier verdicts so the scout does
+# not re-litigate closed questions.
+
+- id: forecastex-miami
+  venue: forecastex
+  kind: venue-port
+  station_id: KMIA
+  notes: >-
+    Exact station port (same KMIA settlement). Trades through resolution day,
+    ~1/2 Kalshi fee. Open Qs: morning depth, rulebook PDF, account access.
+
+- id: forecastex-dallas
+  venue: forecastex
+  kind: venue-port
+  station_id: KDFW
+  notes: Exact station port; Dallas already live on Kalshi (operator override).
+
+- id: forecastex-chicago
+  venue: forecastex
+  kind: venue-port
+  station_id: KMDW
+  notes: >-
+    ForecastEx Chicago settles KMDW, not KORD — basis risk vs our live KORD
+    edge; KMDW paper backfill exists.
+
+- id: kalshi-lows-chicago
+  venue: kalshi
+  kind: category
+  station_id: KORD
+  series_ticker: KXLOWTCHI
+  underlying: daily_low_temp
+  notes: Daily LOW brackets — same ingest + EMOS on TMIN; lows backfill script exists.
+
+- id: kalshi-denver
+  venue: kalshi
+  kind: city
+  station_id: KDEN
+  prior: "HOLD per 2026-07-07 per-city optimization (not robust at baseline)"
+
+- id: kalshi-nyc
+  venue: kalshi
+  kind: city
+  station_id: KNYC
+  prior: "HOLD per 2026-07-07 per-city optimization"
+
+# --- Kalshi perpetual futures (launched 2026-05-29; /margin API, NOT event contracts).
+# Not in the synced event catalog — market data probed directly from the public
+# perps API (see docs/strategies/corpus/2026-08-05-kalshi-perpetuals.md).
+
+- id: kalshi-btc-perp
+  venue: kalshi
+  kind: category
+  series_ticker: KXBTCPERP
+  underlying: btc_perp
+  notes: >-
+    BTC perpetual future. Probe 2026-08-05: $106M/24h notional, 1.4bps spread,
+    cumulative funding +4.1%/yr (longs pay -> short-carry side), median trade $103.
+
+- id: kalshi-alt-perps
+  venue: kalshi
+  kind: category
+  series_ticker: KXBCHPERP
+  underlying: alt_perps
+  notes: >-
+    Alt perps as a group (BCH/kSHIB/SUI/LTC/ZEC/ETH/...). Probe 2026-08-05: ALL
+    alts show negative cumulative funding (longs RECEIVED 1-6%/yr — persistent
+    small discount to index); spreads 0.3-11bps; $1-9M/24h notional each.
+    Representative ticker KXBCHPERP (largest funding magnitude, -6.0%/yr).

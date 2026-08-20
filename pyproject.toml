@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn[standard]>=0.47.0",
     "websockets>=16.0",
     "markdown>=3.10.2",
+    "anthropic>=0.118.0",
 ]
 
 [build-system]

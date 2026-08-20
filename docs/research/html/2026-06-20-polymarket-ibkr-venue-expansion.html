@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Should Polymarket and Interactive Brokers join the venue scope? A profitability survey</title>
+<style>
+:root { --fg:#1a1a1a; --muted:#666; --accent:#0b8457; --border:#e2e2e2;
+  --bg:#fff; --code-bg:#f6f8fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:#fafafa; color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65; font-size:16px; }
+.paper { max-width:820px; margin:48px auto; padding:56px 64px; background:var(--bg);
+  border:1px solid var(--border); border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+h1 { font-size:2rem; line-height:1.2; margin:0 0 .25em;
+  border-bottom:2px solid var(--fg); padding-bottom:.3em; }
+h2 { font-size:1.35rem; margin:1.8em 0 .6em;
+  border-bottom:1px solid var(--border); padding-bottom:.2em; }
+h3 { font-size:1.1rem; margin:1.4em 0 .5em; }
+em { color:var(--muted); }
+a { color:#0366d6; text-decoration:none; }
+a:hover { text-decoration:underline; }
+table { border-collapse:collapse; width:100%; margin:1.2em 0; font-size:.93rem; }
+th, td { border:1px solid var(--border); padding:8px 12px; text-align:left; }
+th { background:var(--code-bg); font-weight:600; }
+tr:nth-child(even) td { background:#fbfbfb; }
+code { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.88em;
+  background:var(--code-bg); padding:.15em .4em; border-radius:4px; }
+pre { background:var(--code-bg); border:1px solid var(--border); border-radius:6px;
+  padding:14px 16px; overflow:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:1.2em 0; padding:.4em 1em; border-left:4px solid var(--accent);
+  background:#f7fbf9; color:var(--muted); }
+hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+@media print { body { background:#fff; }
+  .paper { border:none; box-shadow:none; margin:0; max-width:none; } }
+</style>
+</head>
+<body>
+<main class="paper">
+<h1 id="should-polymarket-and-interactive-brokers-join-the-venue-scope-a-profitability-survey">Should Polymarket and Interactive Brokers join the venue scope? A profitability survey</h1>
+<p><em>2026-06-20 · status: draft</em></p>
+<h2 id="question">Question</h2>
+<p>Kalshi is currently the only live trading venue for the daily-high-temperature
+stack (Chicago/KORD + Miami/KMIA live; others paper). The user asks whether to
+expand the <strong>scope of predictive-markets venues</strong> to include <strong>Polymarket</strong> and
+<strong>Interactive Brokers</strong>, and whether doing so would be <em>profitable or worth it</em>.</p>
+<p>Per the scope confirmation, "Interactive Brokers" is surveyed two ways —
+(a) <strong>IBKR ForecastEx</strong> event contracts, and (b) <strong>CME weather derivatives</strong>
+traded <em>through</em> IBKR as a broker — and each candidate venue is judged on two
+lenses: <strong>(1)</strong> as a new home for the existing GEFS+ECMWF+blend edge, and
+<strong>(2)</strong> as an <strong>arbitrage</strong> counterparty to Kalshi.</p>
+<p>Why it matters now: the project's stated goal is <em>"prove positive edge after
+fees"</em> (CLAUDE.md, capital base $3,050), and the most rigorous internal result
+to date is that <strong>fees are the binding constraint</strong> — the gross edge is ≈ 0 and
+the ~2¢ Kalshi fee tips it net-negative. Any venue with a materially lower fee
+attacks that constraint directly, which is the lens this paper applies.</p>
+<h2 id="tldr-verdict">TL;DR / Verdict</h2>
+<p><strong>Add IBKR ForecastEx to scope as a paper/ingest pilot — medium confidence it is
+"worth it," low confidence it is independently profitable.</strong> ForecastEx is the
+best structural fit: CFTC-regulated, the <em>only</em> prediction market with a
+professional trading API, a <strong>flat ~1¢/contract fee (≈ half Kalshi's ~2¢ in the
+mid-range)</strong>, and <strong>same-station fungibility with Kalshi on 5 of 6 of our cities</strong>
+(all but Chicago). Continue the <strong>Polymarket US</strong> snapshot track already running,
+but <strong>do not trade it yet</strong> (13 days of data, unverified US weather fee, crypto
+rails, Chicago = Midway ≠ our O'Hare). <strong>Reject CME weather futures</strong> for this
+strategy (monthly HDD/CDD index aggregates, not daily-high binaries — instrument
+mismatch). <strong>Cross-venue arbitrage is marginal</strong>, not a strategy.</p>
+<p><strong>Two caveats that cap the ForecastEx upside.</strong> First, lower fees <em>narrow the
+loss, they do not manufacture an edge</em>: on the n=1007 backtest the gross edge is
+already ≈ −0.33¢, so swapping Kalshi's fee for ForecastEx's only moves
+combined-00Z from −1.88¢ to −0.83¢/trade — <strong>still negative.</strong> Second, ForecastEx
+daily-high markets are for the <strong>next day's</strong> high (T+1), trading the day before
+resolution, so the same-day 14:46Z information edge our strategy relies on is
+<em>forfeited</em> — a prior internal note (backlog 2026-06-12) estimates this at
+<strong>~0.4–0.6× the same-day Sharpe.</strong> A cheaper, lower-information venue makes a real
+edge more capturable; it cannot create one that isn't there.</p>
+<h2 id="methods-data">Methods &amp; Data</h2>
+<p><strong>Internal (read-only; no <code>--live</code>, no DB writes).</strong>
+- <code>psql -d weather</code> SELECTs on <code>contracts</code>, <code>prices</code>, <code>orderbook_snapshots</code>,
+  <code>live_trades</code>, <code>paper_trades</code> (row counts, date ranges, per-city, P&amp;L).
+- Code read: <code>src/weather_markets/{polymarket,stations,kalshi,kalshi_api}.py</code>,
+  <code>scripts/{snapshot_polymarket_prices,backfill_polymarket_contracts,
+  live_trade}.py</code>, <code>scripts/analysis/cross_platform_arb.py</code>.
+- Ran <code>uv run python scripts/analysis/cross_platform_arb.py</code> (confirmed
+  read-only) for the KORD↔KMDW basis and today's bracket comparison.
+- Docs/memory: <code>docs/backlog.md</code>, the market-blend, no-edge (n≈1007), and
+  fill-rate findings.
+- Fee arithmetic computed from the production <code>kalshi_fee_cents</code> formula
+  (<code>live_trade.py:325</code>) and published venue fees.</p>
+<p><strong>External (web search + fetch, each claim verified against its source).</strong>
+- Polymarket US regulatory status (QCEX/CFTC), fee schedule, weather-market
+  coverage/liquidity, settlement.
+- IBKR ForecastEx: contract details, 10-city station list, fee mechanics, API.
+- CME weather product specifications (HDD/CDD/CAT, contract unit, coverage).</p>
+<h2 id="internal-findings">Internal Findings</h2>
+<h3 id="1-baseline-the-edge-wed-be-porting-is-fee-bound-not-skill-bound">1. Baseline — the edge we'd be porting is fee-bound, not skill-bound</h3>
+<p>Live Kalshi trading is tiny and noisy; the rigorous signal is the year-long
+backtest.</p>
+<table>
+<thead>
+<tr>
+<th>Metric (Kalshi, live)</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Live orders all-time</td>
+<td>28 (2026-06-04 → 06-19)</td>
+</tr>
+<tr>
+<td>Live cities</td>
+<td>2 (KORD, KMIA)</td>
+</tr>
+<tr>
+<td>Contracts filled / requested</td>
+<td>10,891 / 14,373 (75.8%)</td>
+</tr>
+<tr>
+<td>Realized P&amp;L all-time</td>
+<td><strong>+$100.04</strong> (KORD −$123.83, KMIA +$223.87)</td>
+</tr>
+<tr>
+<td>Entry fees paid</td>
+<td>$23.30</td>
+</tr>
+</tbody>
+</table>
+<p>Live n is far too small for a P&amp;L conclusion. The <strong>no-edge backtest</strong> (evaluated
+at the production |edge| ≥ 10% threshold, fees included) is the real evidence:</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>n</th>
+<th>Win %</th>
+<th>Gross/trade</th>
+<th>Net/trade</th>
+<th>t-stat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>EMOS combined 00Z @14:45</td>
+<td>897</td>
+<td>32.9%</td>
+<td>≈ −0.33¢</td>
+<td><strong>−1.88¢</strong></td>
+<td>−1.52</td>
+</tr>
+<tr>
+<td>EMOS ECMWF 00Z @14:45</td>
+<td>1,007</td>
+<td>29.7%</td>
+<td>—</td>
+<td><strong>−3.14¢</strong></td>
+<td>−2.74</td>
+</tr>
+<tr>
+<td>EMOS GEFS 00Z @14:45</td>
+<td>944</td>
+<td>30.8%</td>
+<td>—</td>
+<td>−3.47¢</td>
+<td>−2.93</td>
+</tr>
+<tr>
+<td>EMOS combined 12Z @18:45</td>
+<td>944</td>
+<td>17.1%</td>
+<td>—</td>
+<td>−4.24¢</td>
+<td>−4.43</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Conclusion that drives this whole paper:</strong> combined-00Z gross P&amp;L is ≈ 0
+(95% CI on net includes zero); the ~1.5–2¢/trade fee is what pushes it negative.
+Fees are the binding constraint.</p>
+<p>The blend finding reinforces <em>where</em> the signal lives: a Benter-style logit blend
+beats the raw model by 11–43% test Brier, with the <strong>market price carrying
+56–95% of the predictive weight</strong> (β_model is <em>negative</em> for KAUS and KLAX). So
+"porting the edge" to a new venue mostly means blending against <em>that venue's</em>
+market price — you inherit that venue's efficiency, you don't carry alpha over.</p>
+<h3 id="2-fee-schedule-by-venue-the-core-comparison">2. Fee schedule by venue — the core comparison</h3>
+<p>Per-contract fee in cents, by entry price <code>p</code>. Kalshi from the production formula
+<code>max(1¢, ⌈0.07·p·(1−p)·100⌉)</code>, entry only. ForecastEx = its $0.01 Yes+No pair
+spread (≈ 0.5¢ your side at open, ~1¢ round-trip, flat). Polymarket US = stated
+0.30% taker of traded value; Polymarket <em>international</em> weather category ≈ 1.25%
+(shown for contrast — see fee-uncertainty caveat).</p>
+<table>
+<thead>
+<tr>
+<th>p</th>
+<th>Kalshi ¢</th>
+<th>ForecastEx ¢</th>
+<th>Polymarket US ¢</th>
+<th>Poly intl (wx) ¢</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.10</td>
+<td>1</td>
+<td>0.50</td>
+<td>0.03</td>
+<td>0.13</td>
+</tr>
+<tr>
+<td>0.20</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.06</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>0.30</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.09</td>
+<td>0.38</td>
+</tr>
+<tr>
+<td>0.40</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.12</td>
+<td>0.50</td>
+</tr>
+<tr>
+<td>0.50</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.15</td>
+<td>0.63</td>
+</tr>
+<tr>
+<td>0.60</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.18</td>
+<td>0.75</td>
+</tr>
+<tr>
+<td>0.80</td>
+<td>2</td>
+<td>0.50</td>
+<td>0.24</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>0.90</td>
+<td>1</td>
+<td>0.50</td>
+<td>0.27</td>
+<td>1.13</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Kalshi is the most expensive venue across the entire mid-range</strong> (the 20–80¢
+band where almost all our trades sit). ForecastEx is ~half; Polymarket is
+sub-cent to ~1¢ depending on which schedule applies.</p>
+<p><strong>But the fee saving does not flip the sign.</strong> Re-pricing the combined-00Z
+backtest (gross ≈ −0.33¢/trade) under each venue's fee:</p>
+<table>
+<thead>
+<tr>
+<th>Fee assumption</th>
+<th>Net P&amp;L / trade</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kalshi (avg ~1.55¢)</td>
+<td>−1.88¢ (actual)</td>
+</tr>
+<tr>
+<td>ForecastEx (~0.5¢)</td>
+<td><strong>−0.83¢</strong></td>
+</tr>
+<tr>
+<td>Polymarket US (~0.15¢ @ p≈0.5)</td>
+<td><strong>−0.48¢</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Cheaper fees take combined-00Z from clearly-losing to <em>almost</em> break-even — a
+real improvement against the binding constraint — but it remains negative because
+the gross edge itself is ≤ 0. This is the honest center of the verdict.</p>
+<h3 id="3-station-fungibility-matrix-who-settles-on-what">3. Station fungibility matrix — who settles on what</h3>
+<p>Whether a new venue can host the <em>same</em> contract (for venue choice or arb) hinges
+on settling on the <em>same NWS station</em>. ForecastEx publishes its station keys
+(IBKR Campus); Kalshi mapping from <code>stations.py</code>; Polymarket from
+<code>backfill_polymarket_contracts.py</code> slug parsing.</p>
+<table>
+<thead>
+<tr>
+<th>City</th>
+<th>Kalshi</th>
+<th>ForecastEx</th>
+<th>Polymarket US</th>
+<th>Same station?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New York</td>
+<td>KNYC (Central Park)</td>
+<td>Central Park</td>
+<td>KNYC</td>
+<td><strong>All 3 match</strong></td>
+</tr>
+<tr>
+<td>Los Angeles</td>
+<td>KLAX</td>
+<td>KLAX (airport)</td>
+<td>KLAX</td>
+<td><strong>All 3 match</strong></td>
+</tr>
+<tr>
+<td>Miami</td>
+<td>KMIA</td>
+<td>KMIA (airport)</td>
+<td>KMIA</td>
+<td><strong>All 3 match</strong></td>
+</tr>
+<tr>
+<td>Austin</td>
+<td>KAUS</td>
+<td>KAUS</td>
+<td>— (not listed)</td>
+<td>Kalshi ↔ FEx</td>
+</tr>
+<tr>
+<td>Denver</td>
+<td>KDEN</td>
+<td>KDEN</td>
+<td>— (not listed)</td>
+<td>Kalshi ↔ FEx</td>
+</tr>
+<tr>
+<td><strong>Chicago</strong></td>
+<td><strong>KORD (O'Hare)</strong></td>
+<td><strong>KMDW (Midway)</strong></td>
+<td><strong>KMDW (Midway)</strong></td>
+<td><strong>FEx ↔ Poly only; NOT Kalshi</strong></td>
+</tr>
+<tr>
+<td>San Francisco</td>
+<td>— (not Kalshi-live)</td>
+<td>(airport)</td>
+<td>KSFO</td>
+<td>FEx ↔ Poly</td>
+</tr>
+</tbody>
+</table>
+<p>ForecastEx uses each city's <strong>main airport</strong> station (NYC = Central Park the
+exception) — which <strong>matches Kalshi on 5 of our 6 live/paper cities</strong>. The lone
+mismatch is <strong>Chicago</strong>: Kalshi settles on <strong>O'Hare (KORD)</strong>, while <em>both</em>
+ForecastEx and Polymarket settle on <strong>Midway (KMDW)</strong>. Empirically (n=535 common
+days) KORD↔KMDW correlation is 0.9978, mean Δ −0.77°F, but <strong>~1.3% of days
+diverge ≥5°F</strong> — enough basis risk to flip a 1°F bracket. So Chicago is <em>not</em>
+fungible across the O'Hare/Midway split, while NYC/LA/Miami are fungible across
+all three venues.</p>
+<h3 id="3b-timinghorizon-mismatch-forecastex-daily-high-markets-are-next-day">3b. Timing/horizon mismatch — ForecastEx daily-high markets are next-day</h3>
+<p>This was flagged before any venue survey: a backlog note (2026-06-12, <em>"IBKR
+ForecastEx as second venue"</em>) records that ForecastEx is a <strong>genuinely separate
+order book</strong> (unlike Robinhood, which routes into Kalshi's book) but that its
+contracts are <strong>T+1/T+2 — no same-day</strong> — and therefore expects only
+<strong>~0.4–0.6× the same-day Sharpe.</strong> The external IBKR description corroborates it:
+ForecastEx "daily markets for the <strong>next day's</strong> high temperatures will reappear
+once each day" [11]. Our production strategy decides intraday on the <em>same</em> day
+(KORD 14:46Z, KMIA 15:30Z), exploiting late-morning observations and short-range
+HRRR. Porting that to a next-day market forfeits roughly a full forecast cycle of
+lead-time information. So even setting fees aside, the <em>gross</em> edge on ForecastEx
+should be <strong>weaker</strong> than the (already ≈0) same-day Kalshi gross edge — compounding
+the "cheaper fees don't create edge" conclusion. The prior note's build trigger
+("only if walk-book shows Kalshi depth caps us") also still applies: at
+500-contract orders, Kalshi depth is not currently the binding constraint.</p>
+<h3 id="4-polymarket-integration-already-exists-snapshot-only">4. Polymarket integration already exists (snapshot-only)</h3>
+<table>
+<thead>
+<tr>
+<th>Polymarket US data (as of 2026-06-20)</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Contracts ingested</td>
+<td>1,680 (<code>platform='polymarket'</code>)</td>
+</tr>
+<tr>
+<td>Cities</td>
+<td>KMDW, KNYC, KMIA, KLAX, KSFO (336 each)</td>
+</tr>
+<tr>
+<td>Price snapshot rows</td>
+<td>4,580,479</td>
+</tr>
+<tr>
+<td>Forward-snapshot history</td>
+<td><strong>13 days</strong> (2026-06-08 → 06-20), ~285/day</td>
+</tr>
+<tr>
+<td>Orderbook-depth snapshots</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>Fee/gas modeling in code</td>
+<td><strong>none</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A <code>get_candlesticks()</code> method exists (<code>POST /v1beta1/report/trades/stats</code>,
+commented "Polymarket DOES have this") but is <strong>not called by any script and is
+unverified</strong> — if real, it could backfill history faster than the 13-day forward
+crawl. The arb script (<code>cross_platform_arb.py</code>) is read-only and today found only
+<strong>one</strong> overlapping threshold (78°F) quoted on both Kalshi-KORD and Poly-KMDW,
+gap −0.5% — and those two aren't even fungible.</p>
+<h3 id="5-operational-footprint">5. Operational footprint</h3>
+<p>The box is 7.6 GB RAM, <strong>no swap</strong>, with a prior OOM that downed prod Postgres.
+ForecastEx ingestion would add one more snapshot cron (cost similar to the
+existing Kalshi/Polymarket snapshotters — modest), but each new venue stacks I/O,
+storage, and process pressure. Polymarket already adds 4.58M price rows in 13
+days; a third venue compounds that. Not a blocker, but a real reason to add
+venues <em>one at a time</em> and watch memory.</p>
+<h2 id="external-context">External Context</h2>
+<p><strong>Polymarket is now a CFTC-regulated US venue.</strong> Polymarket acquired the
+CFTC-licensed exchange/clearinghouse <strong>QCEX for $112M</strong> (closed July 21, 2025)
+[1][2]; the CFTC granted relaunch clearance on Sept 3, 2025 [3], and issued an
+<strong>Amended Order of Designation on Nov 25, 2025</strong> enabling <em>intermediated</em> US
+access through FCMs and traditional custody/reporting [4]. So US trading is now
+legal and the code already authenticates to <code>api.polymarket.us</code> /
+<code>gateway.polymarket.us</code>.</p>
+<p><strong>Polymarket fees — schedule ambiguity (flagged).</strong> The regulated US exchange is
+reported at a <strong>flat 0.30% taker / 0.20% maker rebate</strong> [5]; the <em>international</em>
+platform charges per category, with <strong>Weather at ~1.25%</strong> effective and fees
+peaking at the 50/50 price, shrinking toward the 1¢/99¢ extremes [6][7]. Which
+schedule applies to weather contracts on <code>polymarket.us</code> specifically is <strong>not
+confirmed from a primary US source</strong> — a required verification before any trade.
+Either way it is below Kalshi's 2¢ mid-range.</p>
+<p><strong>Polymarket weather liquidity is ample for our scale.</strong> Single daily-temperature
+markets for major cities clear <strong>$300k–$400k in 24h volume</strong>; ~297 active
+temperature markets; aggregate ~$1.7M [8][9]. Polymarket's own team notes weather
+liquidity is "too low for a large fund," capping the top-tier opportunity around
+<strong>$500k–$2M/yr</strong> [8] — but our 500-contract (~$250) orders are trivially absorbed,
+so liquidity is <em>not</em> a binding constraint here. Settlement is the official
+station reading [8]. Rails are pUSD/USDC on Polygon: no Polymarket deposit/
+withdraw fee for pUSD, but bridging/gas and intermediary (Coinbase/MoonPay) costs
+can apply [10] — operational friction a brokerage venue avoids.</p>
+<p><strong>IBKR ForecastEx is the strongest structural fit.</strong> ForecastEx is a
+<strong>CFTC-regulated DCM + DCO operated by IBKR</strong> [11][12]. In Nov 2025 it launched
+<strong>daily-high-temperature markets for an initial 10 US cities</strong> [11], and
+temperature is now "the most frequently traded" forecast contract [13]. Stations
+are each city's <strong>main airport</strong> (NYC = Central Park) settling on NWS Daily
+Climatological Reports, rounded to the nearest whole °F [11]; central strikes are
+seeded from the NWS National Blend of Models [11]. Fee mechanics: <strong>no IBKR
+commission</strong>; Yes + No sum to <strong>$1.01</strong>, so the exchange takes <strong>$0.01 per
+contract pair</strong> built into the spread — "the cheapest per-contract fee" among
+prediction markets, ~$10 per 1,000 contracts vs <strong>$20–$40 on Kalshi</strong> [12].
+Critically for this automated stack, ForecastEx is described as <strong>the only
+prediction-market platform offering programmatic trading through a professional
+API</strong> (TWS/Web API) [12], and is US-available, intl-not [12].</p>
+<p><strong>CME weather futures are the wrong instrument.</strong> CME lists <strong>HDD/CDD/CAT</strong>
+contracts — <em>monthly and seasonal</em> indices of how far <strong>daily-average</strong> temp
+deviates from a 65°F base, <strong>contract unit $20 × index</strong>, across 13 US cities
+[14][15]. These are aggregate temperature-risk hedges (energy/utility flow), not
+daily-high binaries. Our edge is a next-day <strong>high-temperature bracket</strong>
+probability; it does not map onto a monthly degree-day index, the contract sizes
+are large relative to $3,050 capital, and retail daily liquidity is thin despite
+CME's market-maker framing. Only relevant if the project ever pivots to monthly
+temperature exposure.</p>
+<h2 id="limitations-threats-to-validity">Limitations &amp; Threats to Validity</h2>
+<ul>
+<li><strong>Fee saving ≠ edge.</strong> The headline number (cheaper venue → less-negative P&amp;L)
+  rests on the combined-00Z gross edge being ≈ 0. If the true gross edge is
+  <em>negative</em> (ECMWF-00Z gross is worse), no fee schedule rescues it. Cheaper fees
+  are necessary-not-sufficient.</li>
+<li><strong>Polymarket US weather fee unconfirmed.</strong> The 0.30% figure is from secondary
+  reporting on the regulated exchange; the help-center per-category (1.25% wx)
+  describes the international platform. The real <code>polymarket.us</code> weather fee must
+  be read from a primary source before sizing any net-edge claim.</li>
+<li><strong>ForecastEx horizon mismatch (next-day, not same-day).</strong> Its daily-high
+  markets resolve the <em>next</em> day, so the same-day intraday information our edge is
+  built on is forfeited; the prior internal estimate is ~0.4–0.6× same-day Sharpe.
+  A like-for-like venue comparison must trade ForecastEx on the <em>previous</em> day's
+  decision, not the 14:46Z one — the paper compares fees, not yet equal horizons.</li>
+<li><strong>ForecastEx has zero internal data.</strong> No ingestion exists; its liquidity,
+  spread width, fill behavior, and strike alignment with our brackets are
+  <em>unmeasured</em>. "Cheapest fee" is worthless if spreads are wide or books are thin
+  (IBKR itself notes a "smaller retail user base").</li>
+<li><strong>Strike alignment for arb is unverified.</strong> Kalshi brackets, ForecastEx
+  NWS-seeded strikes, and Polymarket thresholds need not coincide; arb requires
+  the <em>same</em> threshold quoted on both venues simultaneously, net of <em>both</em> fees +
+  slippage. The internal arb scan already returns near-zero gaps.</li>
+<li><strong>13 days of Polymarket data, 0 depth snapshots.</strong> Far too little for a basis
+  or fill study; the candlestick backfill path is untested.</li>
+<li><strong>Live n=28 / backtest regime.</strong> Live P&amp;L is noise; the backtest is one year on
+  Kalshi-KORD/KMIA — venue-specific microstructure (ForecastEx/Polymarket) could
+  differ.</li>
+<li><strong>Config freeze (until 2026-07-10).</strong> Everything below is a backlog <em>proposal</em>,
+  not an action.</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p>Ranked, freeze-aware. None of these touch trading config; all are
+ingest/measurement/proposal steps.</p>
+<ol>
+<li><strong>ForecastEx — highest-value next step (paper/ingest pilot).</strong> Build a
+   read-only ForecastEx quote ingester (mirror the Kalshi/Polymarket snapshotters)
+   for our 5 airport-fungible cities, tagged <code>platform='forecastex'</code>. Then measure,
+   on real data, the two things that decide it: <strong>(a)</strong> does its ~1¢ flat fee move
+   any of our configs from net-negative to break-even/positive once blended
+   against the ForecastEx market price; <strong>(b)</strong> what is the live Kalshi↔ForecastEx
+   basis and spread on the fungible cities. ForecastEx's <strong>professional API +
+   half-fee + 5/6 same-station fungibility</strong> make it the most credible path to
+   attacking the fee constraint — <em>if</em> a positive gross edge exists to capture.
+   <strong>Measure on the next-day (T+1) horizon</strong>, not the same-day 14:46Z decision, so
+   the test is honest — go in expecting ~0.4–0.6× same-day Sharpe, and build live
+   only if the paper shows a positive <em>net</em> edge on that horizon.</li>
+<li><strong>Polymarket US — continue snapshotting, do not trade yet.</strong> Keep accumulating
+   (target ≥ 60–90 days + start orderbook-depth snapshots), and <strong>confirm the
+   primary <code>polymarket.us</code> weather fee</strong> before any net-edge work. Defer trading
+   until data depth and fee certainty exist; the crypto rails add friction a
+   brokerage venue avoids.</li>
+<li><strong>Cross-venue arb — opportunistic monitoring only, not a strategy.</strong> Extend the
+   arb scan to the <em>fungible</em> pairs (NYC/LA/Miami three-way; Chicago-Midway
+   FEx↔Poly) once ForecastEx is ingested. Treat any gap &gt; combined fees + slippage
+   as a rare bonus, not an EV thesis — current scans show near-zero gaps and
+   strike alignment is unproven.</li>
+<li><strong>CME weather futures — reject for this strategy.</strong> Instrument mismatch
+   (monthly degree-day index vs daily-high binary); revisit only if the project
+   pivots to monthly temperature risk.</li>
+</ol>
+<p><strong>Backlog entries appended</strong> to <code>docs/backlog.md</code> for items 1–4 (proposals, not
+actions; respect CONFIG FREEZE 2026-07-10).</p>
+<h2 id="sources">Sources</h2>
+<p>External (verified against source):
+1. PR Newswire — <em>Polymarket Acquires CFTC-Licensed Exchange and Clearinghouse QCEX for $112 Million</em>. https://www.prnewswire.com/news-releases/polymarket-acquires-cftc-licensed-exchange-and-clearinghouse-qcex-for-112-million-302509626.html
+2. Crypto Briefing — <em>Polymarket gains CFTC approval to launch regulated US prediction markets</em>. https://cryptobriefing.com/polymarket-secures-cftc-nod-us-market-qcx-llc-acquisition-2/
+3. RareEvo — <em>Polymarket Secures CFTC Approval for Regulated U.S. Relaunch</em>. https://rareevo.io/rare-network-news/polymarket-cftc-approval-us-return
+4. PR Newswire — <em>Polymarket Receives CFTC Approval of Amended Order of Designation (intermediated US access)</em>. https://www.prnewswire.com/news-releases/polymarket-receives-cftc-approval-of-amended-order-of-designation-enabling-intermediated-us-market-access-302625833.html
+5. QuantVPS — <em>Polymarket Is Back: Prediction Market Re-Enters the U.S.</em> (US exchange 0.30% taker / 0.20% maker rebate). https://www.quantvps.com/blog/polymarket-back-prediction-market-us-four-year-hiatus
+6. Polymarket Help Center — <em>Trading Fees</em> (per-category, peak at 50/50; geopolitics free). https://help.polymarket.com/en/articles/13364478-trading-fees
+7. Market Math — <em>Polymarket Fees Explained: Per-Category Trading Fees</em> (Weather 1.25%). https://marketmath.io/blog/polymarket-fees-explained
+8. Laika Labs — <em>Polymarket Weather Markets: Trading Strategies Guide 2026</em> ($300–400k/day; $500k–2M/yr cap). https://laikalabs.ai/prediction-markets/trade-polymarket-weather-markets
+9. Polymarket — <em>Weather / Temperature predictions</em> (297 active markets; ~$1.7M aggregate). https://polymarket.com/weather
+10. Polymarket Help Center — <em>Trading Fees</em> (pUSD deposit/withdraw, Polygon gas/bridging). https://help.polymarket.com/en/articles/13364478-trading-fees
+11. Interactive Brokers Campus — <em>Daily High Temperature Markets at ForecastEx</em> (10 cities, station keys, NWS settlement, NBM strikes). https://www.interactivebrokers.com/campus/traders-insight/ibkr-climate-energy/daily-high-temperature-markets-at-forecastex/
+12. Market Math — <em>ForecastEx (Interactive Brokers) Review 2026</em> (CFTC DCM/DCO; $0.01/contract; API; US-only; $10 vs $20–40/1,000 vs Kalshi). https://marketmath.io/platforms/forecastex
+13. Artemis.bm — <em>Weather the most frequently traded forecast contracts at Interactive Brokers</em>. https://www.artemis.bm/news/weather-the-most-frequently-traded-forecast-contracts-at-interactive-brokers-founder/
+14. CME Group — <em>Hedging Weather Risk / Overview of Weather Markets</em> (HDD/CDD/CAT, $20 × index, 18 cities). https://www.cmegroup.com/education/lessons/hedging-weather-risk.html
+15. CME Group — <em>Weather Futures and Options fact card</em>. https://www.cmegroup.com/trading/weather/files/weather-fact-card.pdf</p>
+<p>Internal (read-only; reproducible):
+- <code>psql -d weather</code> SELECTs: <code>contracts</code> (platform split, 1,680 Polymarket / 29,051 Kalshi), <code>prices</code> (4.58M Poly snapshot rows, 13 days), <code>live_trades</code> (28 orders, +$100.04), <code>paper_trades</code> (21,734 rows).
+- <code>uv run python scripts/analysis/cross_platform_arb.py</code> — KORD↔KMDW basis (corr 0.9978; 1.3% days ≥5°F) + today's bracket comparison.
+- Code: <code>src/weather_markets/{polymarket,stations,kalshi,kalshi_api}.py</code>; <code>scripts/{snapshot_polymarket_prices,backfill_polymarket_contracts,live_trade}.py</code> (<code>kalshi_fee_cents</code> line 325).
+- Findings: market-blend (11–43% Brier, 56–95% market weight), no-edge (n≈1007, fees binding), fill-rate (KORD 86.5% / KMIA 62.7%); <code>docs/backlog.md</code>.</p>
+<h2 id="evaluated-and-rejected">Evaluated and rejected</h2>
+<ul>
+<li><strong>CME weather futures via IBKR — rejected.</strong> Monthly/seasonal HDD/CDD/CAT index
+  ($20 × index), not daily-high binaries. Instrument and horizon mismatch; large
+  notional vs $3,050 capital; revisit only on a pivot to monthly temperature risk.</li>
+<li><strong>Treating cross-venue arb as a standalone strategy — rejected.</strong> Fungible only
+  on NYC/LA/Miami (+ Chicago-Midway FEx↔Poly); requires coincident strikes and
+  gap &gt; combined fees+slippage; internal scans show near-zero gaps. Keep as
+  opportunistic monitoring, not an EV thesis.</li>
+<li><strong>Trading Polymarket now — rejected (premature).</strong> 13 days of data, 0 depth
+  snapshots, unconfirmed US weather fee, crypto-rail friction. Continue
+  snapshotting first.</li>
+</ul>
+</main>
+</body>
+</html>

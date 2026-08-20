@@ -65,6 +65,27 @@
 # INSTALLED 2026-06-30 — read-only depth collection; revisit once ~2-3 weeks of rows accumulate.
 3-59/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python -u scripts/snapshot_polymarket_orderbook.py >> /var/log/weather/polymarket_orderbook_snapshot.log 2>&1
 
+# ForecastEx forward collector: every 10 min (their `pairs` file refreshes ~10 min).
+# PUBLIC data — no auth, no IBKR account needed: www.forecastex.com/api/download.
+# Ingests daily-high contracts + TICK-LEVEL trade prints into contracts/prices
+# with platform='forecastex' (reuses existing schema; no order book is published
+# publicly, so yes_bid/yes_ask stay NULL — depth would require the IBKR API).
+# Idempotent ON CONFLICT DO NOTHING, so re-running the same day is a no-op.
+# *** BASIS WARNING: ForecastEx settles on WEATHER UNDERGROUND's KMIA high, not
+# *** the NWS CLI high our EMOS is trained on (measured -0.71 F mean, never
+# *** above). See src/weather_markets/forecastex.py before trading/backtesting.
+# INSTALLED 2026-08-17.
+6-59/10 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_forecastex.py >> /var/log/weather/forecastex.log 2>&1
+
+# Perp funding snapshots: hourly at :04 (offset clear of the :00/:01/:02/:03 5-min
+# snapshot slots). READ-ONLY public GETs, no auth: Kalshi /margin funding history
+# (finalized 8h rates, 3-day lookback, self-healing) + Coinbase perp products
+# (current 1h funding — Coinbase has NO public history, forward-collection only).
+# Feeds perp_funding_snapshots for the s5 cross-venue funding-spread study
+# (docs/strategies/assessments/2026-08-05-s5-perp-xvenue-funding.md).
+# INSTALLED 2026-08-05 — revisit after 30-60 days of executable-pair data.
+4 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_perp_funding.py >> /var/log/weather/perp_funding_snapshot.log 2>&1
+
 # Clean up Herbie GRIB caches every hour — purge anything older than 60 min.
 # Hourly cadence (vs old daily) and short retention (vs old +3 days) are
 # required because backfills can churn through >50 GB/day per worker, faster
@@ -101,6 +122,23 @@
 # Uses 00Z ECMWF forecast (ingested at 07 UTC), trades against pre-convergence market.
 # KEPT RUNNING alongside live trading for diagnostic comparison (paper vs live divergence).
 45 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/paper_trade_log.py >> /var/log/weather/paper_trade.log 2>&1
+
+# Polymarket paper logger, ALL 5 PM weather cities (KMIA KNYC KLAX KSFO KMDW):
+# 14:46 UTC daily (1 min after the Kalshi paper log — same decision basis, PM
+# quotes from the 5-min snapshotter, <=30min fresh). PAPER ONLY, no orders.
+# Extended from Miami-only 2026-08-12 after the 4-city replay: LAX 28.1c/tr,
+# SFO 22.9, MDW 16.2, NYC 16.6 @0.25 (all positive, 06-30..08-11 window).
+# INSTALLED 2026-08-09 — per-city go/no-go on forward data after 2-4 weeks.
+46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/paper_trade_polymarket.py >> /var/log/weather/paper_trade_pm.log 2>&1
+
+# Polymarket US LIVE probe — Miami port. REAL MONEY (operator go-live decision
+# 2026-08-12, replay-validated but ahead of the 2-4wk paper window — probe size).
+# Rails: 100 contracts/signal (operator sizing 2026-08-12), max 2/day, IOC-limit
+# only (never rests; partial-fill not price-walk on thin books), $200/day spend
+# cap, cumulative kill -$300 -> writes halt/PMKMIA. touch halt/PMKMIA to stop.
+# INSTALLED 2026-08-12; first fire 2026-08-13 14:47 UTC. See
+# docs/decisions/2026-08-12-polymarket-live-probe.md for rationale + scaling ladder.
+47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
 
 # ----- LIVE TRADING (real money) -----
 # Each fires after paper trade so the cron-evaluated signals are already in paper_trades for the day.
@@ -144,12 +182,24 @@
 30 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_ecmwf_daily.py --run-hour 0 >> /var/log/weather/ecmwf_retry.log 2>&1
 30 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_hrrr_daily.py >> /var/log/weather/hrrr_retry.log 2>&1
 
-46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
+# RETIRED 2026-08-17 (docs/decisions/2026-08-17-retire-halted-cities.md) — forward-test negative on EVERY
+# config tested (raw 0.10/0.15/0.20/0.25, blend, union). halt/KORD also present.
+# 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
 # PHOENIX live trading — OPERATOR OVERRIDE (MINIMAL 50-unit, raw@0.20), 2026-07-10.
 # See docs/decisions/2026-07-10-phoenix-live-override.md. 14:52 UTC = paper-signal time; tune later.
-52 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KPHX --live >> /var/log/weather/live_trade.log 2>&1
+# RETIRED 2026-08-17 (docs/decisions/2026-08-17-retire-halted-cities.md) — union's apparent edge is
+# first-half only (+$3,055 -> -$1,700 second half). halt/KPHX also present.
+# 52 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KPHX --live >> /var/log/weather/live_trade.log 2>&1
+
+# NEW ORLEANS live trading — OPERATOR OVERRIDE (250-unit, raw@0.15), 2026-08-17.
+# See docs/decisions/2026-08-17-new-orleans-live-override.md. No capacity study yet —
+# sized at Phoenix parity (250), not the 500-unit KORD/KMIA/KDFW standard.
+# 14:58 UTC clears KPHX (14:52) and lands off the 45/50/55 monitor-loop-spawn minutes.
+# OFFBOARDED 2026-08-17 (docs/decisions/2026-08-17-miami-only-concentration.md) — never traded live.
+# Untradeable on ForecastEx (12/99 days with flow) so it can't join the two-venue Miami split.
+# 58 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMSY --live >> /var/log/weather/live_trade.log 2>&1
 
 # DALLAS live trading — OPERATOR OVERRIDE of the OOS Sharpe>2.5 deploy bar, 2026-06-22.
 # See docs/decisions/2026-06-22-dallas-live-override.md (supersedes the Dallas
@@ -171,7 +221,9 @@
 #         ELEVATED RISK: full-size live bet on a config with NO proven OOS edge. Fills covered by
 #         the existing 15-19 UTC monitor + 14:45→19:55 realtime loop + 20:00 EOD cancel.
 # Halt:   `touch halt/KDFW` (per-city) or `touch halt/ALL` (aggregate) to stop.
-32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KDFW --live >> /var/log/weather/live_trade.log 2>&1
+# RETIRED 2026-08-17 (docs/decisions/2026-08-17-retire-halted-cities.md) — raw@0.15 reverses
+# (+$1,910 -> -$1,635); union -$1,935. halt/KDFW also present.
+# 32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KDFW --live >> /var/log/weather/live_trade.log 2>&1
 
 # Fill monitor: every 30 min during the trading window, checks pending orders.
 # Does NOT cancel at this cadence — just updates fill_status as fills come in.
@@ -206,6 +258,40 @@
 # vs Kalshi. NOTE: requires scripts/snapshot_account_equity.py present in the main worktree
 # (feat/accounting-tab must be merged to main) — errors harmlessly to the log until then.
 15 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/snapshot_account_equity.py >> /var/log/weather/equity_snapshot.log 2>&1
+
+# ForecastEx backtest refresh: 05:00 UTC daily (after the collector has the prior
+# day's settled ladders). Regenerates data/forecastex_backtest.json, which the
+# dashboard's ForecastEx tab READS — the backtest is never computed in a web
+# request because it downloads settlement files. The settlement cache
+# (data/forecastex_settlements.json) persists, so each run only fetches new days.
+# INSTALLED 2026-08-17.
+0 5 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/analysis/forecastex_backtest.py --all --json >> /var/log/weather/forecastex_backtest.log 2>&1
+
+# Ops-copilot digest: 04:30 UTC daily (after reconcile 04:00 + equity snapshot
+# 04:15, so settlement + equity data for yesterday is fresh). READ-ONLY —
+# reasons over our own DB + Kalshi's read-only portfolio endpoints via the B0
+# reasoning engine (src/weather_markets/copilot/) to flag calibration drift,
+# regime shifts, execution anomalies, config drift, and data-health gaps.
+# Every item is a suggestion for the operator; this script cannot place or
+# adjust a trade. Writes a dated markdown file the dashboard "Digest" tab
+# reads (the dashboard never calls the LLM itself). Calls the real Claude API
+# (small bounded cost/day) — use --no-kalshi to skip the live settlements
+# pull, or run manually first to see a sample before installing this line.
+# NOT INSTALLED — add here, then `crontab docs/crontab.txt`, per repo convention.
+# 30 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ops_digest.py --out docs/digests/$(date -u +\%F)-ops-digest.md >> /var/log/weather/ops_digest.log 2>&1
+
+# Agent-advisor PAPER burn-in (experiment — docs/decisions/2026-07-22-agent-advisor-experiment.md).
+# Logs paired [AB-BASE]/[AB-AGENT] rows to paper_trades a few minutes after each
+# city's live decision time (signal cutoff is pinned to CITY_CONFIG's decision
+# time, so a later run sees identical inputs). NO orders — paper only. Calls the
+# real Claude API (~6 bounded calls/city/day). Kill switch: `touch halt/AGENT`.
+# Offsets chosen to clear the :45-:52 cron pile-up (OOM hygiene, no-swap box).
+# NOT INSTALLED — run one city manually first (--dry-run), then uncomment and
+# `crontab docs/crontab.txt`, per repo convention.
+# 56 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/agent_advisor_log.py --city KORD >> /var/log/weather/agent_advisor.log 2>&1
+# 4 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/agent_advisor_log.py --city KPHX >> /var/log/weather/agent_advisor.log 2>&1
+# 38 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/agent_advisor_log.py --city KMIA >> /var/log/weather/agent_advisor.log 2>&1
+# 40 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/agent_advisor_log.py --city KDFW >> /var/log/weather/agent_advisor.log 2>&1
 
 # Pipeline health check: 16:00 UTC daily (75 min after paper-trade cron).
 # Alerts on silent failures that would cost data-accumulation days.

@@ -70,13 +70,14 @@ STATIONS: dict[str, Station] = {
         timezone="America/Chicago",
         tz_abbr="CT",
     ),
-    # KSFO = San Francisco — Polymarket has weather markets here, Kalshi doesn't (yet)
+    # KSFO = San Francisco — Kalshi now lists KXHIGHTSFO (added as a paper candidate
+    # 2026-07-29; paper-logging only, not in the live universe).
     "KSFO": Station(
         station_id="KSFO",
         city="San Francisco",
         latitude=37.62,
         longitude=-122.37,
-        kalshi_series="",
+        kalshi_series="KXHIGHTSFO",
         kalshi_series_low="",
         timezone="America/Los_Angeles",
         tz_abbr="PT",
