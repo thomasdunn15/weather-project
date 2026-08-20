@@ -169,3 +169,114 @@ def implied_settlement_highs(price_rows: list[dict], file_day: date,
             continue  # incomplete or non-monotonic ladder -> unusable
         out[event] = int(min(no))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Signal primitives shared by the backtest sweep and the live trader.
+#
+# These live here, not in either caller, because a live path and a backtest that
+# each keep their own copy of the blend fit drift apart silently — and the first
+# symptom is live trades that do not match anything you validated.
+# ---------------------------------------------------------------------------
+import math as _math
+import statistics as _stats
+from datetime import date as _date
+
+FEE_CENTS_PER_CONTRACT = 1.0        # ForecastEx: flat $0.01/contract/side
+
+
+def norm_sf(x: float) -> float:
+    """P(Z > x) for a standard normal."""
+    return 0.5 * _math.erfc(x / _math.sqrt(2.0))
+
+
+def prob_above(strike: float, mu: float, sigma: float) -> float:
+    """P(high > strike). The +0.5 is the integer-rounding correction: a reported
+    high of 81 means the true high fell in [80.5, 81.5)."""
+    return norm_sf((strike + 0.5 - mu) / sigma)
+
+
+def clip(p: float) -> float:
+    return min(max(p, 1e-6), 1 - 1e-6)
+
+
+def logit(p: float) -> float:
+    c = clip(p)
+    return _math.log(c / (1 - c))
+
+
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + _math.exp(-max(-500.0, min(500.0, x))))
+
+
+def rolling_offset(day: _date, settled: dict, model_mu: dict,
+                   window: int = 45, min_n: int = 10) -> float | None:
+    """Mean (ForecastEx settled high - our model mu) over recent settled days.
+
+    ForecastEx settles on Weather Underground, not the NWS CLI our models are
+    trained against, and that gap is constant in shape but NOT stationary — so a
+    fixed offset over-corrects cities that drift. Uses only days strictly before
+    `day`, since settlement is not known until the next morning.
+    """
+    past = [settled[d] - model_mu[d] for d in settled
+            if d in model_mu and d < day and (day - d).days <= window]
+    return _stats.mean(past) if len(past) >= min_n else None
+
+
+def _solve3(A, b):
+    """Gaussian elimination for the 3x3 Newton step."""
+    M = [row[:] + [bi] for row, bi in zip(A, b)]
+    for i in range(3):
+        piv = max(range(i, 3), key=lambda r: abs(M[r][i]))
+        if abs(M[piv][i]) < 1e-12:
+            raise ZeroDivisionError("singular normal matrix")
+        M[i], M[piv] = M[piv], M[i]
+        for r in range(3):
+            if r == i:
+                continue
+            f = M[r][i] / M[i][i]
+            for c in range(i, 4):
+                M[r][c] -= f * M[i][c]
+    return [M[i][3] / M[i][i] for i in range(3)]
+
+
+def fit_blend(history: list[tuple], min_obs: int = 60) -> tuple | None:
+    """Benter-style logit blend: logit(y) ~ a + b*logit(p_model) + c*logit(p_market).
+
+    `history` is [(p_model, p_market, won_yes), ...] and must contain only
+    observations from BEFORE the day being scored — this function does not
+    enforce that, callers do.
+
+    Returns None below `min_obs`. A blend fit on thin history is just a noisier
+    copy of the model, and letting it trade anyway is how a 'blend' strategy
+    posts good backtest numbers without meaning anything.
+    """
+    if len(history) < min_obs:
+        return None
+    X = [(1.0, logit(pm), logit(pk)) for pm, pk, _ in history]
+    y = [float(o) for _, _, o in history]
+    beta = [0.0, 1.0, 0.0]
+    for _ in range(25):
+        g = [0.0] * 3
+        H = [[0.0] * 3 for _ in range(3)]
+        for xi, yi in zip(X, y):
+            p = sigmoid(sum(b * x for b, x in zip(beta, xi)))
+            w = max(p * (1 - p), 1e-9)
+            for a in range(3):
+                g[a] += (yi - p) * xi[a]
+                for b_ in range(3):
+                    H[a][b_] += w * xi[a] * xi[b_]
+        for a in range(3):          # ridge: p_model and p_market are collinear
+            H[a][a] += 1e-4
+        try:
+            step = _solve3(H, g)
+        except ZeroDivisionError:
+            return None
+        beta = [b + s for b, s in zip(beta, step)]
+        if max(abs(s) for s in step) < 1e-7:
+            break
+    return tuple(beta)
+
+
+def blend_prob(fit: tuple, p_model: float, p_market: float) -> float:
+    return sigmoid(fit[0] + fit[1] * logit(p_model) + fit[2] * logit(p_market))

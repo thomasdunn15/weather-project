@@ -39,7 +39,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from weather_markets.db import get_connection
-from weather_markets.forecastex import PRODUCT_TO_STATION
+from weather_markets.forecastex import (PRODUCT_TO_STATION, blend_prob,
+                                        fit_blend, prob_above)
 
 _REPO = Path(__file__).resolve().parents[2]
 SETTLE_CACHE = _REPO / "data" / "forecastex_settlements.json"
@@ -60,10 +61,6 @@ THRESHOLDS = (0.10, 0.15, 0.20, 0.25)
 MIN_ENTRY = (0, 10, 20, 30)
 MAX_PICKS = (1, 2, 3)
 
-norm_sf = lambda x: 0.5 * math.erfc(x / math.sqrt(2.0))
-_clip = lambda p: min(max(p, 1e-6), 1 - 1e-6)
-_logit = lambda p: math.log(_clip(p) / (1 - _clip(p)))
-_sig = lambda x: 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, x))))
 
 
 def load_city(conn, station: str):
@@ -98,54 +95,8 @@ def load_city(conn, station: str):
     return model, settle, byd
 
 
-def fit_blend(hist: list[tuple]) -> tuple[float, float, float] | None:
-    """Newton-fit logit(y) ~ a + b*logit(p_model) + c*logit(p_market).
-
-    Returns None below 60 observations — a blend fit on thin history is just a
-    noisier copy of the model, and pretending otherwise is how a 'blend' variant
-    wins a sweep without meaning anything.
-    """
-    if len(hist) < 60:
-        return None
-    X = [(1.0, _logit(pm), _logit(pk)) for pm, pk, _ in hist]
-    y = [float(o) for _, _, o in hist]
-    beta = [0.0, 1.0, 0.0]
-    for _ in range(25):
-        g = [0.0] * 3
-        H = [[0.0] * 3 for _ in range(3)]
-        for xi, yi in zip(X, y):
-            p = _sig(sum(b * x for b, x in zip(beta, xi)))
-            w = max(p * (1 - p), 1e-9)
-            for a in range(3):
-                g[a] += (yi - p) * xi[a]
-                for b_ in range(3):
-                    H[a][b_] += w * xi[a] * xi[b_]
-        for a in range(3):                       # ridge: these inputs are collinear
-            H[a][a] += 1e-4
-        try:
-            step = _solve3(H, g)
-        except ZeroDivisionError:
-            return None
-        beta = [b + s for b, s in zip(beta, step)]
-        if max(abs(s) for s in step) < 1e-7:
-            break
-    return tuple(beta)
 
 
-def _solve3(A, b):
-    M = [row[:] + [bi] for row, bi in zip(A, b)]
-    for i in range(3):
-        piv = max(range(i, 3), key=lambda r: abs(M[r][i]))
-        if abs(M[piv][i]) < 1e-12:
-            raise ZeroDivisionError
-        M[i], M[piv] = M[piv], M[i]
-        for r in range(3):
-            if r == i:
-                continue
-            f = M[r][i] / M[i][i]
-            for c in range(i, 4):
-                M[r][c] -= f * M[i][c]
-    return [M[i][3] / M[i][i] for i in range(3)]
 
 
 def replay(model, settle, byd, spread_c: float):
@@ -173,12 +124,11 @@ def replay(model, settle, byd, spread_c: float):
         for tk, strike, px in byd.get(d, []):
             if not 5 <= px <= 95:
                 continue
-            p_model = norm_sf((strike + 0.5 - mu) / sg)
+            p_model = prob_above(strike, mu, sg)
             p_mkt = px / 100.0
             won_yes = high > strike
             hist.append((p_model, p_mkt, won_yes))
-            p_bl = (_sig(fit[0] + fit[1] * _logit(p_model) + fit[2] * _logit(p_mkt))
-                    if fit else None)
+            p_bl = blend_prob(fit, p_model, p_mkt) if fit else None
             cands.append({"px": px, "p_model": p_model, "p_blend": p_bl,
                           "won_yes": won_yes})
         if d >= half and cands:
