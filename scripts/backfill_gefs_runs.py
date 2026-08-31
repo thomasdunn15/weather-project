@@ -15,19 +15,31 @@ from weather_markets.db import get_connection
 GEFS_EXPECTED_MEMBERS = 31
 
 
-def _already_complete(conn, station_id: str, run_time: datetime) -> bool:
-    """True if this (station, init_time) already has the full GEFS ensemble in
-    the DB — lets the backfill skip it WITHOUT downloading anything. Gaps are
-    scattered, so a full-range pass that skips present dates is both complete
-    and fast (the original full-range pass wasted hours re-downloading present
-    dates)."""
+def _already_complete(conn, station_id: str, run_time: datetime,
+                      forecast_hours: list[int]) -> bool:
+    """True if this (station, init_time) already has the full GEFS ensemble at
+    EVERY REQUESTED forecast hour — lets the backfill skip it WITHOUT
+    downloading anything. Gaps are scattered, so a full-range pass that skips
+    present dates is both complete and fast (the original full-range pass
+    wasted hours re-downloading present dates).
+
+    The forecast-hour term is NOT optional, though it was missing until
+    2026-08-24. The daily cron stores fxx 3-24 only, so a member-count check
+    that ignored the hours reported "complete" for every date, and a run with
+    --forecast-hours 30,33,36 skipped all 171 days and downloaded nothing while
+    printing success. That is exactly how the Miami day-ahead-lows backfill
+    would have silently produced no data.
+    """
+    wanted = [run_time + timedelta(hours=h) for h in forecast_hours]
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT COUNT(DISTINCT member_id) FROM forecasts "
-            "WHERE station_id=%s AND model='gefs' AND init_time=%s",
-            (station_id, run_time),
+            "SELECT valid_time, COUNT(DISTINCT member_id) FROM forecasts "
+            "WHERE station_id=%s AND model='gefs' AND init_time=%s "
+            "AND valid_time = ANY(%s) GROUP BY valid_time",
+            (station_id, run_time, wanted),
         )
-        return cur.fetchone()[0] >= GEFS_EXPECTED_MEMBERS
+        have = dict(cur.fetchall())
+    return all(have.get(vt, 0) >= GEFS_EXPECTED_MEMBERS for vt in wanted)
 
 
 # Forecast hours per init hour, chosen to cover NYC afternoon peak (~18-22 UTC).
@@ -76,7 +88,7 @@ def main() -> None:
             current.year, current.month, current.day,
             args.run_hour, 0, tzinfo=timezone.utc,
         )
-        if _already_complete(skip_conn, args.station, run_time):
+        if _already_complete(skip_conn, args.station, run_time, forecast_hours):
             print(f"=== {run_time.isoformat()} === SKIP (already complete)", flush=True)
             skipped += 1
             current += timedelta(days=1)

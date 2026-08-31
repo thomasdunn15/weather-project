@@ -15,16 +15,29 @@ from weather_markets.db import get_connection
 IFS_EXPECTED_MEMBERS = 50
 
 
-def _already_complete(conn, station_id: str, run_time: datetime) -> bool:
-    """True if this (station, init_time) already has the full IFS ensemble in
-    the DB — skip without downloading. See backfill_gefs_runs for rationale."""
+def _already_complete(conn, station_id: str, run_time: datetime,
+                      forecast_hours: list[int], need_instantaneous: bool) -> bool:
+    """True if this (station, init_time) already has the full IFS ensemble at
+    EVERY REQUESTED forecast hour — skip without downloading. See
+    backfill_gefs_runs for rationale and for the 2026-08-24 bug this fixes.
+
+    need_instantaneous additionally requires temperature_f to be present, not
+    just a row: the daily cron persists tmax_f only, so rows can exist at the
+    right hour and still be useless to compute_daily_lows, which reads
+    temperature_f. Without this term a --use-instantaneous backfill skips dates
+    whose rows cannot answer the question it is being run to answer.
+    """
+    wanted = [run_time + timedelta(hours=h) for h in forecast_hours]
+    col = "temperature_f" if need_instantaneous else "tmax_f"
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT COUNT(DISTINCT member_id) FROM forecasts "
-            "WHERE station_id=%s AND model='ifs' AND init_time=%s",
-            (station_id, run_time),
+            f"SELECT valid_time, COUNT(DISTINCT member_id) FROM forecasts "
+            f"WHERE station_id=%s AND model='ifs' AND init_time=%s "
+            f"AND valid_time = ANY(%s) AND {col} IS NOT NULL GROUP BY valid_time",
+            (station_id, run_time, wanted),
         )
-        return cur.fetchone()[0] >= IFS_EXPECTED_MEMBERS
+        have = dict(cur.fetchall())
+    return all(have.get(vt, 0) >= IFS_EXPECTED_MEMBERS for vt in wanted)
 
 
 FORECAST_HOURS_BY_RUN_HOUR = {
@@ -74,7 +87,8 @@ def main() -> None:
             current.year, current.month, current.day,
             args.run_hour, 0, tzinfo=timezone.utc,
         )
-        if _already_complete(skip_conn, args.station, run_time):
+        if _already_complete(skip_conn, args.station, run_time,
+                             forecast_hours, args.use_instantaneous):
             print(f"=== {run_time.isoformat()} === SKIP (already complete)", flush=True)
             skipped += 1
             current += timedelta(days=1)
