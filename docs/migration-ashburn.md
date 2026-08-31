@@ -125,6 +125,20 @@ this is the step most likely to bite.
 
 Do NOT copy `.venv` (618 MB, rebuilt by `uv sync`).
 
+**`data/` IS GITIGNORED AND MUST BE COPIED BY HAND (3.4 MB).** Missed on the
+first pass, and it took the ForecastEx/Robinhood tab down with a 500 on
+2026-08-31 — a fresh clone has no `data/` directory at all:
+
+    rsync -av data/ newhost:~/weather-project/data/
+
+`forecastex_spread.json` and `forecastex_settlements.json` are read by
+`live_trade_forecastex.py` itself, so this is a CUTOVER blocker for that city,
+not just a dashboard nicety. `forecastex_settlements.json` also stops the 05:00
+backtest cron re-downloading every settled ladder from scratch.
+
+`~/data/{gefs,ifs,hrrr,aifs}` (312 MB) is a separate GRIB download cache outside
+the repo. It rebuilds on demand — leave it.
+
 ## Phase 6 — Services as systemd, not tmux (1 h)
 
 Three services currently run in hand-started tmux sessions. They die on reboot

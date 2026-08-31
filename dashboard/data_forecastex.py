@@ -244,14 +244,17 @@ def _trading(conn, capacity: list[dict]) -> dict:
     """
     import sys
     sys.path.insert(0, str(_REPO / "scripts"))
+    # data/ is gitignored, so a fresh clone has neither the spread table nor the
+    # settlement cache and this whole block is unrunnable. Degrade the panel
+    # instead of 500-ing the tab — that is exactly how the Ashburn box failed on
+    # 2026-08-31, taking the working collector and backtest panels down with it.
     try:
         import live_trade_forecastex as fx
-    except Exception as e:                      # never let the tab die on this
+        today = datetime.now(timezone.utc).date()
+        spreads = {c["station"]: c["median_c"]
+                   for c in json.loads(fx.SPREAD_JSON.read_text())["cities"]}
+    except Exception as e:
         return {"available": False, "error": f"{type(e).__name__}: {e}"}
-
-    today = datetime.now(timezone.utc).date()
-    spreads = {c["station"]: c["median_c"]
-               for c in json.loads(fx.SPREAD_JSON.read_text())["cities"]}
     cap_by_code = {c["code"]: c["suggested"] for c in capacity}
 
     cities = []
