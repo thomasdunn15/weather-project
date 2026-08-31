@@ -1851,13 +1851,13 @@ function fxSelectCity(code) {
 
 async function loadForecastEx() {
   const root = document.getElementById("forecastex-root");
-  if (!FX_DATA) root.innerHTML = `<div class="wrap"><div class="loading">Loading ForecastEx…</div></div>`;
+  if (!FX_DATA) root.innerHTML = `<div class="wrap"><div class="loading">Loading Robinhood…</div></div>`;
   try {
     const r = await fetch("/api/forecastex");
     FX_DATA = await r.json();
     renderForecastEx();
   } catch (e) {
-    root.innerHTML = `<div class="wrap"><div class="loading">Failed to load ForecastEx: ${esc(String(e))}</div></div>`;
+    root.innerHTML = `<div class="wrap"><div class="loading">Failed to load Robinhood: ${esc(String(e))}</div></div>`;
   }
 }
 
@@ -1935,9 +1935,139 @@ function fxDeepDive(bt) {
     `Nine cities were screened, so a family-wise 5% bar is ≈2.9, not 2.0.</div></div>`;
 }
 
+// ====================================================================
+// ROBINHOOD TAB — the manual-entry surface.
+// Robinhood Derivatives routes weather event contracts to ForecastEX, so every
+// number here comes from our own ForecastEx collector (verified tick-for-tick
+// on 2026-08-31). Robinhood's web pages are VIEW-ONLY — the order itself is
+// typed into the phone app, which is why the ticket below is sized to be read
+// across a desk.
+// ====================================================================
+const RH_RAMP = ["var(--cold)", "var(--cool)", "var(--temperate)", "var(--warm)", "var(--hot)", "var(--extreme)"];
+
+// Decision time is a wall-clock UTC instant on the event date; the strategy was
+// validated at that instant, so the tab says plainly whether it has passed.
+function rhWhen(dateStr, hhmm) {
+  if (!dateStr || !hhmm) return { text: "–", cls: "muted" };
+  const [h, m] = hhmm.split(":").map(Number);
+  const at = new Date(`${dateStr}T00:00:00Z`);
+  at.setUTCHours(h, m, 0, 0);
+  const mins = Math.round((at - new Date()) / 60000);
+  const local = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const span = (v) => v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m` : `${v}m`;
+  if (mins > 0) return { text: `${local} local · in ${span(mins)}`, cls: "pos" };
+  return { text: `${local} local · ${span(-mins)} ago`, cls: "muted" };
+}
+
+function rhPick(p, city) {
+  const side = p.side === "yes" ? "YES" : "NO";
+  // The Robinhood app quotes each rung from the YES side, so a NO limit of 28c
+  // is entered against a YES book showing 72c. Print both to kill that mistake.
+  const otherSide = 100 - p.limit;
+  const drift = p.drift == null ? "" :
+    ` · <span class="${p.drift >= 0 ? "pos" : "neg"}">${p.drift >= 0 ? "+" : "−"}${Math.abs(p.drift)}¢</span> since`;
+  // The market has repriced materially since the decision snapshot; the edge
+  // the size was computed from is not the edge on offer now.
+  const moved = p.drift != null && Math.abs(p.drift) >= 10;
+  return `<div class="rh-card${moved ? " moved" : ""}">
+    <div class="rh-head">
+      <span class="rh-strike">&gt; ${p.strike}°F</span>
+      <span class="rh-side ${p.side}">BUY ${side}</span>
+      <span class="tag-pill">${esc(p.ticker)}</span>
+    </div>
+    <div class="rh-order"><b>${p.contracts.toLocaleString()}</b> contracts &nbsp;·&nbsp; limit <b>${p.limit}¢</b>
+      <span style="color:var(--text-lo);font-size:12px">(${side} side; the YES quote reads ${side === "NO" ? otherSide : p.limit}¢)</span></div>
+    <div class="rh-meta">
+      cost <b style="color:var(--text-mid)">$${p.costUsd.toFixed(2)}</b> · max loss $${p.maxLossUsd.toFixed(2)} · max win $${p.maxWinUsd.toFixed(2)} · fee $${p.feeUsd.toFixed(2)}<br>
+      model ${(p.pModel * 100).toFixed(0)}% · market implies ${p.lastPx}% &nbsp;${edgeCell(p.edge)}<br>
+      decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}
+      <span style="color:var(--text-faint)">${p.currentAt ? esc(p.currentAt.slice(11, 16)) + "Z" : ""}</span>
+    </div>
+    ${city.rhUrl ? `<a class="rh-btn" href="${esc(city.rhUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(city.name)} on Robinhood ↗</a>` : ""}
+  </div>`;
+}
+
+// Same six-column .rung grid as the Kalshi bracket ladder, so no new CSS: the
+// last column carries the CURRENT price instead of a resolution.
+function rhLadder(city) {
+  const rows = (city.ladder || []);
+  if (!rows.length) return "";
+  const lo = rows[0].strike, span = (rows[rows.length - 1].strike - lo) || 1;
+  const body = [...rows].reverse().map((r, k) => {
+    const tc = RH_RAMP[Math.round(((r.strike - lo) / span) * (RH_RAMP.length - 1))];
+    const fires = Math.abs(r.edge) >= city.edgeThreshold;
+    const fill = Math.max(0, Math.min(100, r.pModel * 100));
+    const mkt = Math.max(0, Math.min(100, r.decisionPx));
+    const sig = r.pick
+      ? `<span class="side ${r.pick}">BUY ${r.pick.toUpperCase()}</span>`
+      : fires ? `<span class="muted" title="clears the edge threshold but was filtered: price outside 5–95¢, entry under the city minimum, or ranked below the day's max picks">filtered</span>` : `<span class="muted">—</span>`;
+    const moved = r.currentPx != null && r.currentPx !== r.decisionPx;
+    return `<div class="rung${r.pick ? " fires" : ""}" style="--tc:${tc};--ri:${k}">
+      <div class="rung-label"><span class="rung-dot"></span>&gt; ${r.strike}°F</div>
+      <div class="rung-track" title="model ${fill.toFixed(0)}% · market ${mkt}%"><div class="rung-fill" style="width:${fill.toFixed(1)}%"></div><div class="rung-mkt" style="left:${mkt}%"></div></div>
+      <div class="rung-prob">${fill.toFixed(0)}%</div>
+      <div class="rung-edge">${edgeCell(r.edge)}</div>
+      <div class="rung-sig">${sig}</div>
+      <div class="rung-res" style="font:600 12px/1 var(--mono);color:${moved ? "var(--text-hi)" : "var(--text-lo)"}">${r.currentPx == null ? "–" : r.currentPx + "¢"}</div>
+    </div>`;
+  }).join("");
+  return `<div class="ladder">
+    <div class="rung rung-head"><div class="rung-label">Threshold</div><div class="rung-track-h">model P · ▮ market at decision</div><div class="rung-prob">P</div><div class="rung-edge">Edge</div><div class="rung-sig">Signal</div><div class="rung-res">Now</div></div>
+    ${body}</div>`;
+}
+
+function rhToday(tr) {
+  if (!tr || !tr.available) {
+    return `<div class="panel"><div class="panel-h"><h3>Today's trades</h3><span class="meta">unavailable</span></div>` +
+      `<div style="padding:14px 28px 22px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">${esc((tr && tr.error) || "no payload")}</div></div>`;
+  }
+  const cards = (tr.cities || []).map(c => {
+    const when = rhWhen(tr.date, c.decisionUtc);
+    const head = `<div class="panel-h"><h3>${esc(c.name)} — daily high</h3>` +
+      `<span class="meta">${esc(c.product)} · decision ${esc(c.decisionUtc)}Z · <span class="rh-when ${when.cls}">${esc(when.text)}</span>` +
+      `${c.mu != null ? ` · model ${c.mu.toFixed(1)}°F ±${c.sigma.toFixed(2)} (basis ${c.offset >= 0 ? "+" : "−"}${Math.abs(c.offset).toFixed(2)})` : ""}</span></div>`;
+    const warn = c.warning
+      ? `<div style="padding:10px 28px 0"><span class="pill-status halt">HEADS UP</span> <span style="color:var(--text-lo);font-size:12px">${esc(c.warning)}</span></div>` : "";
+    const body = c.picks.length
+      ? `<div style="padding:14px 28px 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
+      : `<div style="padding:16px 28px 6px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">` +
+        `No trade — nothing cleared the ${(c.edgeThreshold * 100).toFixed(0)}% edge threshold. ${esc(c.note || "")}` +
+        `${c.rhUrl ? `<br><a class="rh-btn" style="margin-top:12px" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">View ${esc(c.name)} on Robinhood ↗</a>` : ""}</div>`;
+    const foot = `<div style="padding:10px 28px 16px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
+      `Size = ${tr.maxContracts} contracts/day split evenly, then capped at this city's measured capacity ` +
+      `(${c.capacity == null ? "unknown" : c.capacity.toLocaleString()}). Limit sits half the measured spread ` +
+      `(${c.spreadCents == null ? "–" : c.spreadCents.toFixed(2) + "¢"}) inside the last print — it is a POST, so it may not fill.</div>`;
+    return `<div class="panel">${head}${warn}${body}${foot}${rhLadder(c)}</div>`;
+  }).join("");
+
+  const hoursPanel =
+    `<div class="panel"><div class="panel-h"><h3>Placing the order</h3>` +
+    `<span class="meta">web is view-only · trade in the Robinhood app</span></div>` +
+    `<div style="padding:14px 28px 20px;font-size:12.5px;color:var(--text-lo);line-height:1.75">` +
+    `<b style="color:var(--text-mid)">Trading hours:</b> ${esc(tr.tradingHours)}.<br>` +
+    `<b style="color:var(--text-mid)">Settlement:</b> Weather Underground's station high — the same source ForecastEx uses, ` +
+    `and <i>not</i> the NWS CLI report Kalshi settles on.<br>` +
+    `<b style="color:var(--text-mid)">Fee assumption:</b> ${tr.feeCents.toFixed(0)}¢/contract/side, taken from ForecastEx's schedule. ` +
+    `Robinhood may add its own — check a settled statement and correct FEE_CENTS_PER_CONTRACT if it differs.<br>` +
+    `<b style="color:var(--text-mid)">Order type:</b> resting limit. The backtest's edge assumes posting, not crossing; ` +
+    `paying the spread costs roughly a third of the measured t-stat.</div></div>`;
+
+  const b = FX_DATA.broker || {};
+  const brokerPanel =
+    `<div class="panel"><div class="panel-h"><h3>Account</h3>` +
+    `<span class="pill-status halt">NOT LINKED</span></div>` +
+    `<div style="padding:14px 28px 8px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
+    `Bankroll (entered by hand): <b>$${tr.bankroll.toLocaleString(undefined, { minimumFractionDigits: 2 })}</b><br>` +
+    `Day's budget: <b>${tr.maxContracts}</b> contracts</div>` +
+    `<div style="padding:4px 28px 20px;font-size:12.5px;color:var(--text-lo);line-height:1.65">` +
+    `<b style="color:var(--text-mid)">${esc(b.headline || "")}</b> ${esc(b.detail || "")}</div></div>`;
+
+  return cards + `<div class="grid g-2">${hoursPanel}${brokerPanel}</div>`;
+}
+
 function renderForecastEx() {
   const root = document.getElementById("forecastex-root");
-  if (!FX_DATA) { root.innerHTML = `<div class="wrap"><div class="loading">Loading ForecastEx…</div></div>`; return; }
+  if (!FX_DATA) { root.innerHTML = `<div class="wrap"><div class="loading">Loading Robinhood…</div></div>`; return; }
   const col = FX_DATA.collector, bt = FX_DATA.backtest, basis = FX_DATA.basis;
 
   // --- collector health -----------------------------------------------------
@@ -1950,7 +2080,7 @@ function renderForecastEx() {
     `<span class="meta">${pill} · no auth / no IBKR needed · every 10 min · ${col.cities} mapped cities</span></div>` +
     `<div style="padding:14px 28px 20px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
     `Ticks last 24h: <b>${col.ticks24h.toLocaleString()}</b><br>` +
-    `Contracts tracked: <b>${col.contracts.toLocaleString()}</b> · price rows <b>${col.priceRows.toLocaleString()}</b><br>` +
+    `Contracts tracked: <b>${col.contracts.toLocaleString()}</b><br>` +
     `Coverage: <b>${esc(col.firstDay || "–")}</b> → <b>${esc(col.lastDay || "–")}</b><br>` +
     `<span style="color:var(--text-lo);font-size:11.5px">Last tick ${esc(col.lastTickAt || "–")}</span></div></div>`;
 
@@ -2022,6 +2152,7 @@ function renderForecastEx() {
   const deepPanel = bt.available ? fxDeepDive(bt) : "";
 
   root.innerHTML = `<div class="wrap"><div class="grid" style="gap:14px">` +
+    rhToday(FX_DATA.trading) +
     `<div class="grid g-2">${collectorPanel}${basisPanel}</div>` +
     `${btPanel}${deepPanel}${liqPanel}</div></div>`;
 }

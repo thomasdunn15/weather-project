@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from weather_markets.db import get_connection
-from weather_markets.forecastex import PRODUCT_TO_STATION
+from weather_markets.forecastex import FEE_CENTS_PER_CONTRACT as FEE_CENTS, PRODUCT_TO_STATION
 
 _REPO = Path(__file__).resolve().parents[1]
 BACKTEST_JSON = _REPO / "data" / "forecastex_backtest.json"
@@ -35,12 +35,25 @@ DECISION_UTC = {"KMIA": (15, 30), "KMSY": (14, 58), "KDFW": (17, 32), "KPHX": (1
 
 
 def _collector(conn) -> dict:
+    """Feed health. Every query here is bounded to RECENTLY LISTED contracts.
+
+    The all-time form of this panel cost 9.7s per call and was the whole reason
+    the tab felt broken: `prices` is a 20 GB hypertable, and joining it against
+    20k forecastex tickers defeats both chunk exclusion and
+    idx_prices_ticker_snapshot, so the planner seq-scans every chunk. Restricting
+    to contracts listed in the last 3 days puts it back on the index — 61 ms,
+    identical answer (measured 2026-08-31). "Is the collector alive" was always a
+    recent-window question. The all-time price-row count was dropped with it: it
+    was decorative, and it was the other half of the same scan.
+    """
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT max(p.snapshot_at), count(*)
-            FROM prices p JOIN contracts c ON c.ticker = p.ticker
-            WHERE c.platform = 'forecastex'""")
-        last_tick, rows = cur.fetchone()
+            SELECT max(p.snapshot_at) FROM prices p
+            WHERE p.ticker IN (SELECT ticker FROM contracts
+                               WHERE platform='forecastex'
+                                 AND target_date >= CURRENT_DATE - 3)
+              AND p.snapshot_at >= now() - interval '3 days'""")
+        last_tick = cur.fetchone()[0]
         cur.execute("""
             SELECT count(DISTINCT ticker), min(target_date), max(target_date)
             FROM contracts WHERE platform = 'forecastex'""")
@@ -55,7 +68,6 @@ def _collector(conn) -> dict:
     return {
         "lastTickAt": last_tick.isoformat() if last_tick else None,
         "staleMinutes": stale_min,
-        "priceRows": int(rows or 0),
         "contracts": int(n_contracts or 0),
         "ticks24h": int(ticks_24h or 0),
         "firstDay": first_day.isoformat() if first_day else None,
@@ -144,16 +156,206 @@ BASIS_NOTE = {
 }
 
 
+# --- Robinhood: today's actionable picks --------------------------------------
+# Robinhood Derivatives routes its weather event contracts to ForecastEX, so the
+# ladder on robinhood.com IS the ladder this repo already collects from
+# forecastex.com — same >X strikes, same Weather Underground settlement. Prices
+# were verified tick-for-tick against our own collector on 2026-08-31. That is
+# why this module keeps its ForecastEx name while the tab is called Robinhood:
+# ForecastEx is the exchange, Robinhood is only the broker we place through.
+
+# Cities offered here. Deliberately NOT every configured city:
+#   - KDFW uses the `blend` strategy, whose walk-forward fit takes ~10s cold —
+#     far too slow for a web request, and its traded-strike capacity is 0.
+#   - Everything else in CITY_CONFIG is `raw` and costs <0.3s.
+ROBINHOOD_CITIES = ("KLAX", "KMIA")
+
+# No API exists for Robinhood event contracts (see BROKER below), so the account
+# size cannot be read and is stated here. $2,500 as of 2026-08-31.
+ROBINHOOD_BANKROLL = 2500.0
+# Ruin analysis 2026-08-31: at this bankroll 1,300 contracts/day carries a ~92%
+# probability of ruin over a season; 200 is the size that survives the drawdown
+# the LAX Sharpe CI [0.90, 8.12] admits. Split evenly across the day's picks,
+# mirroring budget_counts()'s even-split choice.
+MAX_CONTRACTS_PER_DAY = 200
+
+RH_CITY_SLUG = {"KLAX": "los-angeles", "KMIA": "miami", "KDFW": "dallas",
+                "KSFO": "san-francisco", "KMDW": "chicago", "KAUS": "austin",
+                "KPHX": "phoenix", "KSEA": "seattle", "KLAS": "las-vegas",
+                "KMSY": "new-orleans"}
+
+# Built by hand rather than strftime("%B"): %B is locale-dependent, and a locale
+# surprise here would silently emit a 404 link instead of failing loudly.
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december")
+
+# Robinhood's weather markets are view-only on the web and tradeable only in the
+# mobile app, so this link is for checking the book, not for placing the order.
+def rh_url(station: str, d) -> str | None:
+    """Deep link to the Robinhood event page for one city-day.
+
+    Slug verified 2026-08-31 across LA/Miami/Chicago/Dallas/SF. Note the two
+    date halves are formatted DIFFERENTLY — the long half does not zero-pad the
+    day (`september-1-2026`) while the short half does (`sep-01-2026`). The
+    zero-padded long form 404s.
+    """
+    slug = RH_CITY_SLUG.get(station)
+    if not slug:
+        return None
+    mon = _MONTHS[d.month - 1]
+    return ("https://robinhood.com/us/en/prediction-markets/climate/events/"
+            f"{slug}-daily-temperature-high-{mon}-{d.day}-{d.year}"
+            f"-{mon[:3]}-{d.day:02d}-{d.year}/")
+
+
+BROKER = {
+    "connected": False,
+    "headline": "Balance and positions cannot be linked",
+    "detail": ("Robinhood publishes no API for event contracts. The official "
+               "programmatic surfaces — the Crypto Trading API and the Agentic "
+               "Trading (MCP) endpoint — cover equities, options and crypto "
+               "only; prediction markets are roadmap, not shipped. The "
+               "community `robin_stocks` wrapper reverse-engineers the private "
+               "app API and also has no event-contract support. So there is no "
+               "read path for this balance, official or otherwise: the number "
+               "below is the figure entered in ROBINHOOD_BANKROLL by hand."),
+}
+
+
+def _latest_prices(conn, station: str, target_date) -> dict:
+    """Newest print per contract, no decision-time cutoff — for mark-to-market."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (c.ticker) c.ticker, p.last_price, p.snapshot_at
+            FROM contracts c JOIN prices p ON p.ticker = c.ticker
+            WHERE c.platform='forecastex' AND c.station_id=%s AND c.target_date=%s
+              AND p.last_price IS NOT NULL
+            ORDER BY c.ticker, p.snapshot_at DESC""", (station, target_date))
+        return {t: (int(px), snap) for t, px, snap in cur.fetchall()}
+
+
+def _trading(conn, capacity: list[dict]) -> dict:
+    """Today's picks per city, sized, with the full ladder behind them.
+
+    Picks come from live_trade_forecastex.signals() — the same function the live
+    cron calls — so what this tab shows and what the strategy would do cannot
+    drift. The ladder is rebuilt from a second load_history() call rather than
+    by re-deriving the pick maths here, for the same reason.
+    """
+    import sys
+    sys.path.insert(0, str(_REPO / "scripts"))
+    try:
+        import live_trade_forecastex as fx
+    except Exception as e:                      # never let the tab die on this
+        return {"available": False, "error": f"{type(e).__name__}: {e}"}
+
+    today = datetime.now(timezone.utc).date()
+    spreads = {c["station"]: c["median_c"]
+               for c in json.loads(fx.SPREAD_JSON.read_text())["cities"]}
+    cap_by_code = {c["code"]: c["suggested"] for c in capacity}
+
+    cities = []
+    for station in ROBINHOOD_CITIES:
+        cfg = fx.CITY_CONFIG.get(station)
+        if not cfg:
+            continue
+        hh, mm = cfg["decision_utc"]
+        row = {
+            "code": station, "name": cfg["name"], "product": cfg["product"],
+            "decisionUtc": f"{hh:02d}:{mm:02d}",
+            "edgeThreshold": cfg["edge_threshold"],
+            "rhUrl": rh_url(station, today),
+            "capacity": cap_by_code.get(station),
+            "spreadCents": spreads.get(station),
+            "picks": [], "ladder": [], "note": None, "mu": None, "sigma": None,
+            # Miami is ALREADY traded live on Kalshi every day. Trading it here
+            # too is a second position on the same forecast, not diversification.
+            "warning": ("Miami trades live on Kalshi daily — a position here is "
+                        "additive to that one, not a hedge."
+                        if station == "KMIA" else None),
+        }
+        try:
+            picks, note = fx.signals(conn, station, cfg, today, spreads[station])
+        except Exception as e:
+            row["note"] = f"signal error: {type(e).__name__}: {e}"
+            cities.append(row)
+            continue
+        row["note"] = note
+        latest = _latest_prices(conn, station, today)
+
+        # Ladder + mu/sigma: reload rather than re-derive, so the numbers shown
+        # are the ones signals() actually used.
+        try:
+            model, settled, live, _src = fx.load_history(conn, station, cfg, today)
+            mu_only = {d: m[0] for d, m in model.items()}
+            off = fx.rolling_offset(today, settled, mu_only)
+            if today in model and off is not None:
+                mu, sg = model[today]
+                mu += off
+                row["mu"], row["sigma"], row["offset"] = round(mu, 2), round(sg, 2), round(off, 2)
+                picked = {p["ticker"]: p["side"] for p in (picks or [])}
+                for ticker, strike, px, snap in sorted(live, key=lambda r: r[1]):
+                    pm = fx.prob_above(strike, mu, sg)
+                    cur_px, cur_at = latest.get(ticker, (None, None))
+                    row["ladder"].append({
+                        "ticker": ticker, "strike": strike, "decisionPx": px,
+                        "currentPx": cur_px, "pModel": round(pm, 4),
+                        "edge": round(pm - px / 100.0, 4),
+                        "pick": picked.get(ticker),
+                        "currentAt": cur_at.isoformat() if cur_at else None,
+                    })
+        except Exception as e:                  # ladder is a nicety, not the point
+            row["ladderError"] = f"{type(e).__name__}: {e}"
+
+        n = len(picks or [])
+        for p in (picks or []):
+            # Even dollar split of the day's contract budget, then bounded by the
+            # traded-strike capacity the backtest measured for this city.
+            count = MAX_CONTRACTS_PER_DAY // n if n else 0
+            if row["capacity"]:
+                count = min(count, row["capacity"])
+            cur_px, cur_at = latest.get(p["ticker"], (None, None))
+            # `entry` is what we pay for the side we take; on a NO that is
+            # 100 - last. Mark it the same way so drift is comparable.
+            cur_entry = None if cur_px is None else (cur_px if p["side"] == "yes" else 100 - cur_px)
+            row["picks"].append({
+                "ticker": p["ticker"], "strike": p["strike"], "side": p["side"],
+                "lastPx": p["last_px"], "entry": p["entry"], "limit": p["limit"],
+                "edge": round(p["edge"], 4), "pModel": round(p["p_model"], 4),
+                "snapshotAt": p["snapshot_at"].isoformat() if p["snapshot_at"] else None,
+                "contracts": count,
+                "costUsd": round(count * p["entry"] / 100.0, 2),
+                "maxLossUsd": round(count * p["entry"] / 100.0, 2),
+                "maxWinUsd": round(count * (100 - p["entry"]) / 100.0, 2)
+                             - round(count * FEE_CENTS / 100.0, 2),
+                "feeUsd": round(count * FEE_CENTS / 100.0, 2),
+                "currentPx": cur_px, "currentEntry": cur_entry,
+                "currentAt": cur_at.isoformat() if cur_at else None,
+                "drift": None if cur_entry is None else cur_entry - p["entry"],
+            })
+        cities.append(row)
+
+    return {"available": True, "date": today.isoformat(),
+            "bankroll": ROBINHOOD_BANKROLL, "maxContracts": MAX_CONTRACTS_PER_DAY,
+            "feeCents": FEE_CENTS, "cities": cities,
+            # From the Robinhood event page, 2026-08-31.
+            "tradingHours": "24 hours a day, except Wednesday 3:00-3:15 AM ET",
+            "webTradable": False}
+
+
 def get_forecastex_data() -> dict:
     conn = get_connection()
     try:
         bt = _backtest()
+        cap = _capacity(bt) if bt.get("available") else []
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "collector": _collector(conn),
-            "capacity": _capacity(bt) if bt.get("available") else [],
+            "capacity": cap,
             "backtest": bt,
             "basis": BASIS_NOTE,
+            "trading": _trading(conn, cap),
+            "broker": BROKER,
         }
     finally:
         conn.close()

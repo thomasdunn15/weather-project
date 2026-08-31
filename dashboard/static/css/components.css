@@ -82,3 +82,31 @@ svg[data-chart] { cursor: crosshair; }
                           GPU-composited (no per-frame attribute writes).
    The JS path is the only path, so no CSS keyframe fallback is needed. */
 .chart-fill-reveal { transform-box: fill-box; transform-origin: left center; }
+
+/* ---------- Robinhood tab: manual-entry ticket ---------------------------
+   Event contracts are tradeable only in the Robinhood mobile app (web is
+   view-only), so this tab's job is to be READ OFF while typing an order into
+   a phone. Hence the oversized strike/side and the explicit limit price. */
+.rh-card {
+  border: 1px solid var(--border-strong); border-radius: var(--r);
+  background: var(--bg-2); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.rh-card.moved { border-color: var(--warn-line); }
+.rh-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rh-strike { font: 700 22px/1 var(--mono); color: var(--text-hi); }
+.rh-side { font: 700 13px/1 var(--mono); letter-spacing: 0.06em; padding: 5px 9px; border-radius: var(--r-sm); }
+.rh-side.yes { color: var(--yes); background: var(--up-dim); }
+.rh-side.no  { color: var(--no);  background: var(--down-dim); }
+.rh-order { font: 600 15px/1.5 var(--mono); color: var(--text-hi); }
+.rh-order b { color: var(--temperate); }
+.rh-meta { font: 500 11.5px/1.7 var(--mono); color: var(--text-lo); }
+.rh-btn {
+  align-self: flex-start; text-decoration: none;
+  font: 600 11px/1 var(--ui); letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 9px 13px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong); color: var(--text-hi); background: var(--bg-3);
+  transition: background var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft);
+}
+.rh-btn:hover { background: var(--bg-inset); border-color: var(--text-faint); }
+.rh-when { font: 600 11px/1 var(--mono); letter-spacing: 0.04em; }
