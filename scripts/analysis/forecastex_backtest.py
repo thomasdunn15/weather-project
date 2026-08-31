@@ -249,6 +249,9 @@ def run(station: str, threshold: float, contracts: int) -> None:
 
     picked_tickers: list[tuple] = []   # (event_date, ticker) actually traded by rolling45
     roll_trades: list[tuple] = []      # (event_date, entry_cents, won) for rolling45
+    # Per-pick rows for staleness analysis. A separate list because roll_trades
+    # and picked_tickers are destructured as fixed-width tuples further down.
+    pick_rows: list[dict] = []
     roll_daily: dict = {}              # event_date -> P&L cents, rolling45 only
     results = {}
     for variant in ("naive", "debiased", "rolling45"):
@@ -276,9 +279,9 @@ def run(station: str, threshold: float, contracts: int) -> None:
                 p_yes = norm_sf((strike + 0.5 - mu) / sigma)   # P(high > strike)
                 edge = p_yes - px / 100.0
                 if abs(edge) >= threshold and 5 <= px <= 95:
-                    picks.append((abs(edge), edge, ticker, strike, px))
+                    picks.append((abs(edge), edge, ticker, strike, px, snap))
             picks.sort(reverse=True)
-            for _, edge, ticker, strike, px in picks[:2]:
+            for _, edge, ticker, strike, px, snap in picks[:2]:
                 entry = px if edge > 0 else 100 - px
                 won = (high > strike) if edge > 0 else not (high > strike)
                 trade = ((100 - entry) if won else -entry) * contracts
@@ -287,6 +290,11 @@ def run(station: str, threshold: float, contracts: int) -> None:
                 daily[d] += trade
                 n += 1
                 wins += 1 if won else 0
+                pick_rows.append({"variant": variant, "mu": round(mu, 3),
+                                  "sigma": round(sigma, 3), "date": d.isoformat(),
+                                  "ticker": ticker, "px": px, "entry": entry,
+                                  "won": bool(won), "edge": round(edge, 4),
+                                  "strike": strike, "snap": snap.isoformat()})
                 if variant == "rolling45":
                     picked_tickers.append((d, ticker))
                     roll_trades.append((d, entry, won))
@@ -345,6 +353,7 @@ def run(station: str, threshold: float, contracts: int) -> None:
 
     return {
         "capacity": cap,
+        "pick_rows": pick_rows,
         "detail": _detail(roll_daily, roll_trades, vols_by_pick, contracts, results),
         "station": station, "product": product, "settled_events": len(common),
         "window_start": common[0].isoformat(), "window_end": common[-1].isoformat(),

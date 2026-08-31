@@ -61,10 +61,15 @@ class IBKRClient:
     def _request(self, method: str, path: str, **kw) -> Any:
         try:
             r = self._client.request(method, f"{self.base_url}{path}", **kw)
-        except httpx.ConnectError as e:
+        except httpx.RequestError as e:
+            # RequestError, not ConnectError: a WEDGED gateway accepts the socket
+            # and then never answers, which raises ReadTimeout. Catching only
+            # ConnectError let that escape as an unhandled traceback, so the one
+            # job of ibkr_keepalive.py -- make a dead session loud -- silently
+            # failed for exactly the failure mode a keepalive exists to catch.
             raise IBKRError(
                 f"cannot reach the Client Portal Gateway at {self.base_url}. "
-                f"Is it running and authenticated? ({e})") from e
+                f"Is it running and authenticated? ({type(e).__name__}: {e})") from e
         if r.is_error:
             raise IBKRError(f"{r.status_code} {method} {path}: {r.text[:300]}")
         return r.json()
@@ -78,8 +83,30 @@ class IBKRClient:
         """Keepalive. The session times out after ~5 idle minutes."""
         return self._request("POST", "/tickle")
 
-    def require_session(self) -> None:
+    def ssodh_init(self) -> dict:
+        """Establish the BROKERAGE session on top of an existing SSO login.
+
+        These are two separate handshakes and the difference is invisible on the
+        gateway's web page: after a browser/2FA login `/sso/validate` returns
+        RESULT true while `/iserver/auth/status` still says authenticated=false,
+        because nothing has opened the brokerage session yet. Every /iserver/*
+        call — quotes, orders, positions — fails until this runs.
+        """
+        return self._request("POST", "/iserver/auth/ssodh/init",
+                             json={"publish": True, "compete": True})
+
+    def require_session(self, autoinit: bool = True) -> None:
         st = self.auth_status()
+        if not st.get("authenticated") and autoinit:
+            # A valid SSO login that simply never opened its brokerage session
+            # is recoverable without a human; a genuinely expired one is not.
+            # Trying costs one call and turns the common case into a no-op.
+            try:
+                self.ssodh_init()
+            except IBKRError:
+                pass
+            else:
+                st = self.auth_status()
         if not st.get("authenticated"):
             raise IBKRError(f"gateway session not authenticated: {st}")
 
@@ -122,13 +149,24 @@ class IBKRClient:
         `event` is the day the temperature is measured — the same value as our
         contracts.target_date and ForecastEx's own contract id (UHLAX_082026_80).
 
-        *** IBKR labels these by SETTLEMENT date, which is event + 1 day. ***
-        ForecastEx cash-settles T+1 and IBKR's maturityDate follows the money,
-        not the weather. Verified 2026-08-20 against three days of settled
-        ladders: FX event 08-19 settled at exactly 80, and it is IBKR's
-        maturityDate 20260820 that prices strike-80 YES at 0.02, while the
-        live market for event 08-20 sits under maturityDate 20260821.
-        Getting this wrong silently trades YESTERDAY'S already-settled contract.
+        *** IBKR's maturityDate IS the event date. No off-by-one. ***
+        Measured live 2026-08-23 16:10Z on UHMIA strike 92, quoting both
+        candidate maturities side by side:
+
+            maturity 20260822  YES bid None ask None last C0.98   <- SETTLED
+            maturity 20260823  YES bid 0.60 ask 0.73  last 0.66   <- LIVE
+
+        20260823 was that day's event and it was the one trading. The ladder
+        offered maturities 20260814..20260823 and NO 20260824 at all, so the
+        event+1 rule this docstring used to assert resolved to a date that does
+        not exist and returned {} for every strike — every ForecastEx order on
+        2026-08-23 failed with "could not resolve both legs".
+
+        That earlier rule came from seeing 0.98/0.02 and concluding we were
+        being handed a settled contract. We were, but because of a STALE CONID
+        CACHE, not a date offset; clearing the cache was the real fix and the
+        +1 was a misdiagnosis layered on top. If settled-looking quotes appear
+        again, suspect the cache below before touching this arithmetic.
 
         Discovery costs one request per strike, so a full ladder is ~30 calls.
         Conids never change, so a cache hit is always safe to trust.
@@ -138,18 +176,17 @@ class IBKRClient:
         if key in cache:
             return cache[key]
 
-        settle_day = event + timedelta(days=1)
         idx = self.underlier(product)
-        month = f"{settle_day:%b%y}".upper()   # month follows settlement, not event
+        month = f"{event:%b%y}".upper()
         pair: dict[str, int] = {}
         for rec in self.contracts_at_strike(idx["conid"], month, strike):
-            if str(rec.get("maturityDate", "")) != f"{settle_day:%Y%m%d}":
+            if str(rec.get("maturityDate", "")) != f"{event:%Y%m%d}":
                 continue
             pair["yes" if rec.get("right") == "C" else "no"] = int(rec["conid"])
         if len(pair) != 2:
             raise IBKRError(
                 f"could not resolve both legs for {key} "
-                f"(looked for maturityDate {settle_day:%Y%m%d}): {pair}")
+                f"(looked for maturityDate {event:%Y%m%d}): {pair}")
 
         cache[key] = pair
         _CONID_CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -201,8 +238,82 @@ class IBKRClient:
                 "tif": tif,
             }]})
 
+    def reply(self, reply_id: str, confirmed: bool = True) -> Any:
+        """Answer one IBKR confirmation prompt."""
+        return self._request("POST", f"/iserver/reply/{reply_id}",
+                             json={"confirmed": bool(confirmed)})
+
+    @staticmethod
+    def _is_prompt(resp: Any) -> dict | None:
+        """A confirmation prompt looks like [{'id': <uuid>, 'message': [...]}]."""
+        if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+            if "id" in resp[0] and "message" in resp[0]:
+                return resp[0]
+        return None
+
+    def submit_order(self, conid: int, quantity: int, price: float,
+                     order_type: str = "LMT", tif: str = "DAY",
+                     confirm: bool = False, max_replies: int = 5) -> tuple[Any, list[str]]:
+        """place_order, then WALK IBKR's confirmation chain to an actual ack.
+
+        place_order alone does not place anything when IBKR raises a warning: it
+        returns [{'id': <replyId>, 'message': [...]}] and the order sits in limbo
+        until /iserver/reply/{id} is answered. Nothing in this repo answered it,
+        so every ForecastEx order ever "placed" was a prompt nobody replied to —
+        on 2026-08-23 three Miami orders reported success with 0 orders on the
+        book. Confirming is what places the order, so it belongs on this path.
+
+        Returns (final_response, prompts_agreed_to). The prompts are returned so
+        the caller can LOG what it just agreed to; silently accepting warnings
+        about size, price or margin is how an automated path gets expensive.
+        """
+        resp = self.place_order(conid, quantity, price, order_type, tif, confirm)
+        prompts: list[str] = []
+        for _ in range(max_replies):
+            p = self._is_prompt(resp)
+            if p is None:
+                return resp, prompts
+            prompts.extend(str(m) for m in (p.get("message") or []))
+            resp = self.reply(p["id"], confirmed=True)
+        raise IBKRError(
+            f"IBKR kept prompting after {max_replies} confirmations; "
+            f"order NOT confirmed. Prompts: {prompts}")
+
     def live_orders(self) -> Any:
         return self._request("GET", "/iserver/account/orders")
 
     def positions(self) -> Any:
         return self._request("GET", f"/portfolio/{self.account_id}/positions/0")
+
+    def sso_age_hours(self) -> float | None:
+        """Hours since the underlying SSO login, or None if there is no session.
+
+        A brokerage session cannot be opened from an SSO that is merely still
+        "valid" — IBKR wants a recent authentication. So the age is the number
+        that distinguishes "needs a tickle" from "needs a human at a browser",
+        and neither auth_status nor the gateway's own web page reports it.
+        """
+        try:
+            v = self._request("GET", "/sso/validate")
+        except IBKRError:
+            return None
+        at = (v or {}).get("AUTH_TIME")
+        if not at:
+            return None
+        from datetime import datetime, timezone
+        return (datetime.now(timezone.utc)
+                - datetime.fromtimestamp(at / 1000, timezone.utc)).total_seconds() / 3600
+
+    def net_liquidation(self) -> float:
+        """Account net liquidation value in USD.
+
+        This is the base IBKR applies its retail event-contract limit to (2% of
+        account value as of 2026-08-24). Read it rather than hardcoding a cap:
+        the limit moves with the account, so a constant would silently under- or
+        over-size the moment the balance changes.
+        """
+        d = self._request("GET", f"/portfolio/{self.account_id}/summary")
+        try:
+            return float(d["netliquidation"]["amount"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise IBKRError(f"could not read netliquidation from summary: {e}") from e

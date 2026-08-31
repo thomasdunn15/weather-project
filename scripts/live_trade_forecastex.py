@@ -23,6 +23,8 @@ so this and the backtest cannot drift apart.
 from __future__ import annotations
 
 import argparse
+import html
+import re
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -49,8 +51,31 @@ CITY_CONFIG = {
         "edge_threshold": 0.10,     # 0.15 sheds more edge than it saves (t 1.84 -> lower)
         "min_entry_cents": 10,      # a fixed ~8c spread is fatal to cheap contracts
         "max_picks": 3,
-        "contracts": 25,            # probe size; measured depth supports ~50
+        # Probe size. It is NOT a depth estimate — we ingest only last/volume/OI
+        # from ForecastEx and have no book at all, so the "~50" that used to sit
+        # in this comment was never measured. UHMIA trades ~520/day per strike.
+        "contracts": 25,
         "decision_utc": (15, 30),
+        "daily_loss_limit_dollars": 60.0,
+    },
+    "KLAX": {
+        # Added 2026-08-28 at the operator's request, as a FILL TEST. The point
+        # is not the P&L — 20 contracts under IBKR's cap cannot matter — it is
+        # the one question six cancelled orders never got to ask: does a
+        # ForecastEx POST order actually fill? LAX is the right place to ask it:
+        # median volume 4,378/day per strike against Miami's 223, the tightest
+        # measured spread of any city (6.32c vs 7.73c), and the best non-Miami
+        # backtest we have (74 days, Sharpe 4.51, t 2.45, both halves positive).
+        #
+        # Config mirrors Miami's live-validated shape rather than the backtest's
+        # 500 contracts. Strategy is raw because no blend row exists for LA.
+        "name": "Los Angeles", "product": "UHLAX", "model_city": "Los Angeles",
+        "strategy": "raw",
+        "edge_threshold": 0.10,     # the backtested threshold
+        "min_entry_cents": 10,
+        "max_picks": 3,
+        "contracts": 25,
+        "decision_utc": (14, 45),
         "daily_loss_limit_dollars": 60.0,
     },
     "KDFW": {
@@ -65,6 +90,43 @@ CITY_CONFIG = {
     },
 }
 CUMULATIVE_KILL_DOLLARS = 200.0     # whole-probe stop; this is not a P&L play
+
+# IBKR caps retail event-contract exposure at a percentage of account value.
+# On 2026-08-24 that was 2% — $20.20 on a $1,010 account. The percentage is read
+# from the live account rather than hardcoded as dollars so it tracks funding.
+EVENT_CAP_PCT = 0.02
+# THE CAP COUNTS CONTRACTS AT $1.00 EACH, NOT PREMIUM PAID. An event contract
+# settles at $0 or $1, so IBKR reserves its maximum value and the limit price is
+# irrelevant to the cap. At $1,010 NLV that is 20 contracts/day, total, whether
+# they cost 7c or 85c.
+#
+# Every ForecastEx order placed before 2026-08-27 was cancelled by this rule and
+# not one ever filled: 08-23 sent 50 contracts, 08-24 sent 25, 08-25 sent 23,
+# 08-27 sent 29 — all above 20. The decisive case is 08-25: 23 contracts at 65c
+# is $14.95 of premium, comfortably inside the $20.20 cap on any price-based
+# reading, and it was still killed. Only the per-contract rule explains it.
+RESERVE_PER_CONTRACT = 1.00
+
+
+def budget_counts(picks: list[dict], budget_dollars: float, probe_max: int) -> list[int]:
+    """Contracts per pick under the event-contract cap, budget split EVENLY.
+
+    Even split is the operator's choice (2026-08-24): edge-weighting would put
+    more size on the strongest signal, but an even split stops one expensive
+    pick from eating the whole day's cap.
+
+    Sizing ignores `limit` entirely — see RESERVE_PER_CONTRACT. An earlier
+    version reserved `min(1.0, limit * 1.35)`, which took the SMALLER of the
+    two bounds when safety required the larger, and under-reserved every order.
+
+    Does NOT subtract event-contract positions already open. Safe while one city
+    trades once a day and these settle same-day; revisit before running two
+    ForecastEx cities against the same cap.
+    """
+    if not picks:
+        return []
+    share = budget_dollars / len(picks)
+    return [max(0, min(probe_max, int(share // RESERVE_PER_CONTRACT))) for _ in picks]
 
 
 def halted(city: str) -> str | None:
@@ -83,14 +145,16 @@ def halted(city: str) -> str | None:
     return None
 
 
-def load_history(conn, station: str, cfg: dict, today: date):
+def load_history(conn, station: str, cfg: dict, today: date, as_of: datetime | None = None):
     """Model mu/sigma per day, ForecastEx settled highs, and today's live prints.
 
-    Returns (model, settled, today_contracts). today_contracts carries the last
-    print at or before the decision time — ForecastEx publishes no book, so the
-    last trade is the only price signal available.
+    Returns (model, settled, today_contracts, src). today_contracts carries the
+    last print at or before `as_of` (default: the decision time) with the time
+    of that print — ForecastEx publishes no book, so the last trade is the only
+    price signal available, and it can be hours stale.
     """
     hh, mm = cfg["decision_utc"]
+    cutoff = as_of or datetime(today.year, today.month, today.day, hh, mm, tzinfo=timezone.utc)
     src = f"EMOS combined 00Z {cfg['model_city']} (rolling 45d)"
     with conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT ON (pt.target_date) pt.target_date, pt.emos_mu, pt.emos_sigma
@@ -99,17 +163,37 @@ def load_history(conn, station: str, cfg: dict, today: date):
               AND pt.emos_mu IS NOT NULL ORDER BY pt.target_date, pt.logged_at""",
             (station, src))
         model = {r[0]: (float(r[1]), float(r[2])) for r in cur.fetchall()}
-        cur.execute("""SELECT DISTINCT ON (c.ticker) c.ticker, c.strike_low, p.last_price
+        cur.execute("""SELECT DISTINCT ON (c.ticker) c.ticker, c.strike_low, p.last_price,
+                   p.snapshot_at
             FROM contracts c JOIN prices p ON p.ticker=c.ticker
             WHERE c.platform='forecastex' AND c.station_id=%s AND c.target_date=%s
-              AND p.last_price IS NOT NULL
-              AND p.snapshot_at <= (%s::date + make_time(%s,%s,0)) AT TIME ZONE 'UTC'
+              AND p.last_price IS NOT NULL AND p.snapshot_at <= %s
             ORDER BY c.ticker, p.snapshot_at DESC""",
-            (station, today, today, hh, mm))
-        live = [(t, float(s), int(px)) for t, s, px in cur.fetchall()]
+            (station, today, cutoff))
+        live = [(t, float(s), int(px), snap) for t, s, px, snap in cur.fetchall()]
     settled = {date.fromisoformat(k): v for k, v
                in json.loads(SETTLE_CACHE.read_text()).get(cfg["product"], {}).items()}
     return model, settled, live, src
+
+
+_BLEND_CACHE: dict[tuple, tuple | None] = {}
+
+
+def cached_blend(model, settled, conn, station, cfg, before: date):
+    """fit_blend(build_blend_history(...)) memoized on (station, before).
+
+    SAFE TO CACHE, AND ONLY BECAUSE the history is pinned to cfg["decision_utc"]
+    and to days strictly before `before`: nothing in it can change while the
+    date holds. Do NOT re-key this on an as-of/now cutoff to "keep it fresh" —
+    that would refit the blend on a training set the live cron never saw, which
+    is the exact drift signals(as_of=...) is written to avoid. The scan+fit is
+    ~8s, so a 60s monitor loop would otherwise burn 15% of a core for a value
+    that cannot move (measured 2026-08-23).
+    """
+    key = (station, before)
+    if key not in _BLEND_CACHE:
+        _BLEND_CACHE[key] = fit_blend(build_blend_history(model, settled, conn, station, cfg, before))
+    return _BLEND_CACHE[key]
 
 
 def build_blend_history(model, settled, conn, station, cfg, before: date):
@@ -137,12 +221,17 @@ def build_blend_history(model, settled, conn, station, cfg, before: date):
     return hist
 
 
-def signals(conn, station: str, cfg: dict, today: date, spread_c: float):
-    model, settled, live, src = load_history(conn, station, cfg, today)
+def signals(conn, station: str, cfg: dict, today: date, spread_c: float,
+            as_of: datetime | None = None):
+    """as_of shifts ONLY today's price cutoff (default: the decision time), so
+    scripts/live_signals_terminal.py can re-price intraday. The blend history is
+    deliberately left on decision_utc — moving it would refit on a different
+    training set than the live cron uses."""
+    model, settled, live, src = load_history(conn, station, cfg, today, as_of)
     if today not in model:
         return None, f"no EMOS row for {today} (model source {src!r}) — paper cron not run?"
     if not live:
-        return None, "no ForecastEx prints at or before the decision time"
+        return None, "no ForecastEx prints at or before the cutoff"
     mu_only = {d: m[0] for d, m in model.items()}
     off = rolling_offset(today, settled, mu_only)
     if off is None:
@@ -152,12 +241,12 @@ def signals(conn, station: str, cfg: dict, today: date, spread_c: float):
     mu += off
     fit = None
     if cfg["strategy"] in ("blend", "union"):
-        fit = fit_blend(build_blend_history(model, settled, conn, station, cfg, today))
+        fit = cached_blend(model, settled, conn, station, cfg, today)
         if fit is None and cfg["strategy"] == "blend":
             return None, "blend configured but history too thin to fit (<60 obs)"
 
     picks = []
-    for ticker, strike, px in live:
+    for ticker, strike, px, snap in live:
         if not 5 <= px <= 95:
             continue
         p_model = prob_above(strike, mu, sg)
@@ -178,7 +267,7 @@ def signals(conn, station: str, cfg: dict, today: date, spread_c: float):
         limit = max(1, min(99, entry - round(spread_c / 2)))
         picks.append({"ticker": ticker, "strike": strike, "side": side,
                       "last_px": px, "entry": entry, "limit": limit,
-                      "edge": e, "p_model": p_model})
+                      "edge": e, "p_model": p_model, "snapshot_at": snap})
     picks.sort(key=lambda p: -abs(p["edge"]))
     return picks[:cfg["max_picks"]], f"mu={mu:.2f} (offset {off:+.2f}) sigma={sg:.2f}"
 
@@ -212,13 +301,27 @@ def main() -> int:
         if cum <= -CUMULATIVE_KILL_DOLLARS:
             print("CUMULATIVE KILL BREACHED — not trading"); return 1
 
-        if a.live:
-            client = IBKRClient()
-            try:
-                client.require_session()
-            except IBKRError as e:
+        # Price the cap in BOTH modes. A dry run that skipped this printed the
+        # raw probe size while --live sent something smaller, so the dry run
+        # could not show the sizing bug that cancelled every order for a week.
+        # Only the failure handling differs: --live must abort without a
+        # session, a dry run says so and carries on uncapped.
+        budget = None
+        client = IBKRClient()
+        try:
+            client.require_session()
+            nlv = client.net_liquidation()
+        except IBKRError as e:
+            if a.live:
                 print(f"ABORT: {e}\nRe-login at https://localhost:5000 via an SSH tunnel.")
                 return 1
+            print(f"no IBKR session ({e}) — sizes below are PROBE MAX, not cap-limited")
+            nlv = None
+        if nlv is not None:
+            budget = nlv * EVENT_CAP_PCT
+            print(f"event-contract cap: ${budget:.2f} "
+                  f"({EVENT_CAP_PCT:.0%} of ${nlv:,.2f} net liq) "
+                  f"= {int(budget // RESERVE_PER_CONTRACT)} contracts/day total")
 
         for city in cities:
             cfg = dict(CITY_CONFIG[city])
@@ -241,19 +344,34 @@ def main() -> int:
             if not picks:
                 print("  no contract cleared the threshold"); continue
 
-            for p in picks:
+            counts = (budget_counts(picks, budget, cfg["contracts"]) if budget
+                      else [cfg["contracts"]] * len(picks))
+            for p, n_contracts in zip(picks, counts):
                 print(f"  {p['side'].upper():3} strike {p['strike']:.0f}  last {p['last_px']}c  "
                       f"entry {p['entry']}c  POST @{p['limit']}c  edge {p['edge']:+.1%}  "
-                      f"p_model {p['p_model']:.3f}")
+                      f"p_model {p['p_model']:.3f}  size {n_contracts}")
                 if not a.live:
                     continue
+                if n_contracts < 1:
+                    print("    SKIPPED: no room under the event-contract cap"); continue
                 try:
                     pair = client.resolve(cfg["product"], today, p["strike"])
                     conid = pair[p["side"]]
-                    r = client.place_order(conid, cfg["contracts"], p["limit"] / 100.0,
-                                           tif="DAY", confirm=True)
-                    oid = (r.get("order") if isinstance(r, dict) else None) or r
-                    oid = oid.get("order_id") if isinstance(oid, dict) else str(oid)[:80]
+                    # submit_order, not place_order: IBKR answers with warning
+                    # prompts and the order is NOT live until they are replied
+                    # to. place_order returns those prompts as-is, so the old
+                    # call logged a reply-id as an order-id and reported
+                    # success with nothing on the book.
+                    r, prompts = client.submit_order(
+                        conid, n_contracts, p["limit"] / 100.0,
+                        tif="DAY", confirm=True)
+                    for m in prompts:
+                        txt = re.sub(r"<[^>]+>", " ", html.unescape(str(m)))
+                        print(f"      [IBKR warning, confirmed] {txt.strip()[:200]}")
+                    ack = r[0] if isinstance(r, list) and r else r
+                    oid = str((ack or {}).get("order_id") or "")
+                    if not oid:
+                        print(f"    ORDER NOT ACKED: {str(r)[:200]}"); continue
                 except IBKRError as e:
                     print(f"    ORDER FAILED: {str(e)[:160]}"); continue
                 with conn.cursor() as cur:
@@ -265,7 +383,7 @@ def main() -> int:
                         VALUES (now(),%s,%s,%s,%s,%s,%s,%s,%s,true,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (target_date, fx_contract_id, side) DO NOTHING""",
                         (today, city, p["ticker"], conid, p["side"], p["strike"],
-                         cfg["contracts"], p["limit"], cfg["strategy"],
+                         n_contracts, p["limit"], cfg["strategy"],
                          f"EMOS combined 00Z {cfg['model_city']} (rolling 45d) [FX PROBE]",
                          p["p_model"], p["last_px"] / 100.0, sp, p["edge"], oid,
                          f"posted {round(sp/2)}c inside the last print; "

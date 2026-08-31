@@ -55,11 +55,38 @@ def main() -> int:
     client = IBKRClient()
 
     try:
-        client.tickle()
+        # TICKLE ONLY A SESSION WE BELIEVE IS ALIVE. Tickling a dead one is
+        # actively harmful: it refreshes the SSO layer (sso/validate keeps
+        # returning RESULT=True, ssoExpires resets) while the brokerage layer
+        # still refuses ssodh_init. The gateway will not rebind a fresh browser
+        # login while it holds a session it considers valid, so the zombie
+        # blocks the very recovery it is asking for.
+        #
+        # That is exactly 2026-08-26: a 43-hour-old SSO held open by this cron,
+        # IB Key approvals landing nowhere, and "nothing happens" on the login
+        # page. Letting a dead SSO expire is what makes re-login work.
+        if prev == "alive":
+            client.tickle()
         st = client.auth_status()
+        if not st.get("authenticated"):
+            # SSO can be valid while the BROKERAGE session was never opened —
+            # the state the gateway's own web page cannot show you. Recover it
+            # here instead of paging a human for a handshake a machine can do.
+            try:
+                client.ssodh_init()
+            except IBKRError:
+                pass
+            else:
+                st = client.auth_status()
         alive = bool(st.get("authenticated"))
+        # SSO age is the field that tells a human WHICH failure this is: a young
+        # SSO that will not promote is a gateway problem worth a restart; an old
+        # one simply needs a browser login. Neither auth_status nor the gateway
+        # web page shows it, which is why the last three outages looked identical.
+        age = client.sso_age_hours()
         detail = (f"authenticated={st.get('authenticated')} "
-                  f"connected={st.get('connected')} competing={st.get('competing')}")
+                  f"connected={st.get('connected')} competing={st.get('competing')} "
+                  f"sso_age={'none' if age is None else f'{age:.1f}h'}")
     except IBKRError as e:
         alive = False
         detail = str(e)[:160]
@@ -81,7 +108,10 @@ def main() -> int:
             send_alert(
                 f"IBKR gateway session DEAD — ForecastEx trading is offline. "
                 f"Re-login: ssh -N -L 5000:localhost:5000 tdunn@<host> then open "
-                f"https://localhost:5000 . ({detail})",
+                f"https://localhost:5000 . If IB Key completes but the page just "
+                f"sits there, the gateway is holding a stale session — restart it "
+                f"(tmux kill-session -t ibkr; then bin/run.sh root/conf.yaml in "
+                f"~/ibkr-gateway) and log in again. ({detail})",
                 severity="critical", source="ibkr_keepalive")
 
     if changed or not a.quiet:
