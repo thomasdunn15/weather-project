@@ -642,14 +642,21 @@ def preflight_checks(conn, client: KalshiClient, city: str, today: date) -> list
     return failures
 
 
-def compute_signals_for_today(conn, city: str, today: date) -> list[dict]:
-    """Same filter as paper_trade_log: entry >= 0, |edge| >= 10%, limit-100% execution."""
+def compute_signals_for_today(conn, city: str, today: date,
+                              snapshot_cutoff: datetime | None = None) -> list[dict]:
+    """Same filter as paper_trade_log: entry >= 0, |edge| >= 10%, limit-100% execution.
+
+    snapshot_cutoff defaults to the city's pre-committed decision time, which is
+    what the live cron must use. scripts/live_signals_terminal.py passes `now`
+    instead so the monitor re-prices against the current book; nothing else may.
+    """
     cfg = CITY_CONFIG[city]
     station = get_station(city)
     init_time = datetime(today.year, today.month, today.day, INIT_HOUR, 0, tzinfo=timezone.utc)
-    snapshot_cutoff = datetime.combine(
-        today, dtime(cfg["decision_hour"], cfg["decision_minute"]), tzinfo=timezone.utc,
-    )
+    if snapshot_cutoff is None:
+        snapshot_cutoff = datetime.combine(
+            today, dtime(cfg["decision_hour"], cfg["decision_minute"]), tzinfo=timezone.utc,
+        )
 
     models_list = cfg.get("models", MODELS_LIST_DEFAULT)
     emos_model = cfg.get("emos_model", "combined")
