@@ -271,10 +271,18 @@ def _trading(conn, capacity: list[dict]) -> dict:
             "capacity": cap_by_code.get(station),
             "spreadCents": spreads.get(station),
             "picks": [], "ladder": [], "note": None, "mu": None, "sigma": None,
-            # Miami is ALREADY traded live on Kalshi every day. Trading it here
-            # too is a second position on the same forecast, not diversification.
-            "warning": ("Miami trades live on Kalshi daily — a position here is "
-                        "additive to that one, not a hedge."
+            # Miami is ALREADY traded live on Kalshi every day, so this is the
+            # same forecast expressed twice — size for that. But it is NOT a
+            # pure doubling: the two venues settle on DIFFERENT sources (WU here,
+            # NWS CLI on Kalshi) and their Miami P&L correlates only r=+0.29.
+            # Measured, splitting was the better risk: 500 a side returned the
+            # same $14,880 as 1000 on Kalshi alone, worst day -$820 vs -$1,520,
+            # Sharpe 7.77 vs 5.79.
+            "warning": ("Miami trades live on Kalshi at 15:30Z too — same "
+                        "forecast, sized twice. Not a pure doubling though: "
+                        "different settlement source, P&L correlates r=+0.29, "
+                        "and the two-venue split measured better than "
+                        "concentrating (worst day −$820 vs −$1,520)."
                         if station == "KMIA" else None),
         }
         try:
