@@ -22,11 +22,11 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Query, Response
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.data_live import get_live_data, _live_trade_config
@@ -72,8 +72,30 @@ def _live_payload() -> dict:
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index() -> Response:
+    """index.html with every /static/ URL stamped from that file's mtime.
+
+    The ?v=N strings in index.html used to be bumped BY HAND, and on 2026-08-31
+    that failed the way hand-maintained cache keys always eventually do: a field
+    was dropped from /api/forecastex, the JS that read it was updated, the
+    version was not bumped — so browsers ran the previous app.js against the new
+    payload and the tab died on `undefined.toLocaleString()`. Stamping from
+    mtime makes the bump automatic and unforgettable.
+
+    `Cache-Control: no-cache` is REQUIRED here, not belt-and-braces: it means
+    "revalidate", not "do not store". Without it the browser reuses this HTML
+    whenever index.html itself is unchanged — and then it never sees the new
+    stamps for the assets that DID change, which is the whole bug again.
+    """
+    def stamp(m: re.Match) -> str:
+        asset = STATIC_DIR / m.group(1).removeprefix("/static/")
+        v = int(asset.stat().st_mtime) if asset.is_file() else 0
+        return f'"{m.group(1)}?v={v}"'
+
+    html = re.sub(r'"(/static/[^"?]+)(?:\?v=[^"]*)?"',
+                  stamp, (STATIC_DIR / "index.html").read_text())
+    return Response(html, media_type="text/html",
+                    headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/live")
