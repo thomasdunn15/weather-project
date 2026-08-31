@@ -93,7 +93,7 @@ function snapshot(d) {
   const marks = {};
   (d.positions || []).forEach(p => { marks[p.ticker] = p.mark; });
   return {
-    balance: d.balance, cash: d.cashBalance, portfolio: d.portfolioValue,
+    balance: d.venueBalances ? d.venueBalances.total : d.balance,
     todayTotal: t.total, todayRealized: t.realized, todayUnrealized: t.unrealized,
     cumTotal: c.total, cumReturn: c.returnPct, winRate: c.winRate, nSettled: c.nSettled,
     marks,
@@ -654,6 +654,17 @@ const bt = {              // backtest control state
 // ====================================================================
 // LIVE TAB render functions
 // ====================================================================
+// Per-venue cash. Each venue answers for itself, so one unreachable gateway
+// shows as an error row instead of blanking the panel — and the headline says
+// "partial" so a total missing a venue can't read as the whole book.
+function venueBalanceRows(d) {
+  const vb = d.venueBalances;
+  if (!vb) {
+    return `<div class="vbal"><div class="vrow"><span class="pill-status venue K">K</span><span class="vn">Kalshi</span><span class="vt">${moneyPlain(d.balance)}</span><span class="vs">cash ${moneyPlain(d.cashBalance)}</span></div></div>`;
+  }
+  return `<div class="vbal">${vb.venues.map(v => `<div class="vrow${v.error ? " err" : ""}"><span class="pill-status venue ${esc(v.venue)}" title="${esc(VENUE_NAME[v.venue] || v.venue)}">${esc(v.venue)}</span><span class="vn">${esc(v.name)}</span><span class="vt">${v.total === null ? "—" : moneyPlain(v.total)}</span><span class="vs">${v.error ? esc(v.error) : (v.cash === null ? esc(v.note || "") : `${moneyPlain(v.cash)} free · ${moneyPlain(v.positions)} held`)}</span></div>`).join("")}</div>`;
+}
+
 function liveHero(d) {
   const t = d.today, c = d.cumulative;
   return `<div class="hero">
@@ -669,9 +680,9 @@ function liveHero(d) {
       <div class="spark">${sparkSVG(d.series)}</div>
     </div>
     <div>
-      <div class="k">Account balance</div>
-      <div class="v sm" id="hero-balance" style="color:var(--text-hi)">${moneyPlain(d.balance)}</div>
-      <div style="font:600 11px/1 var(--mono);color:var(--text-lo);text-transform:uppercase;letter-spacing:.06em;padding:6px 0 8px"><span>cash <b id="hero-cash">${moneyPlain(d.cashBalance)}</b></span><span>portfolio <b id="hero-portfolio">${moneyPlain(d.portfolioValue)}</b></span></div>
+      <div class="k">Account balance <span class="tag-pill">${(d.venueBalances && d.venueBalances.complete === false) ? "partial" : "all venues"}</span></div>
+      <div class="v sm" id="hero-balance" style="color:var(--text-hi)">${moneyPlain(d.venueBalances ? d.venueBalances.total : d.balance)}</div>
+      ${venueBalanceRows(d)}
       ${d.reconcile ? `<div class="sub recon" title="Verified 2026-06-21: deposits + settled trading P&amp;L + referral credit = account equity (when flat)"><span>${moneyPlain(d.reconcile.deposits)} dep</span><span>${money(d.reconcile.realized)} P&amp;L</span><span>${money(d.reconcile.credit)} ref</span><span class="eq">= ${moneyPlain(d.reconcile.reconciledEquity)}</span></div>` : ""}
     </div>
   </div>`;
@@ -733,15 +744,28 @@ function dialHTML(used, limit) {
   return `<span class="dial" title="${pctv}% of cumulative kill used" style="background:conic-gradient(${col} ${pctv}%, var(--bg-3) 0)"><span class="inner">${pctv}%</span></span>`;
 }
 
+// Venue tag for the multi-venue live tables. K = Kalshi, PM = Polymarket,
+// FX = ForecastEx (via IBKR). Rows without one predate the union and read as K.
+const VENUE_NAME = { K: "Kalshi", PM: "Polymarket", FX: "ForecastEx (IBKR)" };
+function venueCell(v) {
+  v = v || "K";
+  return `<td><span class="pill-status venue ${esc(v)}" title="${esc(VENUE_NAME[v] || v)}">${esc(v)}</span></td>`;
+}
+function venueMeta(rows) {
+  const n = {};
+  rows.forEach(r => { const v = r.venue || "K"; n[v] = (n[v] || 0) + 1; });
+  return Object.keys(n).map(v => `${n[v]} ${v}`).join(" · ") || "none";
+}
+
 function cityCard(c) {
   return `<div class="panel city">
-    <div class="ch"><span class="nm">${esc(c.name)}</span><span class="code">${esc(c.code)}</span><span class="badge ${c.status === "active" ? "active" : "halted"}">${esc(c.status)}</span>${dialHTML(c.risk.cumUsed, c.risk.cumKill)}<span class="model">${esc(c.model)}</span></div>
+    <div class="ch"><span class="nm">${esc(c.name)}</span><span class="pill-status venue ${esc(c.venue || "K")}" title="${esc(VENUE_NAME[c.venue] || "Kalshi")}">${esc(c.venue || "K")}</span><span class="code">${esc(c.code)}</span><span class="badge ${c.status === "active" ? "active" : "halted"}">${esc(c.status)}</span>${dialHTML(c.risk.cumUsed, c.risk.cumKill)}<span class="model" title="${esc(c.model)}">${esc(c.model)}</span></div>
     <div class="cbody">
       <div class="m"><div class="ml">Realized</div><div class="mv ${cls(c.realized)}">${money(c.realized)}</div><div class="ms">settled</div></div>
       <div class="m"><div class="ml">Unrealized</div><div class="mv ${cls(c.unrealized)}">${money(c.unrealized)}</div><div class="ms">open mark</div></div>
       <div class="m"><div class="ml">Today</div><div class="mv ${cls(c.today)}">${money(c.today)}</div><div class="ms">${c.orders} orders</div></div>
     </div>
-    <div class="cfoot">${c.haltNote ? `<div class="halt-note">${esc(c.haltNote)}</div>` : `<div class="activity"><span>budget <b>$${c.budget}</b></span><span><b>${c.contracts.toLocaleString()}</b> contracts</span><span>edge ≥ <b>${esc(c.edgeThresh)}</b></span><span>size <b>${esc(c.stake)}</b></span></div>`}${riskBar("Cumulative", c.risk.cumUsed, c.risk.cumKill)}${riskBar("Today", c.risk.todayUsed, c.risk.todayKill)}</div>
+    <div class="cfoot">${c.haltNote ? `<div class="halt-note">${esc(c.haltNote)}</div>` : `<div class="activity"><span>budget <b>$${c.budget}</b></span><span><b>${c.contracts.toLocaleString()}</b> contracts</span><span>edge ≥ <b>${esc(c.edgeThresh)}</b></span><span>size <b>${esc(c.stake)}</b></span></div>`}${riskBar("Cumulative", c.risk.cumUsed, c.risk.cumKill)}${riskBar(c.risk.todayLabel || "Today", c.risk.todayUsed, c.risk.todayKill)}</div>
   </div>`;
 }
 
@@ -781,30 +805,30 @@ function positionsTable(rows) {
 
 function signalsTable(rows) {
   const body = rows.length === 0
-    ? `<tr><td class="l muted" colspan="9" style="padding:18px 12px">No signals logged today.</td></tr>`
-    : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td>${(r.modelP * 100).toFixed(0)}%</td><td>${(r.mktP * 100).toFixed(0)}%</td><td>${edgeCell(r.edge)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">BUY ${esc(r.side)}</span></td><td><span class="pill-status ${r.placed === "placed" ? "placed" : "skipped"}">${esc(r.placed)}</span></td><td><span class="pill-status ${esc(r.fill)}">${esc(r.fill)}</span></td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "—" : money(r.pnl)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Today's signals → fills</h3><span class="meta">every logged signal · placed? · fill status</span></div><div class="tbl-scroll" data-scroll-key="signals"><table class="dt"><thead><tr><th class="l">Ticker</th><th class="l">Bracket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Order</th><th>Fill</th><th>P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+    ? `<tr><td class="l muted" colspan="10" style="padding:18px 12px">No signals logged today.</td></tr>`
+    : rows.map(r => `<tr>${venueCell(r.venue)}<td class="l hi">${esc(r.ticker)}</td><td class="l">${esc(r.bracket)}</td><td>${(r.modelP * 100).toFixed(0)}%</td><td>${(r.mktP * 100).toFixed(0)}%</td><td>${edgeCell(r.edge)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">BUY ${esc(r.side)}</span></td><td><span class="pill-status ${r.placed === "placed" ? "placed" : "skipped"}">${esc(r.placed)}</span></td><td><span class="pill-status ${esc(r.fill)}">${esc(r.fill)}</span></td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "—" : money(r.pnl)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Today's signals → fills</h3><span class="meta">all venues · ${venueMeta(rows)}</span></div><div class="tbl-scroll" data-scroll-key="signals"><table class="dt"><thead><tr><th>Venue</th><th class="l">Ticker</th><th class="l">Bracket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Signal</th><th>Order</th><th>Fill</th><th>P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function ordersTable(rows) {
   const body = rows.length === 0
-    ? `<tr><td class="l muted" colspan="7" style="padding:18px 12px">No orders placed today.</td></tr>`
-    : rows.map(r => `<tr><td class="l">${esc(r.time)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="hi">${r.fillPx === null ? "—" : r.fillPx + "¢"}</td><td><span class="pill-status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Today's live orders</h3><span class="meta">live_trades view</span></div><div class="tbl-scroll" style="max-height:240px" data-scroll-key="orders"><table class="dt"><thead><tr><th class="l">Time</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Fill</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+    ? `<tr><td class="l muted" colspan="8" style="padding:18px 12px">No orders placed today.</td></tr>`
+    : rows.map(r => `<tr>${venueCell(r.venue)}<td class="l">${esc(r.time)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="hi">${r.fillPx === null ? "—" : r.fillPx + "¢"}</td><td><span class="pill-status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Today's live orders</h3><span class="meta">${venueMeta(rows)}</span></div><div class="tbl-scroll" style="max-height:240px" data-scroll-key="orders"><table class="dt"><thead><tr><th>Venue</th><th class="l">Time</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Fill</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function openOrders(rows) {
   const body = rows.length === 0
-    ? `<tr><td class="l muted" colspan="5" style="padding:16px 12px">No resting orders.</td></tr>`
-    : rows.map(r => `<tr><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="muted">${esc(r.age)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Open orders on Kalshi</h3><span class="meta">${rows.length} resting</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="openorders"><table class="dt"><thead><tr><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Age</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+    ? `<tr><td class="l muted" colspan="6" style="padding:16px 12px">No resting orders.</td></tr>`
+    : rows.map(r => `<tr>${venueCell(r.venue)}<td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.limit}¢</td><td class="muted">${esc(r.age)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Working orders</h3><span class="meta" title="Kalshi is polled live; PM/FX are inferred from the DB (unfilled + unsettled)">${venueMeta(rows)}</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="openorders"><table class="dt"><thead><tr><th>Venue</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Limit</th><th>Age</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function recentFills(rows) {
   const body = rows.length === 0
-    ? `<tr><td class="l muted" colspan="6" style="padding:16px 12px">No fills in the last 7 days.</td></tr>`
-    : rows.map(r => `<tr><td class="l">${esc(r.date)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.px}¢</td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "open" : money(r.pnl)}</td></tr>`).join("");
-  return `<div class="panel"><div class="panel-h"><h3>Recent fills (7 days)</h3><span class="meta">${rows.length} fills</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="fills"><table class="dt"><thead><tr><th class="l">Date</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Px</th><th>Settled P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+    ? `<tr><td class="l muted" colspan="7" style="padding:16px 12px">No fills in the last 7 days.</td></tr>`
+    : rows.map(r => `<tr>${venueCell(r.venue)}<td class="l">${esc(r.date)}</td><td class="l hi">${esc(r.ticker)}</td><td><span class="side ${r.side === "YES" ? "yes" : "no"}">${esc(r.side)}</span></td><td>${r.qty}</td><td>${r.px}¢</td><td class="${r.pnl === null ? "muted" : cls(r.pnl)}">${r.pnl === null ? "open" : money(r.pnl)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-h"><h3>Recent fills (7 days)</h3><span class="meta">${venueMeta(rows)}</span></div><div class="tbl-scroll" style="max-height:200px" data-scroll-key="fills"><table class="dt"><thead><tr><th>Venue</th><th class="l">Date</th><th class="l">Ticker</th><th>Side</th><th>Qty</th><th>Px</th><th>Settled P&amp;L</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function cronAlerts(d) {
@@ -871,8 +895,6 @@ const HERO_FIELDS = [
   { id: "hero-cum-ret",      key: "cumReturn",       fmt: pct },              // server % — never /3050
   { id: "hero-winrate",      key: "winRate",         fmt: v => (v * 100).toFixed(0) + "%" },
   { id: "hero-balance",      key: "balance",         fmt: moneyPlain },
-  { id: "hero-cash",         key: "cash",            fmt: moneyPlain },
-  { id: "hero-portfolio",    key: "portfolio",       fmt: moneyPlain },
 ];
 
 // WAAPI background flash; tints mirror --flash-tint-pos/neg (rgba @0.22) inlined,
@@ -1767,6 +1789,16 @@ function renderPolymarket() {
     `$${rails.daily_spend_cap_usd}/day cap · kill −$${Math.abs(rails.cumulative_kill_usd).toFixed(0)} · IOC-limit only, +2¢ bound</span></div>` +
     `<div style="padding:14px 28px 6px;font-family:var(--mono);font-size:13px">` +
     `Cumulative realized: ${pmUsd(p.cumulative_realized_cents)}` +
+    // Realized is the trading result; out-of-pocket is what the operator's own
+    // cash is down. The promo credit absorbs losses first, so the two differ
+    // until it is exhausted. Only shown while the credit is actually doing
+    // something -- on a winning book they are the same number.
+    (p.funding && p.funding.credit_used_cents > 0
+      ? `<span style="color:var(--text-lo)"> · ${pmUsd(p.funding.credit_used_cents)} of ` +
+        `${pmUsd(p.funding.promo_credit_cents)} promo credit absorbed → ` +
+        `out of pocket <span style="color:${p.funding.out_of_pocket_cents < 0 ? "var(--neg)" : "var(--pos)"}">` +
+        `${pmUsd(p.funding.out_of_pocket_cents)}</span></span>`
+      : "") +
     (p.halted ? `<div style="color:var(--neg);margin-top:6px">${esc(p.halt_text || "halt file present")}</div>` : "") +
     `<div style="color:var(--text-lo);margin-top:4px;font-size:11.5px">${killPct <= 0 ? "" : `${killPct.toFixed(0)}% of the way to the kill switch`}</div></div>`;
 

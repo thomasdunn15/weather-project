@@ -42,6 +42,14 @@
 .hero .sub b { color: var(--text-mid); font-weight: 600; border-radius: var(--r-sm); }
 .hero .sub.recon { margin-top: 6px; gap: 10px; font-size: 10.5px; color: var(--text-faint); }
 .hero .sub.recon .eq { color: var(--text-mid); }
+/* per-venue cash rows under the account-balance headline */
+.hero .vbal { margin: 9px 0 8px; display: flex; flex-direction: column; gap: 5px; }
+.hero .vrow { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+  column-gap: 8px; font: 500 11.5px/1.2 var(--mono); }
+.hero .vrow .vn { color: var(--text-mid); }
+.hero .vrow .vt { color: var(--text-hi); font-weight: 600; text-align: right; }
+.hero .vrow .vs { grid-column: 2 / -1; font-size: 10px; color: var(--text-faint); }
+.hero .vrow.err .vt, .hero .vrow.err .vs { color: var(--warn); }
 .hero .spark { position: absolute; right: 18px; bottom: 14px; opacity: 0.9; }
 .tag-pill { font: 600 10px/1 var(--mono); letter-spacing: 0.04em; padding: 3px 6px; border-radius: var(--r-sm); border: 1px solid var(--border-strong); color: var(--text-mid); }
 
@@ -89,7 +97,11 @@
 .city .ch { display: flex; align-items: center; gap: 10px; padding: 13px 15px; border-bottom: 1px solid var(--border); }
 .city .ch .nm { font-family: var(--display); font-weight: 600; font-size: 15px; }
 .city .ch .code { font: 600 11px/1 var(--mono); color: var(--text-lo); padding: 3px 5px; border: 1px solid var(--border); border-radius: var(--r-sm); }
-.city .ch .model { font: 500 10.5px/1 var(--mono); color: var(--text-lo); }
+.city .ch .model { font: 500 10.5px/1 var(--mono); color: var(--text-lo);
+  margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Three of the four live cards are Miami on different venues — the venue tag,
+   not the city name, is what tells them apart. */
+.city .ch .pill-status.venue { flex: none; }
 .badge { font: 600 9.5px/1 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 7px; border-radius: 100px; border: 1px solid currentColor; }
 .badge.active { color: var(--up);   background: var(--up-dim); }
 .badge.halted { color: var(--warn); background: var(--warn-dim); }

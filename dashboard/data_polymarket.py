@@ -31,6 +31,18 @@ _PAPER = _load_script("paper_trade_polymarket")
 CITY_NAMES = {"KMIA": "Miami", "KNYC": "NYC", "KLAX": "Los Angeles",
               "KSFO": "San Francisco", "KMDW": "Chicago (MDW)"}
 
+# Polymarket account funding. Kept here rather than in account_equity_snapshots,
+# which tracks the KALSHI account only (its referral_credit_dollars is Kalshi's
+# $14.99, nothing to do with this).
+#
+# Why it is on screen at all: realized P&L is the trading result, but a promo
+# credit absorbs part of a loss, so the two answer different questions. On
+# 2026-08-25 realized read -$49.13 while the operator's own cash was down ~$40,
+# and the $10 credit was the whole difference. Showing only realized invites
+# exactly that confusion.
+DEPOSIT_CENTS = 100_000          # operator's own cash
+PROMO_CREDIT_CENTS = 1_000       # 2026-08-25: $10 free from Polymarket
+
 # Day-matched replay 2026-06-30..08-11, PM-native brackets @0.25, 1 contract —
 # static context row so the forward numbers are read against their prior.
 REPLAY_REF = [
@@ -58,10 +70,26 @@ def _probe(conn) -> dict:
             "fill_avg_cents": float(r[7]) if r[7] is not None else None,
             "settlement": r[8], "realized_cents": float(r[9]) if r[9] is not None else None,
         } for r in cur.fetchall()]
+    # Out-of-pocket = where the operator's OWN cash stands: venue balance minus
+    # their own deposits. The promo credit is $10 of someone else's money that
+    # sits in the balance whether the book wins or loses, so it is a flat add.
+    #
+    # An earlier min(PROMO, max(0, -cum)) capped the credit's benefit at the
+    # size of the losses, which is right only while the book is underwater and
+    # silently understated the account by $10 once it turned positive. The
+    # operator's own read confirms the flat form: at cum = -$49.13 they said
+    # "I am only down 40 dollars", and -49.13 + 10.00 = -39.13.
+    credit_used = float(PROMO_CREDIT_CENTS)
     return {
         "halted": halted,
         "halt_text": _LIVE.HALT_FILE.read_text().strip() if halted else None,
         "cumulative_realized_cents": cum,
+        "funding": {
+            "deposit_cents": DEPOSIT_CENTS,
+            "promo_credit_cents": PROMO_CREDIT_CENTS,
+            "credit_used_cents": credit_used,
+            "out_of_pocket_cents": cum + credit_used,
+        },
         "trades": trades,
         "rails": {
             "contracts_per_signal": _LIVE.CONTRACTS_PER_SIGNAL,

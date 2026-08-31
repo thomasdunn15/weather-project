@@ -48,6 +48,11 @@ table.dt tbody tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--up); }
 .pill-status.skipped, .pill-status.filtered, .pill-status.below-min,
 .pill-status.no-blend, .pill-status.anti-stack { color: var(--text-faint); }
 .pill-status.missed, .pill-status.pending { color: var(--warn); border-color: var(--warn-line); }
+/* venue tag on the multi-venue live tables (Kalshi / Polymarket / ForecastEx) */
+.pill-status.venue { padding: 3px 5px; letter-spacing: 0.04em; }
+.pill-status.venue.K  { color: var(--text-mid); }
+.pill-status.venue.PM { color: var(--teal);  border-color: var(--teal); }
+.pill-status.venue.FX { color: var(--accent); border-color: var(--accent); }
 
 /* ---------- outcome pill (resolved YES/NO, WIN/LOSS) ---------- */
 .outcome { font: 600 9.5px/1 var(--mono); letter-spacing: 0.06em; padding: 3px 7px; border-radius: var(--r-sm); }

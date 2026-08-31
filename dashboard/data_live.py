@@ -23,7 +23,25 @@ Field shape (must match what live-tab.jsx reads):
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+# THE SERVER RUNS ON UTC; THE DASHBOARD CLAIMS ET. Until 2026-08-28 asOf was
+# datetime.now().strftime("today %H:%M ET"), which stamped a UTC clock with an
+# ET label and showed the operator a time four hours ahead of their own. Trade
+# rows rendered raw UTC next to it, so nothing on the page agreed with anything
+# else. Render every displayed time through here.
+ET = ZoneInfo("America/New_York")
+
+
+def _et(dt: datetime | None = None) -> datetime:
+    """Now, or an aware timestamp, in Eastern. Naive input is assumed UTC."""
+    if dt is None:
+        return datetime.now(ET)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ET)
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +78,7 @@ DEPOSITS = STARTING_CAPITAL + KALSHI_NON_TRADE_CREDITS  # $3,064.99
 # Cities the live cron trades (they get their own per-city card). Everything
 # else the account has traded — manual / reconciled markets — rolls into the
 # "Other Cities" card. Keyed by the reconciliation's display-city name.
-LIVE_CITY_NAMES = {"Chicago", "Miami", "Dallas"}
+
 
 
 from dashboard.ttl_cache import ttl_cache
@@ -184,6 +202,7 @@ def get_live_data(cfg: dict) -> dict:
             open_orders_contracts += rem
             open_orders_collateral += rem * limit_cents / 100.0
             open_orders_rows.append({
+                "venue": "K",
                 "ticker": _short_ticker(o.get("ticker", "")),
                 "side": o.get("side", "").upper(),
                 "qty": rem,
@@ -255,7 +274,8 @@ def get_live_data(cfg: dict) -> dict:
         today_orders_rows = []
         for placed, ticker, side, cnt, limit, fill, status in cur.fetchall():
             today_orders_rows.append({
-                "time": placed.strftime("%H:%M:%S"),
+                "venue": "K",
+                "time": _et(placed).strftime("%H:%M:%S"),
                 "ticker": _short_ticker(ticker),
                 "side": (side or "").upper(),
                 "qty": cnt,
@@ -276,6 +296,7 @@ def get_live_data(cfg: dict) -> dict:
         fills_rows = []
         for d_, ticker, side, qty, px, pnl in cur.fetchall():
             fills_rows.append({
+                "venue": "K",
                 "date": d_.strftime("%m-%d"),
                 "ticker": _short_ticker(ticker),
                 "side": (side or "").upper(),
@@ -283,6 +304,46 @@ def get_live_data(cfg: dict) -> dict:
                 "px": px,
                 "pnl": (pnl / 100.0) if pnl is not None else None,
             })
+
+        # Per-venue P&L for the Polymarket / ForecastEx city cards. Both tables
+        # are probe-sized, so a plain aggregate each is enough.
+        venue_pnl = {}
+        cur.execute("""
+            SELECT COALESCE(SUM(realized_pnl_cents), 0) / 100.0,
+                   COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = %s), 0) / 100.0,
+                   COUNT(*) FILTER (WHERE target_date = %s),
+                   COALESCE(SUM(count * limit_price_cents)
+                            FILTER (WHERE target_date = %s), 0) / 100.0
+            FROM pm_live_trades""", (today, today, today))
+        venue_pnl["PM"] = cur.fetchone()
+        cur.execute("""
+            SELECT station_id,
+                   COALESCE(SUM(realized_pnl_cents), 0) / 100.0,
+                   COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = %s), 0) / 100.0,
+                   COUNT(*) FILTER (WHERE target_date = %s),
+                   COALESCE(SUM(count * limit_price_cents)
+                            FILTER (WHERE target_date = %s), 0) / 100.0
+            FROM fx_live_trades GROUP BY station_id""", (today, today, today))
+        for _st, *_vals in cur.fetchall():
+            venue_pnl[("FX", _st)] = _vals
+
+        venue_unreal = _venue_open_positions(cur, today)
+
+        # Polymarket + ForecastEx: same three panels, one pass over their tables.
+        # Their resting size is deliberately NOT added to open_orders_contracts /
+        # _collateral — those feed the Kalshi cash reconciliation.
+        venue_rows = _venue_trades(cur, today - timedelta(days=7))
+        today_orders_rows += [r for r in venue_rows if r["targetDate"] == today]
+        today_orders_rows.sort(key=lambda r: r["time"], reverse=True)
+        for r in venue_rows:
+            if r["fillQty"] > 0:
+                fills_rows.append({**r, "qty": r["fillQty"], "px": r["fillPx"]})
+        fills_rows.sort(key=lambda r: r["date"], reverse=True)
+        open_orders_rows += [{"venue": r["venue"], "ticker": r["ticker"], "side": r["side"],
+                              "qty": r["qty"] - r["fillQty"], "limit": r["limit"],
+                              "age": _fmt_age(r["placedAt"].isoformat())}
+                             for r in venue_rows
+                             if r["working"] and r["targetDate"] >= today]
 
     # Rolling cumulative realized P&L since first live trade (Kalshi settlements).
     series = _daily_realized_series()
@@ -314,13 +375,19 @@ def get_live_data(cfg: dict) -> dict:
     # intraday round-trip residual here (net P&L of positions opened+closed
     # before settlement that Kalshi's capped fills can't attribute per-city) so
     # the visible cards sum to the cumulative; the sub-label discloses it.
+    # Cities with their own Kalshi card. Retired cities (is_active=False) are no
+    # longer carded, so their realized history rolls into "Other Cities" with the
+    # rest of the manual/reconciled markets instead of disappearing.
+    card_city_names = {c.get("city_name", k) for k, c in city_config.items()
+                       if c.get("is_active", True)}
+
     other_cities = None
     if recon is not None:
         oc_real = oc_unreal = oc_today = 0.0
         oc_n = 0
         oc_names = []
         for cc, d in recon.items():
-            if cc.startswith("_") or cc in LIVE_CITY_NAMES:
+            if cc.startswith("_") or cc in card_city_names:
                 continue
             oc_real += d["realized"]; oc_unreal += d["unrealized"]
             oc_today += d.get("today", 0.0); oc_n += d["n_settled"]
@@ -367,6 +434,8 @@ def get_live_data(cfg: dict) -> dict:
     cities_payload = []
     halt_dir = Path(__file__).parent.parent / "halt"
     for city_code, ccfg in city_config.items():
+        if not ccfg.get("is_active", True):
+            continue        # retired on Kalshi — no card; P&L lives in Other Cities
         ms_tag = ccfg.get("live_model_source_tag", "")
         city_realized = 0.0
         city_today = 0.0
@@ -393,10 +462,13 @@ def get_live_data(cfg: dict) -> dict:
             rc = recon.get(city_name)
             if rc is not None:
                 disp_realized = round(rc["realized"], 2)
-                disp_unrealized = round(rc["unrealized"], 2)
-                disp_today = round(rc.get("today", 0.0), 2)
+                # live WS marks, not recon's 60s-cached copy — see the account
+                # rollup below for why.
+                disp_unrealized = city_unrealized
+                disp_today = round(rc.get("today_realized", 0.0) + city_unrealized, 2)
             else:
-                disp_realized = disp_unrealized = disp_today = 0.0
+                disp_realized = disp_today = 0.0
+                disp_unrealized = city_unrealized
 
         # Halt status — three layers: explicit is_active=False in config,
         # halt file present, or aggregate halt
@@ -417,6 +489,7 @@ def get_live_data(cfg: dict) -> dict:
         stake_str = f"${ccfg['amount_dollars']:.0f}/trade" if ccfg.get("sizing_mode") == "amount" else sizing_label
 
         cities_payload.append({
+            "venue": "K",
             "name": city_name,
             "code": city_code,
             "model": ms_tag.replace(" [LIVE]", "").replace(" (rolling 45d)", " · rolling 45d"),
@@ -438,6 +511,8 @@ def get_live_data(cfg: dict) -> dict:
             "stake": stake_str,
         })
 
+    cities_payload += _venue_city_cards(venue_pnl, venue_unreal)
+
     # Aggregate
     agg = {
         "cumPnl": round(cum_realized, 2),
@@ -445,7 +520,8 @@ def get_live_data(cfg: dict) -> dict:
         "todayPnl": round(today_realized, 2),
         "dailyKill": int(agg_daily_kill),
         "openContracts": open_orders_contracts,
-        "contractCap": sum(c.get("max_open_contracts", 0) for c in city_config.values()),
+        "contractCap": sum(c.get("max_open_contracts", 0) for c in city_config.values()
+                           if c.get("is_active", True)),
     }
 
     # (positions_rows already computed earlier — needed by per-city loop.)
@@ -470,7 +546,7 @@ def get_live_data(cfg: dict) -> dict:
         if city.get("haltNote"):
             alerts.append({"lvl": "warn", "ts": "now", "msg": f"{city['name']} {city['haltNote']}"})
     if not alerts:
-        alerts.append({"lvl": "ok", "ts": datetime.now().strftime("%H:%M"), "msg": "All systems nominal."})
+        alerts.append({"lvl": "ok", "ts": _et().strftime("%H:%M"), "msg": "All systems nominal."})
 
     # HRRR data freshness
     hrrr = _hrrr_freshness()
@@ -503,15 +579,20 @@ def get_live_data(cfg: dict) -> dict:
     # Kalshi reality), and it captures manual trades the live_trades view misses.
     # Fall back to the live_trades numbers when the Kalshi call failed.
     if recon_acct is not None:
-        cum_total = recon_acct["total"]
         cum_realized_disp = recon_acct["realized_total"]
-        cum_unreal_disp = recon_acct["unrealized_total"]
-        cum_return_pct = round((cum_total / 3050.0) * 100, 1)
         cum_win_rate = recon_acct["win_rate"]
         cum_n_settled = recon_acct["n_settled"]
-        today_total_disp = recon_acct["today"]
         today_realized_disp = recon_acct["today_realized"]
-        today_unreal_disp = recon_acct["today_unrealized"]
+        # UNREALIZED comes from the live positions, NOT from recon. recon is
+        # cached 60s (it paginates settlements), so taking its unrealized froze
+        # this column for a minute at a time while the positions table ticked
+        # with the WS marks beside it. Both mark the same Kalshi positions;
+        # positions_rows is simply the fresher of the two.
+        cum_unreal_disp = today_unrealized
+        today_unreal_disp = today_unrealized
+        cum_total = round(cum_realized_disp + today_unrealized, 2)
+        today_total_disp = round(today_realized_disp + today_unrealized, 2)
+        cum_return_pct = round((cum_total / 3050.0) * 100, 1)
     else:
         cum_total = round(cum_realized + today_unrealized, 2)
         cum_realized_disp = round(cum_realized, 2)
@@ -543,7 +624,7 @@ def get_live_data(cfg: dict) -> dict:
         "label": "Live",
         "env": "LIVE",
         "killArmed": cum_realized > -agg_cum_kill,
-        "asOf": datetime.now().strftime("today %H:%M ET"),
+        "asOf": _et().strftime("today %H:%M ET"),
         "live": {
             "connected": bool(live.get("connected")),
             "ageMs": live.get("age_ms"),
@@ -569,6 +650,7 @@ def get_live_data(cfg: dict) -> dict:
             "nSettled": int(cum_n_settled),
         },
         "openOrders": {"count": open_orders_count, "contracts": open_orders_contracts},
+        "venueBalances": _venue_balances(round(balance, 2), portfolio_value),
         "hrrr": hrrr,
         "nextCron": next_cron,
         "series": series,
@@ -586,14 +668,39 @@ def get_live_data(cfg: dict) -> dict:
     }
 
 
+def _bracket_label(s: str) -> str:
+    """Polymarket bracket suffix -> display. 'gte92lt93f' brackets are INCLUSIVE
+    pairs (92 or 93), not half-open — see the PM bracket-semantics finding."""
+    m = re.fullmatch(r"gte(\d+)lt(\d+)f", s)
+    if m:
+        return f"{m.group(1)}–{int(m.group(2))}"
+    m = re.fullmatch(r"gte(\d+)f", s)
+    if m:
+        return f"≥{m.group(1)}"
+    m = re.fullmatch(r"lt(\d+)f", s)
+    if m:
+        return f"<{m.group(1)}"
+    return s
+
+
 def _short_ticker(t: str) -> str:
-    """Compress 'KXHIGHCHI-26JUN08-B89.5' -> '…CHI-B89.5' for table display."""
+    """Compress a venue ticker for table display:
+        Kalshi      KXHIGHCHI-26JUN08-B89.5              -> …CHI-B89.5
+        Polymarket  tc-temp-miahigh-2026-08-24-gte92lt93f -> …MIA-92–93
+        ForecastEx  UHMIA_082426_90                       -> …MIA->90
+    """
     if not t:
         return ""
     if t.startswith("KXHIGH"):
         parts = t.split("-", 2)
         if len(parts) >= 3:
             return f"…{parts[0][6:]}-{parts[2]}"
+    m = re.fullmatch(r"tc-temp-(\w+?)high-\d{4}-\d{2}-\d{2}-(.+)", t)
+    if m:
+        return f"…{m.group(1)[:3].upper()}-{_bracket_label(m.group(2))}"
+    m = re.fullmatch(r"UH(\w{3})_\d+_([\d.]+)", t)
+    if m:
+        return f"…{m.group(1)}->{m.group(2)}"
     return t
 
 
@@ -609,6 +716,59 @@ def _fmt_age(ts: str | None) -> str:
         return f"{m // 60}h {m % 60}m"
     except Exception:
         return "—"
+
+
+# Polymarket and ForecastEx keep their own trade tables that mirror live_trades
+# with different column names. One normalised SELECT per venue lets the orders /
+# fills / open-orders panels stay venue-agnostic.
+# ponytail: "working" for PM/FX is inferred from the DB (unfilled + unsettled),
+# not polled from the venue like Kalshi's resting orders — a PM IOC that died
+# unfilled reads as working until the reconciler stamps it. Poll the venues if
+# that stops being good enough.
+_VENUE_SQL = {
+    "PM": """
+        SELECT placed_at, target_date, ticker,
+               CASE WHEN intent LIKE '%%LONG' THEN 'yes' ELSE 'no' END,
+               count, limit_price_cents, fill_count, fill_avg_price_cents,
+               settlement, realized_pnl_cents
+        FROM pm_live_trades WHERE target_date >= %s""",
+    "FX": """
+        SELECT placed_at, target_date, fx_contract_id, side,
+               count, limit_price_cents, fill_count, fill_avg_price_cents,
+               settlement, realized_pnl_cents
+        FROM fx_live_trades WHERE target_date >= %s""",
+}
+
+
+def _venue_trades(cur, since: date) -> list[dict]:
+    """Normalised Polymarket + ForecastEx trades placed for target_date >= since,
+    newest first. Shape matches what the orders / fills / open-orders panels
+    already read for Kalshi, plus a `venue` tag."""
+    out = []
+    for venue, sql in _VENUE_SQL.items():
+        cur.execute(sql, (since,))
+        for placed, td, ticker, side, cnt, lim, fc, fpx, settle, pnl in cur.fetchall():
+            fc, cnt = float(fc or 0), float(cnt)
+            out.append({
+                "venue": venue,
+                "placedAt": placed,
+                "targetDate": td,
+                "time": _et(placed).strftime("%H:%M:%S"),
+                "date": td.strftime("%m-%d"),
+                "_ticker": ticker,               # raw, for joining to signals
+                "ticker": _short_ticker(ticker),
+                "side": (side or "").upper(),
+                "qty": int(cnt),
+                "fillQty": int(fc),
+                "limit": int(lim),
+                "fillPx": round(float(fpx)) if fpx is not None and fc else None,
+                "status": ("filled" if fc >= cnt else "partial" if fc
+                           else "pending" if settle is None else (settle or "unfilled")),
+                "pnl": (float(pnl) / 100.0) if pnl is not None else None,
+                "working": fc < cnt and settle is None,
+            })
+    out.sort(key=lambda r: r["placedAt"], reverse=True)
+    return out
 
 
 def _vwap_entry_yes(fills: list[dict], side: str) -> int | None:
@@ -658,7 +818,12 @@ def _open_positions(today: date, live_marks: dict | None = None) -> list[dict]:
             for p in pos_resp.get("market_positions", []):
                 qty_signed = int(round(float(p.get("position_fp", p.get("position", 0)) or 0)))
                 if qty_signed != 0:
-                    held.append((p["ticker"], qty_signed))
+                    # Kalshi's own cost basis, kept as the fallback entry: the
+                    # get_fills window below only reaches back 200 fills, and an
+                    # older position falls outside it → _vwap_entry_yes returns
+                    # None → the row used to mark at 0¢ and report $0 unrealized.
+                    held.append((p["ticker"], qty_signed,
+                                 float(p.get("total_traded_dollars") or 0)))
             if not held:
                 return []
             fills_by: dict = {}
@@ -667,7 +832,7 @@ def _open_positions(today: date, live_marks: dict | None = None) -> list[dict]:
         finally:
             client.close()
 
-        tickers = [t for t, _ in held]
+        tickers = [t for t, _, _ in held]
         meta: dict = {}
         db_marks: dict = {}
         with get_connection() as conn, conn.cursor() as cur:
@@ -683,10 +848,13 @@ def _open_positions(today: date, live_marks: dict | None = None) -> list[dict]:
                     db_marks[tk] = (int(yb), int(ya))
 
         rows = []
-        for ticker, qty_signed in held:
+        for ticker, qty_signed, cost_dollars in held:
             side = "yes" if qty_signed > 0 else "no"
             qty = abs(qty_signed)
             avg_yes = _vwap_entry_yes(fills_by.get(ticker, []), side)
+            if avg_yes is None and qty and cost_dollars:
+                per_contract = cost_dollars * 100.0 / qty      # cents on the side held
+                avg_yes = int(round(per_contract if side == "yes" else 100.0 - per_contract))
             live_used = ticker in live_marks
             if live_used:
                 yb, ya, _ts = live_marks[ticker]
@@ -847,37 +1015,245 @@ def _open_positions_from_db(today: date, live_marks: dict | None = None) -> list
     return rows
 
 
-def _today_signals(city_config: dict, today: date) -> list[dict]:
-    """Pull today's paper_trade signals for the LIVE cities only.
+def _venue_open_positions(cur, today: date) -> dict:
+    """Unrealized $ per (venue, station) for Polymarket + ForecastEx: rows that
+    filled and have not settled yet, marked on the newest quote we hold.
 
-    Skips cities where is_active=False (e.g., Miami) so the dashboard
-    doesn't surface paper signals for halted markets.
+    All three venues snapshot into the same `prices` table, so this is the same
+    side-adjusted-bid mark _open_positions() uses for Kalshi — with one caveat:
+    IBKR serves no bid/ask for ForecastEx, so FX marks on LAST TRADE. That is
+    softer than a bid, so FX unrealized is indicative, not a close-now value.
+    """
+    # An unsettled fill older than yesterday means the reconciler did not run —
+    # that is an ops problem, not an open position.
+    since = today - timedelta(days=1)
+    out: dict = {}
+
+    cur.execute("""
+        SELECT CASE WHEN t.intent LIKE '%%LONG' THEN 'yes' ELSE 'no' END,
+               c.station_id, t.fill_count, t.fill_avg_price_cents, pr.yes_bid, pr.yes_ask
+        FROM pm_live_trades t
+        JOIN contracts c ON c.ticker = t.ticker
+        JOIN LATERAL (SELECT yes_bid, yes_ask FROM prices
+                      WHERE ticker = t.ticker ORDER BY snapshot_at DESC LIMIT 1) pr ON TRUE
+        WHERE t.settlement IS NULL AND t.fill_count > 0 AND t.target_date >= %s""", (since,))
+    for side, station, qty, entry, yes_bid, yes_ask in cur.fetchall():
+        mark = yes_bid if side == "yes" else (None if yes_ask is None else 100 - yes_ask)
+        if mark is None or entry is None:
+            continue
+        k = ("PM", station)
+        out[k] = out.get(k, 0.0) + (mark - float(entry)) * float(qty) / 100.0
+
+    cur.execute("""
+        SELECT t.side, t.station_id, t.fill_count, t.fill_avg_price_cents, pr.last_price
+        FROM fx_live_trades t
+        JOIN LATERAL (SELECT last_price FROM prices
+                      WHERE ticker = t.fx_contract_id ORDER BY snapshot_at DESC LIMIT 1) pr ON TRUE
+        WHERE t.settlement IS NULL AND t.fill_count > 0 AND t.target_date >= %s""", (since,))
+    for side, station, qty, entry, last in cur.fetchall():
+        if last is None or entry is None:
+            continue
+        mark = last if side == "yes" else 100 - last
+        k = ("FX", station)
+        out[k] = out.get(k, 0.0) + (mark - float(entry)) * float(qty) / 100.0
+    return out
+
+
+@ttl_cache(60)
+def _venue_balances(kalshi_cash: float, kalshi_portfolio: float) -> dict:
+    """Cash on each venue we trade. Kalshi's numbers are already fetched by the
+    caller; Polymarket and IBKR each cost a REST round-trip, hence the 60s cache
+    on a payload the browser polls every 2s.
+
+    Every venue is independently best-effort: one unreachable gateway shows as
+    an error row instead of blanking the panel or failing the poll.
+    """
+    rows = [{"venue": "K", "name": "Kalshi", "cash": round(kalshi_cash, 2),
+             "positions": round(kalshi_portfolio, 2),
+             "total": round(kalshi_cash + kalshi_portfolio, 2),
+             "note": "cash · position marks", "error": None}]
+
+    row = {"venue": "PM", "name": "Polymarket", "cash": None, "positions": None,
+           "total": None, "note": None, "error": None}
+    try:
+        from weather_markets.polymarket import PolymarketClient
+        with PolymarketClient() as c:
+            b = (c.get_balance().get("balances") or [{}])[0]
+        row["total"] = round(float(b.get("currentBalance") or 0), 2)
+        row["cash"] = round(float(b.get("buyingPower") or 0), 2)
+        # USDC held against resting orders — Polymarket's analogue of Kalshi's
+        # order collateral, not a marked position value.
+        row["positions"] = round(float(b.get("marginRequirement") or 0), 2)
+        row["note"] = "buying power · order margin"
+    except Exception as e:
+        row["error"] = type(e).__name__
+    rows.append(row)
+
+    row = {"venue": "FX", "name": "ForecastEx", "cash": None, "positions": None,
+           "total": None, "note": "IBKR net liquidation", "error": None}
+    try:
+        from weather_markets.ibkr import IBKRClient
+        # 4s, not the client's 30s default: a WEDGED gateway accepts the socket
+        # and never answers, and this runs inside a request the browser polls
+        # every 2s. IBKRClient has no close(), so drop its httpx client by hand.
+        c = IBKRClient(timeout=4.0)
+        try:
+            row["total"] = round(float(c.net_liquidation()), 2)
+        finally:
+            c._client.close()
+    except Exception as e:
+        # 401 = the gateway is up but the SSO session lapsed; it needs a
+        # re-login, which no dashboard poll can do for it.
+        row["error"] = ("gateway not authenticated" if "401" in str(e)
+                        else f"{type(e).__name__}: {str(e)[:60]}")
+    rows.append(row)
+
+    known = [r["total"] for r in rows if r["total"] is not None]
+    return {"venues": rows, "total": round(sum(known), 2),
+            "complete": len(known) == len(rows)}
+
+
+def _venue_city_cards(venue_pnl: dict, venue_unreal: dict | None = None) -> list[dict]:
+    """City cards for the two non-Kalshi venues, in the same shape as the Kalshi
+    cards. Every dial is read from the trader's own module, so a card can't drift
+    from the rails that module actually enforces.
+
+    Unrealized comes from _venue_open_positions() — filled-but-unsettled rows
+    marked on the newest snapshot in `prices`.
+    """
+    from dashboard.data_polymarket import _LIVE as pm, CITY_NAMES as PM_CITY
+    import live_trade_forecastex as fx
+
+    venue_unreal = venue_unreal or {}
+    real, td, n, spend = venue_pnl.get("PM", (0.0, 0.0, 0, 0.0))
+    halted = pm.HALT_FILE.exists()
+    cards = [{
+        "venue": "PM",
+        "name": PM_CITY.get(pm.STATION, pm.STATION),
+        "code": pm.STATION,
+        "model": pm.MODEL_SOURCE.replace("PM live probe ", ""),
+        "status": "halted" if halted else "active",
+        "realized": round(real, 2),
+        "unrealized": (pm_unreal := round(venue_unreal.get(("PM", pm.STATION), 0.0), 2)),
+        "today": round(td + pm_unreal, 2),
+        "orders": int(n),
+        "budget": int(pm.DAILY_SPEND_CAP_CENTS / 100),
+        "contracts": int(pm.CONTRACTS_PER_SIGNAL * pm.MAX_SIGNALS_PER_DAY),
+        "haltNote": f"HALTED — halt/{pm.HALT_FILE.name} present" if halted else None,
+        "risk": {
+            "cumUsed": round(max(0.0, -real), 2),
+            "cumKill": int(abs(pm.CUMULATIVE_KILL_CENTS) / 100),
+            # PM's daily rail is a SPEND cap, not a loss limit — dial it as spend
+            # so the bar means what the script enforces.
+            "todayUsed": round(spend, 2),
+            "todayKill": int(pm.DAILY_SPEND_CAP_CENTS / 100),
+            "todayLabel": "Today spend",
+        },
+        "edgeThresh": f"{int(pm.EDGE_THRESHOLD * 100)}%",
+        "stake": f"{pm.CONTRACTS_PER_SIGNAL:g}u",
+    }]
+
+    for code, cfg in fx.CITY_CONFIG.items():
+        real, td, n, _ = venue_pnl.get(("FX", code), (0.0, 0.0, 0, 0.0))
+        reason = fx.halted(code)
+        cards.append({
+            "venue": "FX",
+            "name": cfg["name"],
+            "code": code,
+            "model": f"{cfg['strategy']} · {cfg['product']}",
+            "status": "halted" if reason else "active",
+            "realized": round(real, 2),
+            "unrealized": (fx_unreal := round(venue_unreal.get(("FX", code), 0.0), 2)),
+            "today": round(td + fx_unreal, 2),
+            "orders": int(n),
+            "budget": int(cfg["daily_loss_limit_dollars"]),
+            "contracts": int(cfg["contracts"] * cfg["max_picks"]),
+            "haltNote": f"HALTED — {reason}" if reason else None,
+            "risk": {
+                "cumUsed": round(max(0.0, -real), 2),
+                "cumKill": int(fx.CUMULATIVE_KILL_DOLLARS),
+                "todayUsed": round(max(0.0, -td), 2),
+                "todayKill": int(cfg["daily_loss_limit_dollars"]),
+            },
+            "edgeThresh": f"{int(cfg['edge_threshold'] * 100)}%",
+            "stake": f"{cfg['contracts']}u",
+        })
+    return cards
+
+
+def _today_signals(city_config: dict, today: date) -> list[dict]:
+    """Today's signals across all three live venues, each joined to its own trade
+    table so the panel actually shows signal -> order -> fill -> P&L.
+
+    Kalshi + Polymarket signals come from paper_trades (skipping cities where
+    is_active=False, so halted markets don't surface paper signals). ForecastEx
+    has no paper log — its signals only exist as the rows its live trader wrote,
+    so those double as the signal record.
     """
     rows = []
     try:
         with get_connection() as conn, conn.cursor() as cur:
+            # ticker -> (status, P&L) from every venue's trade table, so a signal
+            # row can show what actually happened to it.
+            outcome = {}
+            cur.execute("""
+                SELECT ticker, fill_status, fill_count, count, realized_pnl_cents
+                FROM live_trades WHERE target_date = %s""", (today,))
+            for tk, fs, fc, cnt, pnl in cur.fetchall():
+                outcome[tk] = (fs or "pending", (pnl / 100.0) if pnl is not None else None)
+            for r in _venue_trades(cur, today):
+                if r["targetDate"] == today:
+                    outcome[r["_ticker"]] = (r["status"], r["pnl"])
+
+            def emit(venue, ticker, mp, mkt, edge, side, threshold, bracket=None):
+                fill, pnl = outcome.get(ticker, ("—", None))
+                rows.append({
+                    "venue": venue,
+                    "ticker": _short_ticker(ticker),
+                    "bracket": bracket if bracket is not None else (
+                        _bracket_label(ticker.split("-")[-1]) if "-" in ticker else ticker),
+                    "modelP": float(mp), "mktP": float(mkt), "edge": float(edge),
+                    "side": side,
+                    "placed": "placed" if ticker in outcome else (
+                        "eligible" if abs(float(edge)) >= threshold else "skipped"),
+                    "fill": fill,
+                    "pnl": pnl,
+                })
+
+            paper_sql = """
+                SELECT ticker, edge, market_mid_prob, model_prob_yes, position
+                FROM paper_trades
+                WHERE target_date = %s AND model_source = %s
+                ORDER BY ABS(edge) DESC LIMIT 10"""
+
             for city_code, ccfg in city_config.items():
                 if not ccfg.get("is_active", True):
                     continue   # halted city — skip its paper signals
-                ms = ccfg.get("paper_model_source", "")
-                cur.execute("""
-                    SELECT ticker, edge, market_mid_prob, model_prob_yes, position, entry_price_cents
-                    FROM paper_trades
-                    WHERE target_date = %s AND model_source = %s
-                    ORDER BY ABS(edge) DESC LIMIT 10
-                """, (today, ms))
-                for ticker, edge, mkt, mp, pos, entry in cur.fetchall():
-                    rows.append({
-                        "ticker": _short_ticker(ticker),
-                        "bracket": ticker.split("-")[-1] if "-" in ticker else ticker,
-                        "modelP": float(mp),
-                        "mktP": float(mkt),
-                        "edge": float(edge),
-                        "side": "YES" if pos == "BUY_YES" else "NO",
-                        "placed": "placed" if abs(float(edge)) >= ccfg.get("edge_threshold", 0.10) else "skipped",
-                        "fill": "—",
-                        "pnl": None,
-                    })
+                cur.execute(paper_sql, (today, ccfg.get("paper_model_source", "")))
+                for ticker, edge, mkt, mp, pos in cur.fetchall():
+                    emit("K", ticker, mp, mkt, edge,
+                         "YES" if pos == "BUY_YES" else "NO",
+                         ccfg.get("edge_threshold", 0.10))
+
+            # Polymarket: the probe's own station + threshold, imported rather
+            # than restated so the panel can't drift from what it enforces.
+            from dashboard.data_polymarket import _LIVE as pm_live, _PAPER as pm_paper
+            cur.execute(paper_sql, (today, pm_paper.STATIONS.get(pm_live.STATION, "")))
+            for ticker, edge, mkt, mp, pos in cur.fetchall():
+                emit("PM", ticker, mp, mkt, edge,
+                     "YES" if pos == "BUY_YES" else "NO", pm_live.EDGE_THRESHOLD)
+
+            # ForecastEx: the live rows ARE the signal record.
+            cur.execute("""
+                SELECT fx_contract_id, model_prob_yes, market_last_prob, edge, side, strike
+                FROM fx_live_trades WHERE target_date = %s ORDER BY ABS(edge) DESC""", (today,))
+            for ticker, mp, mkt, edge, side, strike in cur.fetchall():
+                if mp is None or mkt is None or edge is None:
+                    continue
+                emit("FX", ticker, mp, mkt, edge, (side or "").upper(), 0.0,
+                     bracket=f">{strike:g}")
+
+            rows.sort(key=lambda r: -abs(r["edge"]))
     except Exception:
         pass
     return rows
