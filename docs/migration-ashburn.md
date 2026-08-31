@@ -204,6 +204,48 @@ faithful. Also confirm on the new box:
   = accountValue` must hold)
 - `uv run python scripts/ibkr_keepalive.py` reports a live session
 
+## Phase 7b — Polymarket moved early (2026-08-31)
+
+Polymarket is the ONLY thing the geo-block breaks, and it has been broken since
+08-29 (403 `GEO_BLOCKED_STATE` every day). So it moved ahead of the rest rather
+than waiting for Phase 8: there is nothing to lose by moving a cron that always
+fails, and the sooner it runs from Virginia the sooner we know placement works.
+
+    NUREMBERG   Kalshi KMIA armed  ·  Polymarket DISARMED
+    ASHBURN     Kalshi guarded off ·  Polymarket ARMED
+
+`docs/crontab-ashburn.txt` holds the Ashburn side; it differs from
+`docs/crontab.txt` in exactly those two lines and is DELETED at cutover, when
+Ashburn takes `docs/crontab.txt` wholesale.
+
+**This splits the P&L record.** `pm_live_trades` rows now land only in Ashburn's
+database, and `reconcile_pm_trades.py` only ever UPDATEs — it never INSERTs — so
+Nuremberg cannot learn about them from the venue either. Consequences:
+
+- Nuremberg's dashboard under-reports Polymarket from 2026-09-01 onward. Expected.
+- **The Phase 8 delta-sync must NOT copy `pm_live_trades` from Nuremberg.** It
+  would overwrite the only copy of the new rows with a stale one. Sync the
+  Kalshi-side tables only.
+
+## Phase 7c — MOVE `halt/`. IT IS GITIGNORED. ⚠️
+
+Same class of miss as `data/`, and worse consequences. `halt/` carries the
+kill-switch state and a fresh clone has none of it:
+
+    halt/KORD    KORD cumulative $-708.22 below -$500   (2026-07-24)
+    halt/KDFW    KDFW cumulative $-615.06 below -$500   (2026-08-07)
+    halt/KPHX    KPHX cumulative $-384.23 below -$375   (2026-07-21)
+    halt/FX_KDFW operator hold
+    halt/FX_KMIA operator hold — ForecastEx retired
+
+Without these, a cutover box would happily re-arm three cities that were halted
+for losses the moment anyone uncommented their crons.
+
+    rsync -av halt/ newhost:~/weather-project/halt/
+
+Re-run this immediately before cutover, not just once — a kill switch can fire
+in the parallel-run window.
+
 ## Phase 8 — Cutover (30 min, do it after a decision time, not before)
 
 Traders move last and atomically — running both boxes live would double every

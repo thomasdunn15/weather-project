@@ -1,3 +1,9 @@
+# ASHBURN crontab — TEMPORARY, for the parallel-run window only.
+# Deleted at Phase 8 cutover, when Ashburn takes docs/crontab.txt wholesale.
+# Differs from docs/crontab.txt in exactly two places: the Kalshi live trader
+# is guarded off, and the Polymarket live trader is armed.
+#   install:  crontab docs/crontab-ashburn.txt
+# ---------------------------------------------------------------------------
 # Edit this file to introduce tasks to be run by cron.
 #
 # Each task to run has to be defined through a single line
@@ -144,13 +150,15 @@
 # cap, cumulative kill -$300 -> writes halt/PMKMIA. touch halt/PMKMIA to stop.
 # INSTALLED 2026-08-12; first fire 2026-08-13 14:47 UTC. See
 # docs/decisions/2026-08-12-polymarket-live-probe.md for rationale + scaling ladder.
-# MOVED TO ASHBURN 2026-08-31. Polymarket geo-gates ORDER PLACEMENT by IP and
-# this host is in Bavaria: every attempt since 08-29 returned 403
-# GEO_BLOCKED_STATE. It is disarmed HERE rather than left to fail, because a
-# cron that always fails is noise that hides a cron that has started failing.
-# Armed on Ashburn via docs/crontab-ashburn.txt. Reconcile stays on BOTH: it
-# only UPDATEs existing rows, so it is a no-op here once orders stop landing.
-# 47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
+# ===== ARMED HERE, DISARMED ON NUREMBERG (2026-08-31) ================
+# Polymarket geo-gates order placement by IP; Nuremberg is in Bavaria and has
+# 403'd every attempt since 08-29. This is a PARTIAL cutover: Polymarket moves
+# now because it is already broken there, Kalshi stays put until Phase 8.
+# NOTHING IS DOUBLED — the matching line in docs/crontab.txt is commented out.
+# CONSEQUENCE: pm_live_trades rows now land in THIS box's database only.
+# reconcile_pm_trades only UPDATEs, never INSERTs, so Nuremberg can never learn
+# about them. At cutover the delta-sync must NOT overwrite this table.
+47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
 
 # Reconcile Polymarket fills + settlement. WITHOUT THIS THE PM KILL SWITCH IS
 # DEAD: live_trade_polymarket reads cumulative realized_pnl_cents to decide
@@ -205,7 +213,12 @@
 # RETIRED 2026-08-17 (docs/decisions/2026-08-17-retire-halted-cities.md) — forward-test negative on EVERY
 # config tested (raw 0.10/0.15/0.20/0.25, blend, union). halt/KORD also present.
 # 46 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KORD --live >> /var/log/weather/live_trade.log 2>&1
-30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
+# ===== PARALLEL-RUN GUARD (Ashburn, 2026-08-31) =====================
+# The LIVE traders are commented out on this host on purpose. Nuremberg is
+# still the live system until cutover; two boxes running these would DOUBLE
+# every order. Uncomment ONLY at Phase 8 cutover, and only after Nuremberg
+# has halt/ALL and its own traders disabled.
+# 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade.py --city KMIA --live >> /var/log/weather/live_trade.log 2>&1
 
 # PHOENIX live trading — OPERATOR OVERRIDE (MINIMAL 50-unit, raw@0.20), 2026-07-10.
 # See docs/decisions/2026-07-10-phoenix-live-override.md. 14:52 UTC = paper-signal time; tune later.
