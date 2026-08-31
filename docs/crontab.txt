@@ -289,21 +289,27 @@
 #
 # Each city fires at ITS OWN decision time, so these are separate entries --
 # running both at one time would price one city off the wrong snapshot.
-30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KMIA --live >> /var/log/weather/live_trade_fx.log 2>&1
-32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KDFW --live >> /var/log/weather/live_trade_fx.log 2>&1
+# RETIRED 2026-08-31: IBKR balance withdrawn, ForecastEx trading ended. The 2%
+# event-contract cap capped the venue at 20 contracts/day (~$10 deployed) — six
+# orders over five sessions, zero fills. halt/FX_KMIA + halt/FX_KDFW also block it.
+# 30 15 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KMIA --live >> /var/log/weather/live_trade_fx.log 2>&1
+# 32 17 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_forecastex.py --city KDFW --live >> /var/log/weather/live_trade_fx.log 2>&1
 
 # Reconcile fills + settlement. WITHOUT THIS THE $200 PROBE KILL SWITCH IS DEAD:
 # live_trade_forecastex reads cumulative realized_pnl_cents and nothing else
 # writes it. 20:10 catches fills; 05:30 scores settlement once the 05:00 backtest
 # refresh has cached ForecastEx's own (Weather Underground) settled highs.
-10 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
-30 5 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
+# 10 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
+# 30 5 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_fx_trades.py --apply >> /var/log/weather/reconcile_fx.log 2>&1
 
 # Gateway keepalive every 5 min. /tickle defeats the ~5-minute IDLE timeout; it
 # CANNOT defeat IBKR's ~24h SSO expiry, which needs a browser login. So the real
 # job here is alerting on state change, so a dead session is known in the morning
 # rather than discovered as a 401 at 15:30.
-*/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ibkr_keepalive.py --quiet >> /var/log/weather/ibkr_keepalive.log 2>&1
+# RETIRED 2026-08-31 with the ForecastEx traders. Left running it would fire a
+# CRITICAL 'session DEAD' alert on every state change for an account that is
+# now empty and closed — alert fatigue on a venue we no longer trade.
+# */5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ibkr_keepalive.py --quiet >> /var/log/weather/ibkr_keepalive.log 2>&1
 
 # Ops-copilot digest: 04:30 UTC daily (after reconcile 04:00 + equity snapshot
 # 04:15, so settlement + equity data for yesterday is fresh). READ-ONLY —
