@@ -757,13 +757,21 @@ function venueMeta(rows) {
   return Object.keys(n).map(v => `${n[v]} ${v}`).join(" · ") || "none";
 }
 
+// Money value for a per-city metric cell. The three cells are equal thirds of the
+// card, so a long string ("+$4,360.31") needs a smaller size than a short one to
+// stay inside its column; .long is the step-down, see .city .cbody .m .mv.long.
+function cityMetric(v) {
+  const s = money(v);
+  return `<div class="mv ${cls(v)}${s.length >= 9 ? " long" : ""}">${s}</div>`;
+}
+
 function cityCard(c) {
   return `<div class="panel city">
     <div class="ch"><span class="nm">${esc(c.name)}</span><span class="pill-status venue ${esc(c.venue || "K")}" title="${esc(VENUE_NAME[c.venue] || "Kalshi")}">${esc(c.venue || "K")}</span><span class="code">${esc(c.code)}</span><span class="badge ${c.status === "active" ? "active" : "halted"}">${esc(c.status)}</span>${dialHTML(c.risk.cumUsed, c.risk.cumKill)}<span class="model" title="${esc(c.model)}">${esc(c.model)}</span></div>
     <div class="cbody">
-      <div class="m"><div class="ml">Realized</div><div class="mv ${cls(c.realized)}">${money(c.realized)}</div><div class="ms">settled</div></div>
-      <div class="m"><div class="ml">Unrealized</div><div class="mv ${cls(c.unrealized)}">${money(c.unrealized)}</div><div class="ms">open mark</div></div>
-      <div class="m"><div class="ml">Today</div><div class="mv ${cls(c.today)}">${money(c.today)}</div><div class="ms">${c.orders} orders</div></div>
+      <div class="m"><div class="ml">Realized</div>${cityMetric(c.realized)}<div class="ms">settled</div></div>
+      <div class="m"><div class="ml">Unrealized</div>${cityMetric(c.unrealized)}<div class="ms">open mark</div></div>
+      <div class="m"><div class="ml">Today</div>${cityMetric(c.today)}<div class="ms">${c.orders} orders</div></div>
     </div>
     <div class="cfoot">${c.haltNote ? `<div class="halt-note">${esc(c.haltNote)}</div>` : `<div class="activity"><span>budget <b>$${c.budget}</b></span><span><b>${c.contracts.toLocaleString()}</b> contracts</span><span>edge ≥ <b>${esc(c.edgeThresh)}</b></span><span>size <b>${esc(c.stake)}</b></span></div>`}${riskBar("Cumulative", c.risk.cumUsed, c.risk.cumKill)}${riskBar(c.risk.todayLabel || "Today", c.risk.todayUsed, c.risk.todayKill)}</div>
   </div>`;
@@ -773,9 +781,9 @@ function otherCitiesCard(c) {
   return `<div class="panel city other">
     <div class="ch"><span class="nm">${esc(c.name)}</span><span class="code">${esc(c.code)}</span><span class="badge other">manual</span><span class="model">${esc(c.model)}</span></div>
     <div class="cbody">
-      <div class="m"><div class="ml">Realized</div><div class="mv ${cls(c.realized)}">${money(c.realized)}</div><div class="ms">settled</div></div>
-      <div class="m"><div class="ml">Unrealized</div><div class="mv ${cls(c.unrealized)}">${money(c.unrealized)}</div><div class="ms">open mark</div></div>
-      <div class="m"><div class="ml">Today</div><div class="mv ${cls(c.today)}">${money(c.today)}</div><div class="ms">${c.n} settled</div></div>
+      <div class="m"><div class="ml">Realized</div>${cityMetric(c.realized)}<div class="ms">settled</div></div>
+      <div class="m"><div class="ml">Unrealized</div>${cityMetric(c.unrealized)}<div class="ms">open mark</div></div>
+      <div class="m"><div class="ml">Today</div>${cityMetric(c.today)}<div class="ms">${c.n} settled</div></div>
     </div>
     <div class="cfoot"><div class="activity"><span>includes <b>${esc(c.sub)}</b></span></div></div>
   </div>`;

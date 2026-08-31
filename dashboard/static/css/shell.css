@@ -102,7 +102,11 @@
    4-across width so the 3-metric body + strategy label never clip; on a desktop
    it lands the 4 live cities on row 1 and the 2 summary cards (Other + aggregate)
    on row 2, tablet 2-across, phone 1-up. */
-.city-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+/* 400px, not 340: the card holds THREE money values side by side, and at the
+   340px floor a 21px JetBrains Mono "+$4,360.31" (0.6em advance = 126px) could
+   not fit its 113px third — the row grew past the card and clipped the last
+   column. 400px gives each metric ~109px of text room. */
+.city-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
 
 /* ---------- panel primitive ---------- */
 .panel { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }

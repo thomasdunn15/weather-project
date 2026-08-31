@@ -110,11 +110,22 @@
    roll-up sitting behind the live cards, reinforced by the "other" header badge. */
 .city.other { background: var(--bg-0); }
 .city.other .ch { border-bottom-color: var(--border-strong); }
-.city .cbody { display: grid; grid-template-columns: repeat(3, 1fr); }
-.city .cbody .m { padding: 13px 15px; border-right: 1px solid var(--border); }
+/* minmax(0,...) not 1fr: a bare 1fr is minmax(AUTO,1fr), so the widest value
+   set the width of all three columns and pushed the row past the card, which
+   is what clipped TODAY. With a 0 floor the cell can shrink and any overflow
+   stays inside its own column instead of spilling across the border. */
+.city .cbody { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.city .cbody .m { padding: 13px 12px; border-right: 1px solid var(--border); min-width: 0; }
 .city .cbody .m:last-child { border-right: 0; }
 .city .cbody .m .ml { font: 600 9.5px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
-.city .cbody .m .mv { font: 600 21px/1 var(--mono); margin-top: 8px; }
+.city .cbody .m .mv { font: 600 20px/1 var(--mono); margin-top: 8px;
+  letter-spacing: -0.01em; white-space: nowrap; }
+/* Step down by LENGTH rather than shrinking every number to fit the worst case:
+   a four-figure realized total should not cost the two-figure ones their size.
+   Class is set in cityMetric(); 16px keeps 11 characters ("+$14,880.00") inside
+   a 400px card with 3px to spare. Wider than that clips in its own cell, which
+   is survivable — the pre-fix failure clipped ACROSS the card border. */
+.city .cbody .m .mv.long { font-size: 16px; letter-spacing: -0.02em; }
 .city .cbody .m .ms { font: 500 10.5px/1 var(--mono); color: var(--text-faint); margin-top: 6px; }
 .city .cfoot { padding: 11px 15px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 9px; }
 .city .activity { display: flex; gap: 14px; font: 500 11px/1 var(--mono); color: var(--text-lo); flex-wrap: wrap; }
