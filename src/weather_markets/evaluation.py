@@ -4,15 +4,35 @@ def kalshi_equivalent_bracket(platform: str | None, bracket_type: str,
     """Normalize a contract's strikes to Kalshi conventions (what
     contract_resolved_yes and gaussian_to_bracket_probs expect).
 
-    Polymarket US slugs use half-open semantics: gte{a}lt{b} = [a, b),
-    gte{a} = T >= a, lt{b} = T < b — stored RAW in contracts. Kalshi uses
-    between INCLUSIVE both ends and greater_than strictly-above. Scoring PM
-    strikes with Kalshi rules is off-by-one (the lows-bug class of artifact).
+    Polymarket US TAILS are half-open — gte{a} = T >= a, lt{b} = T < b — and
+    are stored RAW in contracts, so they still need mapping onto Kalshi's
+    strictly-above / strictly-below rules.
+
+    Its `between` brackets are NOT half-open, despite the gte{a}lt{b} slug.
+    They are inclusive pairs, identical to Kalshi, and need no transformation.
+    Treating them as [a, b) silently dropped the upper degree. Two proofs:
+
+      TILING. Every PM ladder steps by 2 on every station on the same day
+      (KMIA 88-89 90-91 92-93 94-95; KLAX 77-78 79-80 81-82 83-84; same shape
+      for KMDW/KNYC/KSFO). Under [a, b) semantics the odd degrees 89, 91, 93,
+      95 would belong to no contract at all, and a market must tile its
+      outcome space.
+
+      THE VENUE SAYS SO. GET /v1/markets/tc-temp-miahigh-2026-08-23-gte92lt93f
+      returns title "92 to 93" and "...be BETWEEN 92F and 93F?".
+
+    Cost of the old reading: model_prob_yes was P(low degree only) rather than
+    P(pair), roughly halving it, which inverted side selection. On 2026-08-23
+    Kalshi and Polymarket held the same 92-93 Miami bracket and our own model
+    called BUY_YES on one (p=0.710) and BUY_NO on the other (p=0.251).
+
+    This is the same off-by-one class as the Kalshi exclusive-upper misread
+    noted in contract_resolved_yes below — hence the tiling test.
     """
     if platform == "polymarket":
-        if bracket_type == "between":       # [a, b) -> integers a..b-1
+        if bracket_type == "between":       # inclusive pair, as Kalshi
             return {"bracket_type": bracket_type, "strike_low": strike_low,
-                    "strike_high": strike_high - 1}
+                    "strike_high": strike_high}
         if bracket_type == "greater_than":  # T >= a  ->  T > a-1
             return {"bracket_type": bracket_type, "strike_low": strike_low - 1,
                     "strike_high": strike_high}

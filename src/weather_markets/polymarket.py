@@ -148,14 +148,33 @@ class PolymarketClient:
 
         IOC + limit means: fill at or better than price_usd immediately, cancel
         the rest — the order NEVER rests on the book. intent is one of
-        ORDER_INTENT_BUY_LONG (buy YES) / ORDER_INTENT_BUY_SHORT (buy NO);
-        price_usd is the bound for the side being bought (YES price for LONG,
-        NO price for SHORT). Response includes `executions` (synchronous mode).
+        ORDER_INTENT_BUY_LONG (buy YES) / ORDER_INTENT_BUY_SHORT (buy NO).
+        `price_usd` is the bound for the side BEING BOUGHT — a YES price for
+        LONG, a NO price for SHORT. Response includes `executions`.
+
+        WIRE PRICE IS ALWAYS THE YES LEG. A BUY_SHORT is submitted as
+        ORDER_SIDE_SELL of YES, so the venue reads `price` as a YES-side floor
+        ("sell YES at >= p"), never as the NO price. Passing the NO bound
+        straight through inverts the protection:
+
+          2026-08-22: NO bound 64c sent as 0.64 => "sell YES at >= 0.64" while
+          the YES bid was 0.38-0.43. Not marketable, IOC cancelled untouched,
+          cumQuantity 0 of 150 — a signal that should have filled and did not.
+
+        It also silently voids the price cap on orders that DO fill: a low NO
+        bound becomes a low YES floor, which any bid clears, so we could pay far
+        more for NO than the bound allowed (2026-08-23 took an execution at NO
+        43c against a 42c bound). Converting here rather than at the call site
+        keeps every caller honest.
         """
+        if not 0.0 <= price_usd <= 1.0:
+            raise ValueError(f"price_usd must be a probability in [0,1], got {price_usd}")
+        wire_price = (1.0 - price_usd
+                      if intent == "ORDER_INTENT_BUY_SHORT" else price_usd)
         body = {
             "marketSlug": slug,
             "type": "ORDER_TYPE_LIMIT",
-            "price": {"value": f"{price_usd:.2f}", "currency": "USD"},
+            "price": {"value": f"{wire_price:.2f}", "currency": "USD"},
             "quantity": quantity,
             "tif": tif,
             "intent": intent,

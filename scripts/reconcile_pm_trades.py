@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 
+from weather_markets.alerts import send_alert
 from weather_markets.db import get_connection
 from weather_markets.polymarket import PolymarketClient
 
@@ -68,6 +69,97 @@ def collect_executions(client: PolymarketClient, max_pages: int = 20) -> dict:
     return out
 
 
+def collect_resolutions(client: PolymarketClient, max_pages: int = 25) -> dict:
+    """market_slug -> {net, cost_c, realized_c, fee_c} from the VENUE's own
+    POSITION_RESOLUTION records.
+
+    THIS, NOT OUR ARITHMETIC, IS THE SOURCE OF TRUTH FOR SETTLED P&L.
+
+    Reconstructing P&L from trade activity plus our own bracket logic failed
+    twice in two days. On 2026-08-23 an inline half-open bracket read booked a
+    loss as a win. On 2026-08-25 the deeper problem surfaced: collect_executions
+    keys on aggressorExecution.order.id, so a MAKER fill carries no execution of
+    ours and reads as "no fill". The 08-23 corrective YES long (150 @ 60c, a
+    resting GTC order) filled and won +$54.18, and we recorded it as unfilled
+    while booking -$66.51 on the short it replaced. Cumulative was -$176.81
+    against a venue truth of -$49.13.
+
+    Polymarket nets by MARKET, not by order, so one resolution can cover several
+    of our order rows; the caller attributes it once per (target_date, ticker).
+    Reading `realized` straight from the venue removes bracket semantics, fill
+    attribution, fee modelling and settlement-source questions in one move.
+    """
+    out: dict[str, dict] = {}
+    cursor, pages = None, 0
+    while pages < max_pages:
+        params = {"cursor": cursor} if cursor else None
+        resp = client._request("GET", "/v1/portfolio/activities", params=params)
+        for a in resp.get("activities", []):
+            if a.get("type") != "ACTIVITY_TYPE_POSITION_RESOLUTION":
+                continue
+            pr = a["positionResolution"]
+            before, after = pr["beforePosition"], pr["afterPosition"]
+            fee_c = float((before.get("fees") or {}).get("value") or 0) * 100.0
+
+            # WINS AND LOSSES LIVE IN DIFFERENT FIELDS. A losing position puts
+            # the loss in afterPosition.realized and leaves afterPosition.cost
+            # at 0. A WINNING one does the opposite: realized stays 0.0000 and
+            # the gain lands in afterPosition.cost as (payout - cost + fees).
+            #
+            # Reading only `realized` therefore books every win as a $0.00 loss,
+            # which is exactly what happened to 08-26 and both 08-27 legs — all
+            # three won, all three were recorded as settled losses of nothing,
+            # and the dashboard showed -$49.13 against a real +$93.52. Verified
+            # against afterPosition.cost on all three, to the cent:
+            #   08-26  150.00 - 95.074 = 54.926 + 2.110 = 57.036
+            #   08-27  125.39 - 39.026 = 86.364 + 1.585 = 87.949
+            #   08-27    3.00 -  0.780 =  2.220 + 0.030 =  2.250
+            loss_c = float(after["realized"]["value"]) * 100.0
+            gain_c = float((after.get("cost") or {}).get("value") or 0) * 100.0
+            out[pr["marketSlug"]] = {
+                "net": float(before.get("netPositionDecimal") or 0),
+                "cost_c": float(before["cost"]["value"]) * 100.0,
+                "realized_c": loss_c if loss_c else (gain_c - fee_c if gain_c else 0.0),
+                "fee_c": fee_c,
+            }
+        cursor = resp.get("nextCursor")
+        pages += 1
+        if resp.get("eof") or not cursor:
+            break
+    return out
+
+
+
+# The operator's own cash is readable from the venue; only the promo credit is
+# not (it arrives outside the deposit feed), so it stays a constant here.
+PROMO_CREDIT_CENTS = 1_000       # 2026-08-25: $10 free from Polymarket
+DRIFT_ALERT_CENTS = 200          # $2 — above fee-rounding, below a real miss
+
+
+def venue_deposits_cents(client, max_pages: int = 25) -> float:
+    """Total COMPLETED account deposits, in cents, from the venue's own feed.
+
+    Pending and failed transfers share the ACCOUNT_DEPOSIT type — 13 records on
+    2026-08-28 of which only 3 had completed — so the status filter is what
+    makes this a funding figure rather than an intent figure.
+    """
+    total, cursor, pages = 0.0, None, 0
+    while pages < max_pages:
+        resp = client._request("GET", "/v1/portfolio/activities",
+                               params={"cursor": cursor} if cursor else None)
+        for a in resp.get("activities", []):
+            if a.get("type") != "ACTIVITY_TYPE_ACCOUNT_DEPOSIT":
+                continue
+            ch = a["accountBalanceChange"]
+            if ch.get("status") == "ACCOUNT_BALANCE_CHANGE_STATUS_COMPLETED":
+                total += float(ch["amount"]["value"]) * 100.0
+        cursor = resp.get("nextCursor")
+        pages += 1
+        if resp.get("eof") or not cursor:
+            break
+    return total
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -77,9 +169,20 @@ def main() -> int:
     client = PolymarketClient()
     try:
         execs = collect_executions(client)
+        resolutions = collect_resolutions(client)
+        # Gather the cash figures here too — the client is closed below, and
+        # the cross-check that uses them runs after the DB work.
+        try:
+            cash_c = sum(float(b["currentBalance"]) for b in
+                         client.get_balance()["balances"]) * 100.0
+            deposits_c = venue_deposits_cents(client)
+        except Exception as e:
+            print(f"(cash cross-check unavailable: {type(e).__name__}: {e})")
+            cash_c = deposits_c = None
     finally:
         client.close()
-    print(f"found executions for {len(execs)} order(s)\n")
+    print(f"found executions for {len(execs)} order(s), "
+          f"{len(resolutions)} settled position(s)\n")
 
     conn = get_connection()
     try:
@@ -99,9 +202,32 @@ def main() -> int:
         print(f"{'date':11}{'ticker':42}{'req':>5}{'filled':>8}{'avg':>7}"
               f"{'fee':>7}{'settle':>8}{'P&L':>10}")
         updates, total = [], 0.0
+        booked: set[tuple] = set()      # (target_date, ticker) already credited
         for (rid, td, ticker, intent, req, oid, had_fill, had_px,
              settled, lo, hi, btype, obs) in rows:
+            res = resolutions.get(ticker)
             e = execs.get(oid)
+
+            # SETTLED: take the venue's own realized figure, once per market.
+            # Polymarket nets by market, so several of our order rows can share
+            # one resolution — credit the first and zero the rest so the column
+            # the kill switch sums stays exactly equal to the venue's number.
+            if res is not None:
+                key = (td, ticker)
+                first = key not in booked
+                booked.add(key)
+                pnl_c = res["realized_c"] if first else 0.0
+                verdict = ("win" if res["realized_c"] > 0 else "loss") if first else "netted"
+                n = abs(res["net"]) if first else 0.0
+                avg_c = (res["cost_c"] / n) if n else 0.0
+                total += pnl_c
+                print(f"{str(td):11}{ticker[:41]:42}{req:5.0f}{n:8.1f}{avg_c:6.1f}c"
+                      f"{res['fee_c'] if first else 0:6.1f}c{verdict:>8}"
+                      f"{('$%.2f' % (pnl_c / 100)):>10}")
+                updates.append((n or (had_fill or 0), avg_c or had_px,
+                                verdict, pnl_c, rid))
+                continue
+
             if not e or e["shares"] <= 0:
                 print(f"{str(td):11}{ticker[:41]:42}{req:5.0f}{'—':>8}{'—':>7}"
                       f"{'—':>7}{'no fill':>8}{'—':>10}")
@@ -110,24 +236,37 @@ def main() -> int:
             avg_c = e["notional_c"] / n
             fee_c = e["fee_c"]
 
-            pnl_c, verdict = None, "open"
-            if obs is not None and lo is not None:
-                # PM brackets are half-open [lo, hi): "gte93lt94" is 93 ONLY,
-                # not Kalshi's 93-94 pair. Getting this wrong inverts the result.
-                in_bracket = (obs >= lo and obs < hi) if hi is not None else (obs >= lo)
-                won = (not in_bracket) if intent.endswith("SHORT") else in_bracket
-                pnl_c = ((100.0 - avg_c) if won else -avg_c) * n - fee_c
-                verdict = "win" if won else "loss"
-                total += pnl_c
+            # Not yet resolved by the venue: report the fill, book nothing.
+            # We deliberately no longer settle these ourselves. The old path
+            # scored our own bracket logic against observations and got it
+            # wrong twice in two days — see collect_resolutions().
             print(f"{str(td):11}{ticker[:41]:42}{req:5.0f}{n:8.1f}{avg_c:6.1f}c"
-                  f"{fee_c:6.1f}c{verdict:>8}"
-                  f"{('$%.2f' % (pnl_c / 100)) if pnl_c is not None else '—':>10}")
-            updates.append((n, avg_c, verdict if pnl_c is not None else None,
-                            pnl_c, rid))
+                  f"{fee_c:6.1f}c{'open':>8}{'—':>10}")
+            updates.append((n, avg_c, None, None, rid))
 
         print(f"\n{FEE_NOTE}")
         print(f"cumulative realized: ${total/100:+,.2f}  "
               f"(kill switch fires below -$300.00)")
+
+        # CROSS-CHECK AGAINST CASH. Per-trade arithmetic has been wrong three
+        # times now — half-open brackets (08-23), maker fills invisible to the
+        # execution replay (08-25), and wins hiding in afterPosition.cost while
+        # we read afterPosition.realized (08-28). Every one was caught by the
+        # operator noticing a number looked off, not by us. The account balance
+        # is the one figure the venue cannot state two ways, so reconcile to it
+        # and say so out loud when they disagree.
+        if cash_c is not None:
+            implied_c = cash_c - deposits_c - PROMO_CREDIT_CENTS
+            drift_c = total - implied_c
+            print(f"venue cash ${cash_c/100:,.2f} - deposits ${deposits_c/100:,.2f} "
+                  f"- promo ${PROMO_CREDIT_CENTS/100:.2f} = ${implied_c/100:+,.2f} implied")
+            print(f"drift vs per-trade sum: ${drift_c/100:+,.2f}")
+            if abs(drift_c) > DRIFT_ALERT_CENTS:
+                send_alert(
+                    f"Polymarket P&L drift ${drift_c/100:+,.2f}: per-trade sum says "
+                    f"${total/100:+,.2f}, cash says ${implied_c/100:+,.2f}. "
+                    f"The cash figure is the trustworthy one.",
+                    severity="warning", source="reconcile_pm_trades")
 
         if a.apply and updates:
             with conn.cursor() as cur:

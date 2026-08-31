@@ -11,3 +11,7 @@ scratch_*.py
 *.egg-info/
 Research.md
 halt/
+
+# Personal correspondence — contains IBKR account number and email.
+# Public repo; keep local.
+docs/ibkr-oauth-request-email.md

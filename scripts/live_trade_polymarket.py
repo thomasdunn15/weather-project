@@ -28,6 +28,7 @@ import statistics
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from weather_markets.alerts import send_alert
 from weather_markets.aggregation import compute_combined_daily_highs
 from weather_markets.db import get_connection
 from weather_markets.emos import fit_emos_rolling, gaussian_to_bracket_probs
@@ -39,7 +40,9 @@ MODELS = ["gefs", "ifs"]
 INIT_HOUR = 0
 WINDOW_DAYS = 45
 EDGE_THRESHOLD = 0.25
-MODEL_SOURCE = "PM live probe Miami combined 00Z"
+# v2: inclusive-pair brackets (2026-08-23). Rows tagged with the old label
+# were priced off P(low degree only) and may sit on the wrong side.
+MODEL_SOURCE = "PM live probe Miami combined 00Z v2"
 MAX_QUOTE_AGE_MIN = 30
 
 CONTRACTS_PER_SIGNAL = 150   # 2026-08-21: raised from 100 on measured book depth
@@ -84,7 +87,8 @@ def choose_signals(quotes_probs: list[dict]) -> list[dict]:
         if not (ENTRY_MIN <= entry <= ENTRY_MAX):
             continue
         out.append({"ticker": q["ticker"], "intent": intent, "entry": entry,
-                    "edge": edge, "p_model": q["p_model"], "mid": mid})
+                    "edge": edge, "p_model": q["p_model"], "mid": mid,
+                    "snapshot_at": q.get("snapshot_at")})
     out.sort(key=lambda s: -abs(s["edge"]))
     return out[:MAX_SIGNALS_PER_DAY]
 
@@ -141,6 +145,52 @@ def parse_fills(resp: dict) -> tuple[float, float | None]:
     return total, (notional / total if total else None)
 
 
+def today_signals(conn, target: date, now: datetime) -> tuple[list[dict], str]:
+    """The orders this script would place right now: ([], reason) if none.
+
+    Lifted out of main() 2026-08-23 so scripts/live_signals_terminal.py can
+    render exactly what would trade rather than reimplementing the signal path.
+    Quote freshness is measured against `now`, so passing a later `now`
+    re-prices against the current book instead of the cron's snapshot.
+    """
+    ensemble = compute_combined_daily_highs(
+        datetime(target.year, target.month, target.day, INIT_HOUR, tzinfo=timezone.utc),
+        target, conn, station_id=STATION, models=MODELS)
+    if len(ensemble) < 2:
+        return [], "no forecast"
+    emos = fit_emos_rolling(target, conn, window_days=WINDOW_DAYS,
+                            station_id=STATION, model="combined", init_hour=INIT_HOUR)
+    if emos is None:
+        return [], "EMOS unfittable"
+    mean, std = statistics.mean(ensemble), statistics.stdev(ensemble)
+    mu = emos["a"] + emos["b"] * mean
+    var = emos["c"] + emos["d"] * std ** 2
+    if var <= 0:
+        return [], "bad EMOS variance"
+    sigma = math.sqrt(var)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (p.ticker) p.ticker, c.bracket_type,
+                   c.strike_low, c.strike_high, p.yes_bid, p.yes_ask, p.snapshot_at
+            FROM prices p JOIN contracts c ON c.ticker = p.ticker
+            WHERE c.platform='polymarket' AND c.station_id=%s AND c.target_date=%s
+              AND p.snapshot_at >= %s AND p.yes_bid IS NOT NULL AND p.yes_ask IS NOT NULL
+            ORDER BY p.ticker, p.snapshot_at DESC""",
+            (STATION, target, now - timedelta(minutes=MAX_QUOTE_AGE_MIN)))
+        quotes = cur.fetchall()
+    if not quotes:
+        return [], f"no PM quotes newer than {MAX_QUOTE_AGE_MIN}min"
+    brackets = [kalshi_equivalent_bracket("polymarket", bt, sl, sh) | {"ticker": t}
+                for t, bt, sl, sh, _, _, _ in quotes]
+    probs = gaussian_to_bracket_probs(mu, sigma, brackets)
+    signals = choose_signals([
+        {"ticker": t, "bid": bid, "ask": ask, "p_model": probs[b["ticker"]],
+         "snapshot_at": snap}
+        for (t, _bt, _sl, _sh, bid, ask, snap), b in zip(quotes, brackets)])
+    return signals, "" if signals else "no actionable signals"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="place REAL orders (default: dry-run)")
@@ -171,47 +221,9 @@ def main() -> int:
             print(f"  daily spend cap reached (${spent/100:.2f}) — NO ORDERS.")
             return 0
 
-        # signal generation (same path as the paper logger)
-        ensemble = compute_combined_daily_highs(
-            datetime(target.year, target.month, target.day, INIT_HOUR, tzinfo=timezone.utc),
-            target, conn, station_id=STATION, models=MODELS)
-        if len(ensemble) < 2:
-            print("  no forecast; clean exit.")
-            return 0
-        emos = fit_emos_rolling(target, conn, window_days=WINDOW_DAYS,
-                                station_id=STATION, model="combined", init_hour=INIT_HOUR)
-        if emos is None:
-            print("  EMOS unfittable; clean exit.")
-            return 0
-        mean, std = statistics.mean(ensemble), statistics.stdev(ensemble)
-        mu = emos["a"] + emos["b"] * mean
-        var = emos["c"] + emos["d"] * std ** 2
-        if var <= 0:
-            print("  bad EMOS variance; clean exit.")
-            return 0
-        sigma = math.sqrt(var)
-
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT ON (p.ticker) p.ticker, c.bracket_type,
-                       c.strike_low, c.strike_high, p.yes_bid, p.yes_ask
-                FROM prices p JOIN contracts c ON c.ticker = p.ticker
-                WHERE c.platform='polymarket' AND c.station_id=%s AND c.target_date=%s
-                  AND p.snapshot_at >= %s AND p.yes_bid IS NOT NULL AND p.yes_ask IS NOT NULL
-                ORDER BY p.ticker, p.snapshot_at DESC""",
-                (STATION, target, now - timedelta(minutes=MAX_QUOTE_AGE_MIN)))
-            quotes = cur.fetchall()
-        if not quotes:
-            print("  no fresh PM quotes; clean exit.")
-            return 0
-        brackets = [kalshi_equivalent_bracket("polymarket", bt, sl, sh) | {"ticker": t}
-                    for t, bt, sl, sh, _, _ in quotes]
-        probs = gaussian_to_bracket_probs(mu, sigma, brackets)
-        signals = choose_signals([
-            {"ticker": t, "bid": bid, "ask": ask, "p_model": probs[b["ticker"]]}
-            for (t, _bt, _sl, _sh, bid, ask), b in zip(quotes, brackets)])
+        signals, note = today_signals(conn, target, now)
         if not signals:
-            print("  no actionable signals; clean exit.")
+            print(f"  {note}; clean exit.")
             return 0
 
         client = PolymarketClient() if args.live else None
@@ -227,7 +239,22 @@ def main() -> int:
                     resp = client.create_order(s["ticker"], s["intent"],
                                                bound / 100.0, CONTRACTS_PER_SIGNAL)
                 except Exception as e:
+                    # A rejected LIVE order is silent otherwise — one line in a
+                    # log nobody reads. On 2026-08-30 Polymarket began geo-gating
+                    # this server (Hetzner, Nuremberg) with 403 GEO_BLOCKED_STATE
+                    # and the whole venue went offline with no notification; the
+                    # operator found it by asking why nothing had fired.
                     print(f"    ORDER FAILED: {e}")
+                    msg = str(e)
+                    geo = "GEO_BLOCKED" in msg or "geogate" in msg
+                    send_alert(
+                        f"Polymarket LIVE order REJECTED for {s['ticker']} "
+                        f"({s['intent']} {CONTRACTS_PER_SIGNAL}x @ {bound}c, "
+                        f"edge {s['edge']:+.3f})"
+                        + (" — VENUE GEO-BLOCKED, Polymarket trading is offline "
+                           "until this host is in a permitted jurisdiction." if geo
+                           else "") + f" {msg[:240]}",
+                        severity="critical", source="live_trade_polymarket")
                     continue
                 fills, favg = parse_fills(resp)
                 cur.execute("""

@@ -24,12 +24,18 @@ from weather_markets.evaluation import kalshi_equivalent_bracket
 # All 5 Polymarket US weather stations (extended from Miami-only 2026-08-12
 # after the 4-city replay came back positive: LAX 28.1c/tr, SFO 22.9, MDW 16.2,
 # NYC 16.6 @0.25). model_source per city; Miami keeps its original label.
+# v2 = inclusive-pair bracket semantics (2026-08-23). The unsuffixed labels
+# above these are FROZEN: they were generated while PM `between` brackets were
+# read as half-open, which halved model_prob_yes and could invert side choice.
+# paper_trades is keyed (target_date, ticker, model_source), so v2 rows sit
+# BESIDE the old series instead of overwriting it — the old numbers stay
+# auditable. See docs/analysis-snapshots/2026-08-23-pre-bracket-fix/.
 STATIONS = {
-    "KMIA": "EMOS combined 00Z Miami PM (rolling 45d)",
-    "KNYC": "EMOS combined 00Z NYC PM (rolling 45d)",
-    "KLAX": "EMOS combined 00Z Los Angeles PM (rolling 45d)",
-    "KSFO": "EMOS combined 00Z San Francisco PM (rolling 45d)",
-    "KMDW": "EMOS combined 00Z Chicago Midway PM (rolling 45d)",
+    "KMIA": "EMOS combined 00Z Miami PM v2 (rolling 45d)",
+    "KNYC": "EMOS combined 00Z NYC PM v2 (rolling 45d)",
+    "KLAX": "EMOS combined 00Z Los Angeles PM v2 (rolling 45d)",
+    "KSFO": "EMOS combined 00Z San Francisco PM v2 (rolling 45d)",
+    "KMDW": "EMOS combined 00Z Chicago Midway PM v2 (rolling 45d)",
 }
 MODELS = ["gefs", "ifs"]
 INIT_HOUR = 0
