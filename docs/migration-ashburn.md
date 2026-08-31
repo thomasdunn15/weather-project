@@ -3,8 +3,9 @@
 **Why:** Polymarket began geo-gating order placement on 2026-08-30 (`403
 GEO_BLOCKED_STATE`, "Trading isn't available in Bavaria"). Kalshi has not yet,
 but the whole operation trades US-regulated venues from a German IP, and Kalshi
-is where the money is (+$3,346 cumulative). Secondary driver: the current box is
-75 GB at 79% with ~250 MB/day of orderbook growth — roughly two months to full.
+is where the money is (+$3,346 cumulative). Secondary driver: DISK. Measured growth over the last 14 days is 852 MB/day
+(orderbook 506, prices 281, PM orderbook 65), and the old box has 16 GB free —
+**19 days, not the two months first estimated from lifetime averages.**
 
 **Scope:** full migration. Ashburn becomes primary; Nuremberg is decommissioned.
 
@@ -83,19 +84,14 @@ Sizes: `prices` 20 GB, `orderbook_snapshots` 15 GB,
 `polymarket_orderbook_snapshots` 2.7 GB, `forecasts` 620 MB,
 `observations` 25 MB.
 
-**Decision: carry the orderbook tables or not.** Only the *writers*
-(`snapshot_kalshi_orderbook.py`, `snapshot_polymarket_orderbook.py`) are in
-cron; every reader (`walk_book_capacity.py`, `reasoning_demo.py`) is research
--only. Nothing in the daily trading path reads them. Trimming takes 38 GB → 21 GB.
+**DECISION (2026-08-31): carry EVERYTHING. Do not trim.** The two orderbook
+tables are already compressed (policy: compress_after 30 days). The table that
+is NOT compressed is `prices` — 20 GB, 119 uncompressed chunks, the biggest
+object in the database and the one backtests actually need. Compressing it is
+worth more than trimming both orderbook tables and keeps every row:
 
-Trimmed (recommended — archive the two orderbook tables separately if wanted):
-
-    pg_dump -d weather --no-owner \
-      --exclude-table-data='orderbook_snapshots*' \
-      --exclude-table-data='polymarket_orderbook_snapshots*' \
-      | ssh newhost 'psql -d weather -v ON_ERROR_STOP=1'
-
-Everything:
+    trim both orderbook tables   frees 17.7 GB, loses an unrecreatable capture
+    compress `prices`            frees ~18 GB (10x typical on bid/ask), loses nothing
 
     pg_dump -d weather --no-owner | ssh newhost 'psql -d weather -v ON_ERROR_STOP=1'
 
@@ -152,6 +148,23 @@ then re-authenticate through the SSH tunnel:
 
 Budget real time here — it has needed a restart twice this week, and a stale SSO
 presents as "login does nothing" (see `scripts/ibkr_keepalive.py` header).
+
+## Phase 6b — Compress `prices` (20 min + background)
+
+The single highest-value step for disk. Without it the new box has ~143 days of
+runway; with it, 900+.
+
+    ALTER TABLE prices SET (timescaledb.compress,
+                            timescaledb.compress_segmentby = 'ticker');
+    SELECT add_compression_policy('prices', INTERVAL '7 days');
+
+**CHECK FIRST:** compressed chunks are read-only on older TimescaleDB versions.
+If any `backfill_*` script rewrites `prices` history, a 7-day delay will block
+it — widen the interval or decompress before backfilling. Verify against
+`scripts/backfill_*.py` before enabling.
+
+Consider `forecasts` too (620 MB, 127 uncompressed chunks) — smaller win, same
+one-liner.
 
 ## Phase 7 — Parallel run, 2–3 days (30 min active)
 
