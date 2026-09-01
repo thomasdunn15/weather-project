@@ -140,6 +140,66 @@ INSERT_SQL = """
 """
 
 
+def models_for(model: str) -> list[str]:
+    """Underlying members behind a composite model name."""
+    if model == "combined":
+        return ["gefs", "ifs"]
+    if model == "combined_hrrr":
+        return ["gefs", "ifs", "hrrr"]
+    return [model]
+
+
+def emos_mu_sigma(station_id: str, today, init_time, conn, model: str = MODEL):
+    """Today's calibrated fit for one station -> (mu, sigma, stats, why).
+
+    `stats` carries n_members / ensemble_mean / ensemble_std / emos, which
+    log_for_station both PRINTS and writes into paper_trades — they are columns,
+    not diagnostics, so the helper has to hand them back.
+
+    Extracted so the dashboard can show a PREVIEW of the day's signal before this
+    cron has run, without restating the fit. Anything that reads a mu/sigma
+    outside this function will silently drift from what actually gets logged, so
+    there should be nothing to restate.
+
+    Returns (None, None, n, reason) when the day cannot be modelled yet — the
+    caller decides whether that is "too early" or "broken".
+    """
+    models_list = models_for(model)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
+            (station_id, models_list, init_time),
+        )
+        if cur.fetchone() is None:
+            return None, None, {}, f"no {model} forecast for init {init_time.isoformat()}."
+
+    ensemble_values = compute_combined_daily_highs(
+        init_time, today, conn, station_id=station_id, models=models_list,
+    )
+    n_members = len(ensemble_values)
+    if n_members < 2:
+        return None, None, {"n_members": n_members}, f"combined ensemble has {n_members} members;"
+    ensemble_mean = statistics.mean(ensemble_values)
+    ensemble_std = statistics.stdev(ensemble_values)
+    st = {"n_members": n_members, "ensemble_mean": ensemble_mean,
+          "ensemble_std": ensemble_std, "emos": None}
+
+    emos = fit_emos_rolling(
+        today, conn,
+        window_days=WINDOW_DAYS, station_id=station_id,
+        model=model, init_hour=INIT_HOUR,
+    )
+    if emos is None:
+        return None, None, st, "rolling EMOS returned None (< 30 training days)."
+
+    st["emos"] = emos
+    mu = emos["a"] + emos["b"] * ensemble_mean
+    var = emos["c"] + emos["d"] * ensemble_std ** 2
+    if var <= 0:
+        return None, None, st, f"EMOS variance non-positive ({var})."
+    return mu, math.sqrt(var), st, ""
+
+
 def log_for_station(
     station: Station,
     today: datetime,
@@ -176,50 +236,15 @@ def log_for_station(
 
     print(f"\n--- {station.station_id} ({station.city}) -> {model_source!r}, entry>={min_entry}c ---")
 
-    if model == "combined":
-        models_list = ["gefs", "ifs"]
-    elif model == "combined_hrrr":
-        models_list = ["gefs", "ifs", "hrrr"]
-    else:
-        models_list = [model]
-
-    # At least one underlying model must be present for today's init at this station.
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM forecasts WHERE station_id = %s AND model = ANY(%s) AND init_time = %s LIMIT 1",
-            (station.station_id, models_list, init_time),
-        )
-        if cur.fetchone() is None:
-            print(f"  no {model} forecast for init {init_time.isoformat()}. Skipping.")
-            return
-
-    # Combined ensemble for this station / today.
-    ensemble_values = compute_combined_daily_highs(
-        init_time, today, conn, station_id=station.station_id, models=models_list,
-    )
-    n_members = len(ensemble_values)
-    if n_members < 2:
-        print(f"  combined ensemble has {n_members} members; skipping.")
+    models_list = models_for(model)
+    emos_mu, emos_sigma, st, why = emos_mu_sigma(
+        station.station_id, today, init_time, conn, model=model)
+    if emos_mu is None:
+        print(f"  {why} Skipping.")
         return
-    ensemble_mean = statistics.mean(ensemble_values)
-    ensemble_std = statistics.stdev(ensemble_values)
-
-    # Rolling EMOS fit on prior days for this station.
-    emos = fit_emos_rolling(
-        today, conn,
-        window_days=WINDOW_DAYS, station_id=station.station_id,
-        model=model, init_hour=INIT_HOUR,
-    )
-    if emos is None:
-        print(f"  rolling EMOS returned None (< 30 training days). Skipping.")
-        return
-
-    emos_mu = emos["a"] + emos["b"] * ensemble_mean
-    emos_var = emos["c"] + emos["d"] * ensemble_std ** 2
-    if emos_var <= 0:
-        print(f"  EMOS variance non-positive ({emos_var}). Skipping.")
-        return
-    emos_sigma = math.sqrt(emos_var)
+    n_members = st["n_members"]
+    ensemble_mean, ensemble_std, emos = (
+        st["ensemble_mean"], st["ensemble_std"], st["emos"])
 
     contracts = fetch_contracts_for_date(
         today, conn, station_id=station.station_id, series=series,

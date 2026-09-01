@@ -222,12 +222,20 @@ def build_blend_history(model, settled, conn, station, cfg, before: date):
 
 
 def signals(conn, station: str, cfg: dict, today: date, spread_c: float,
-            as_of: datetime | None = None):
+            as_of: datetime | None = None, model_today: tuple | None = None):
     """as_of shifts ONLY today's price cutoff (default: the decision time), so
     scripts/live_signals_terminal.py can re-price intraday. The blend history is
     deliberately left on decision_utc — moving it would refit on a different
-    training set than the live cron uses."""
+    training set than the live cron uses.
+
+    model_today supplies today's (mu, sigma) directly instead of reading it from
+    paper_trades. The dashboard uses it to PREVIEW the day's picks before the
+    14:45Z paper cron has written that row. Default None, so the live path is
+    byte-for-byte unchanged — the point of the hook is that the preview runs
+    THIS pick logic rather than a second copy of it that can drift."""
     model, settled, live, src = load_history(conn, station, cfg, today, as_of)
+    if model_today is not None:
+        model = {**model, today: model_today}
     if today not in model:
         return None, f"no EMOS row for {today} (model source {src!r}) — paper cron not run?"
     if not live:

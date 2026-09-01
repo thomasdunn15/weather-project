@@ -2040,6 +2040,13 @@ function rhEmpty(c) {
       `${esc(c.decisionUtc)}Z paper run; picks appear within a minute of it. Nothing is wrong.` +
       `<div style="color:var(--text-faint);font-size:11.5px;font-family:var(--mono);margin-top:6px">${esc(c.note || "")}</div></div>` + link;
   }
+  if (c.state === "preview-no-trade") {
+    return `<div style="${pad};color:var(--text-lo)">` +
+      `<b style="color:var(--text-mid)">Preview: no trade yet.</b> Today's model is already fitted, and ` +
+      `on the market as it stands nothing clears the ${(c.edgeThreshold * 100).toFixed(0)}% threshold. ` +
+      `The price can still move into range before ${esc(c.decisionUtc)}Z — this re-checks every 60s.` +
+      `<div style="color:var(--text-faint);font-size:11.5px;font-family:var(--mono);margin-top:6px">${esc(c.note || "")}</div></div>` + link;
+  }
   if (c.state === "error") {
     return `<div style="${pad}">` +
       `<div class="halt-note"><b>No model past the decision time.</b> ${esc(c.note || "")}<br>` +
@@ -2060,12 +2067,19 @@ function rhToday(tr) {
   const cards = (tr.cities || []).map(c => {
     const when = rhWhen(tr.date, c.decisionUtc);
     const head = `<div class="panel-h"><h3>${esc(c.name)} — daily high</h3>` +
-      `<span class="meta">${esc(c.product)} · decision ${esc(c.decisionUtc)}Z · <span class="rh-when ${when.cls}">${esc(when.text)}</span>` +
+      `<span class="meta">${c.preview ? `<span class="pill-status">PREVIEW</span> · ` : ""}${esc(c.product)} · decision ${esc(c.decisionUtc)}Z · <span class="rh-when ${when.cls}">${esc(when.text)}</span>` +
       `${c.mu != null ? ` · model ${c.mu.toFixed(1)}°F ±${c.sigma.toFixed(2)} (basis ${c.offset >= 0 ? "+" : "−"}${Math.abs(c.offset).toFixed(2)})` : ""}</span></div>`;
     const warn = c.warning
       ? `<div style="padding:10px 28px 0"><span class="pill-status halt">HEADS UP</span> <span style="color:var(--text-lo);font-size:12px">${esc(c.warning)}</span></div>` : "";
-    const body = c.state === "trade"
-      ? `<div style="padding:14px 28px 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
+    const banner = c.preview
+      ? `<div style="padding:12px 28px 0"><div style="border:1px solid var(--border-strong);background:var(--bg-2);border-radius:var(--r-sm);padding:10px 12px;font-size:12px;color:var(--text-lo);line-height:1.6">` +
+        `<b style="color:var(--text-mid)">Preview — ${esc(c.decisionUtc)}Z has not run yet.</b> ` +
+        `The model is already final: it comes from this morning's 00Z forecast and a training window that ` +
+        `closed yesterday, so the μ/σ below is the one the paper cron will write. Only the MARKET price ` +
+        `moves between now and then, which moves the edge and can add or drop a pick.</div></div>`
+      : "";
+    const body = (c.state === "trade" || c.state === "preview")
+      ? banner + `<div style="padding:14px 28px 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
       : rhEmpty(c);
     const foot = `<div style="padding:10px 28px 16px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
       `Size = ${tr.maxContracts} contracts/day split evenly, then capped at this city's measured capacity ` +

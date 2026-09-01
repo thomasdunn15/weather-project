@@ -265,9 +265,12 @@ def _trading(conn, capacity: list[dict]) -> dict:
     # 2026-08-31, taking the working collector and backtest panels down with it.
     try:
         import live_trade_forecastex as fx
+        import paper_trade_log as ptl
         today = datetime.now(timezone.utc).date()
         spreads = {c["station"]: c["median_c"]
                    for c in json.loads(fx.SPREAD_JSON.read_text())["cities"]}
+        init_time = datetime(today.year, today.month, today.day, ptl.INIT_HOUR,
+                             tzinfo=timezone.utc)
     except Exception as e:
         return {"available": False, "error": f"{type(e).__name__}: {e}"}
     cap_by_code = {c["code"]: c["suggested"] for c in capacity}
@@ -309,15 +312,39 @@ def _trading(conn, capacity: list[dict]) -> dict:
             cities.append(row)
             continue
         row["note"] = note
-        row["state"] = pick_state(
-            picks, datetime.now(timezone.utc),
-            datetime(today.year, today.month, today.day, hh, mm, tzinfo=timezone.utc))
+        decision = datetime(today.year, today.month, today.day, hh, mm,
+                            tzinfo=timezone.utc)
+        row["state"] = pick_state(picks, datetime.now(timezone.utc), decision)
+
+        # PREVIEW. Before the paper cron runs there is no paper_trades row for
+        # today, but everything needed to build one already exists: the 00Z
+        # forecast landed this morning and the rolling EMOS trains only on days
+        # BEFORE today. So the mu/sigma computed here is the same mu/sigma the
+        # 14:45Z cron will write — only the market price moves in between. Run
+        # the real signals() against it rather than showing an empty card for
+        # the three hours when the operator is deciding whether to be at a desk.
+        preview = None
+        if row["state"] == "pending":
+            mu0, sg0, _n, _why = ptl.emos_mu_sigma(station, today, init_time, conn)
+            if mu0 is not None:
+                try:
+                    picks, note = fx.signals(conn, station, cfg, today,
+                                             spreads[station], model_today=(mu0, sg0))
+                except Exception as e:
+                    picks, note = None, f"preview failed: {type(e).__name__}: {e}"
+                if picks is not None:
+                    preview = (mu0, sg0)
+                    row["note"] = note
+                    row["state"] = "preview" if picks else "preview-no-trade"
+        row["preview"] = preview is not None
         latest = _latest_prices(conn, station, today)
 
         # Ladder + mu/sigma: reload rather than re-derive, so the numbers shown
         # are the ones signals() actually used.
         try:
             model, settled, live, _src = fx.load_history(conn, station, cfg, today)
+            if preview is not None:
+                model = {**model, today: preview}
             mu_only = {d: m[0] for d, m in model.items()}
             off = fx.rolling_offset(today, settled, mu_only)
             if today in model and off is not None:
