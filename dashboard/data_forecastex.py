@@ -353,7 +353,12 @@ def _trading(conn, capacity: list[dict]) -> dict:
                     preview = (mu0, sg0)
                     row["note"] = note
                     row["state"] = "preview" if picks else "preview-no-trade"
-        row["preview"] = preview is not None
+        # Provisional means THE DECISION TIME HAS NOT PASSED, not "we had to
+        # synthesize the model". Miami's paper row exists from the 14:45Z cron
+        # but its own decision is 15:30Z, so its picks can still change for
+        # another 45 minutes — showing them as final would be the same lie in a
+        # different place.
+        row["preview"] = datetime.now(timezone.utc) < decision
         latest = _latest_prices(conn, station, today)
 
         # Ladder + mu/sigma: reload rather than re-derive, so the numbers shown
