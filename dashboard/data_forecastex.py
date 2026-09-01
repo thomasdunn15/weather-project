@@ -234,6 +234,22 @@ def _latest_prices(conn, station: str, target_date) -> dict:
         return {t: (int(px), snap) for t, px, snap in cur.fetchall()}
 
 
+# (station, date) -> (mu, sigma). SAFE TO CACHE FOREVER, and only because both
+# inputs are frozen for the day: the 00Z forecast is published and immutable,
+# and the rolling EMOS trains on days strictly BEFORE today. Same reasoning as
+# live_trade_forecastex.cached_blend. The fit is ~0.85s per city, which is fine
+# once and not fine on a 30s poll.
+_PREVIEW_CACHE: dict[tuple, tuple | None] = {}
+
+
+def preview_fit(ptl, station: str, today, init_time, conn):
+    key = (station, today)
+    if key not in _PREVIEW_CACHE:
+        mu, sg, _stats, _why = ptl.emos_mu_sigma(station, today, init_time, conn)
+        _PREVIEW_CACHE[key] = None if mu is None else (mu, sg)
+    return _PREVIEW_CACHE[key]
+
+
 def pick_state(picks, now: datetime, decision: datetime) -> str:
     """Which KIND of nothing this is — "no trade" is a claim, not a fallback.
 
@@ -325,8 +341,9 @@ def _trading(conn, capacity: list[dict]) -> dict:
         # the three hours when the operator is deciding whether to be at a desk.
         preview = None
         if row["state"] == "pending":
-            mu0, sg0, _n, _why = ptl.emos_mu_sigma(station, today, init_time, conn)
-            if mu0 is not None:
+            fit = preview_fit(ptl, station, today, init_time, conn)
+            if fit is not None:
+                mu0, sg0 = fit
                 try:
                     picks, note = fx.signals(conn, station, cfg, today,
                                              spreads[station], model_today=(mu0, sg0))
@@ -382,9 +399,13 @@ def _trading(conn, capacity: list[dict]) -> dict:
                 "edge": round(p["edge"], 4), "pModel": round(p["p_model"], 4),
                 "snapshotAt": p["snapshot_at"].isoformat() if p["snapshot_at"] else None,
                 "contracts": count,
-                "costUsd": round(count * p["entry"] / 100.0, 2),
-                "maxLossUsd": round(count * p["entry"] / 100.0, 2),
-                "maxWinUsd": round(count * (100 - p["entry"]) / 100.0, 2)
+                # Priced at the LIMIT, not `entry`. entry is what crossing costs;
+                # the card prints a limit next to these, and a resting order that
+                # fills, fills there. Using entry overstated the cost by half a
+                # spread against the number printed beside it.
+                "costUsd": round(count * p["limit"] / 100.0, 2),
+                "maxLossUsd": round(count * p["limit"] / 100.0, 2),
+                "maxWinUsd": round(count * (100 - p["limit"]) / 100.0, 2)
                              - round(count * FEE_CENTS / 100.0, 2),
                 "feeUsd": round(count * FEE_CENTS / 100.0, 2),
                 "currentPx": cur_px, "currentEntry": cur_entry,

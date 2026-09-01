@@ -150,7 +150,7 @@ def api_polymarket() -> Response:
     return _json(_polymarket_payload())
 
 
-@ttl_cache(60)
+@ttl_cache(20)
 def _forecastex_payload() -> dict:
     """ForecastEx tab: collector health + liquidity + the cached backtest.
     The backtest itself is NEVER computed here (it downloads settlement

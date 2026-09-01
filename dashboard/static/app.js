@@ -1721,6 +1721,7 @@ function renderDigest() {
 function switchTab(name) {
   activeTab = name;
   const applyTab = () => {
+    if (name !== "forecastex") stopFxPolling();
     ["live", "backtest", "polymarket", "forecastex", "accounting", "digest"].forEach(n => {
       const sec = document.getElementById("section-" + n);
       if (sec) sec.hidden = n !== name;
@@ -1750,7 +1751,8 @@ function switchTab(name) {
   } else if (name === "polymarket") {
     loadPolymarket();   // lazy-load fresh each open (60s server cache bounds cost)
   } else if (name === "forecastex") {
-    loadForecastEx();   // lazy-load fresh each open (60s server cache bounds cost)
+    loadForecastEx();
+    startFxPolling();   // this is a trading surface — a frozen price is a wrong price
   } else if (name === "accounting") {
     loadAccounting();   // lazy-load fresh each open (60s server cache bounds cost)
   } else if (name === "digest") {
@@ -1856,6 +1858,14 @@ function fxSelectCity(code) {
   FX_CITY = code;
   renderForecastEx();
 }
+
+// The Robinhood tab used to load once on open and then sit there. On a page you
+// read WHILE typing an order into a phone, a stale number is worse than no
+// number. 30s against the 20s server cache: every poll gets fresh data, and the
+// EMOS preview behind it is memoized for the day so the rebuild is cheap.
+let fxTimer = null;
+function startFxPolling() { if (!fxTimer) fxTimer = setInterval(loadForecastEx, 30000); }
+function stopFxPolling() { if (fxTimer) { clearInterval(fxTimer); fxTimer = null; } }
 
 async function loadForecastEx() {
   const root = document.getElementById("forecastex-root");
@@ -1974,6 +1984,12 @@ function rhPick(p, city) {
   const otherSide = 100 - p.limit;
   const drift = p.drift == null ? "" :
     ` · <span class="${p.drift >= 0 ? "pos" : "neg"}">${p.drift >= 0 ? "+" : "−"}${Math.abs(p.drift)}¢</span> since`;
+  // ForecastEx publishes a TRADE TAPE, not a quote: prices.snapshot_at is the
+  // time of the last trade. On a thin strike that can be 20 minutes old while
+  // Robinhood shows a live number, so the age is part of the price.
+  const ageMin = p.currentAt == null ? null : Math.round((Date.now() - new Date(p.currentAt)) / 60000);
+  const age = ageMin == null ? ""
+    : ` <span class="${ageMin >= 10 ? "warn" : ""}" style="font-size:11px">(last trade ${ageMin < 1 ? "just now" : ageMin + "m ago"})</span>`;
   // The market has repriced materially since the decision snapshot; the edge
   // the size was computed from is not the edge on offer now.
   const moved = p.drift != null && Math.abs(p.drift) >= 10;
@@ -1988,8 +2004,7 @@ function rhPick(p, city) {
     <div class="rh-meta">
       cost <b style="color:var(--text-mid)">$${p.costUsd.toFixed(2)}</b> · max loss $${p.maxLossUsd.toFixed(2)} · max win $${p.maxWinUsd.toFixed(2)} · fee $${p.feeUsd.toFixed(2)}<br>
       model ${(p.pModel * 100).toFixed(0)}% · market implies ${p.lastPx}% &nbsp;${edgeCell(p.edge)}<br>
-      decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}
-      <span style="color:var(--text-faint)">${p.currentAt ? esc(p.currentAt.slice(11, 16)) + "Z" : ""}</span>
+      decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}${age}
     </div>
     ${city.rhUrl ? `<a class="rh-btn" href="${esc(city.rhUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(city.name)} on Robinhood ↗</a>` : ""}
   </div>`;
