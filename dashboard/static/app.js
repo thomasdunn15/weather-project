@@ -2006,7 +2006,12 @@ function rhPick(p, city) {
       model ${(p.pModel * 100).toFixed(0)}% · market implies ${p.lastPx}% &nbsp;${edgeCell(p.edge)}<br>
       decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}${age}
     </div>
-    ${city.rhUrl ? `<a class="rh-btn" href="${esc(city.rhUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(city.name)} on Robinhood ↗</a>` : ""}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      ${city.rhUrl ? `<a class="rh-btn" href="${esc(city.rhUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(city.name)} on Robinhood ↗</a>` : ""}
+      ${p.taken
+        ? `<span class="badge active" style="padding:9px 11px">✓ recorded</span>`
+        : `<a class="rh-btn" href="#" onclick="rhTake('${esc(p.ticker)}','${esc(p.side)}');return false" title="Freeze this card as it reads now">I took this</a>`}
+    </div>
   </div>`;
 }
 
@@ -2074,6 +2079,68 @@ function rhEmpty(c) {
     `<div style="color:var(--text-faint);font-size:11.5px;font-family:var(--mono);margin-top:6px">${esc(c.note || "")}</div></div>` + link;
 }
 
+// Freezing a pick. The server re-derives every number from its own data — the
+// browser only names WHICH pick — so a page a few seconds stale cannot write a
+// price that was never on the tape.
+async function rhTake(ticker, side) {
+  try {
+    const r = await fetch("/api/robinhood/entry", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticker, side }),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert(`Could not record it:\n\n${j.error || r.status}`); return; }
+  } catch (e) { alert(`Could not record it:\n\n${e}`); return; }
+  loadForecastEx();
+}
+
+async function rhUntake(id) {
+  if (!confirm("Remove this entry? Use this only for a mis-click — it is the\nonly record that the position exists.")) return;
+  try { await fetch(`/api/robinhood/entry/${id}`, { method: "DELETE" }); }
+  catch (e) { alert(`Could not remove it:\n\n${e}`); return; }
+  loadForecastEx();
+}
+
+// One taken position, frozen. Everything left of "now" is what the card read
+// when the button was pressed and never moves again; only the mark does.
+function rhEntry(e) {
+  const side = e.side === "yes" ? "YES" : "NO";
+  const at = e.enteredAt.slice(11, 16) + "Z";
+  const age = e.currentAt == null ? null : Math.round((Date.now() - new Date(e.currentAt)) / 60000);
+  return `<div class="rh-card" style="border-color:var(--up-line)">
+    <div class="rh-head">
+      <span class="rh-strike">&gt; ${e.strike}°F</span>
+      <span class="rh-side ${e.side}">${side}</span>
+      <span class="badge active">taken ${esc(at)}</span>
+      ${e.provisional ? `<span class="pill-status halt" title="Pressed before the decision time — the strategy had not evaluated this yet">PRE-DECISION</span>` : ""}
+      <a href="#" onclick="rhUntake(${e.id});return false" style="margin-left:auto;color:var(--text-faint);text-decoration:none;font-size:15px" title="Remove (mis-click only)">✕</a>
+    </div>
+    <div class="rh-order"><b>${e.contracts.toLocaleString()}</b> contracts &nbsp;·&nbsp; limit <b>${e.limit}¢</b>
+      <span style="color:var(--text-lo);font-size:12px">${esc(e.name)}</span></div>
+    <div class="rh-meta">
+      at entry: model ${(e.pModel * 100).toFixed(0)}% · market ${e.lastPx}% · edge ${(e.edge * 100).toFixed(0)}% · μ ${e.mu == null ? "–" : e.mu.toFixed(2)}°F<br>
+      cost $${e.costUsd.toFixed(2)} · now ${e.currentEntry == null ? "–" : e.currentEntry + "¢"}
+      ${e.markUsd == null ? "" : `· mark <span class="${e.markUsd >= 0 ? "pos" : "neg"}">${e.markUsd >= 0 ? "+" : "−"}$${Math.abs(e.markUsd).toFixed(2)}</span>`}
+      ${age == null ? "" : `<span class="${age >= 10 ? "warn" : ""}" style="font-size:11px">(last trade ${age < 1 ? "just now" : age + "m ago"})</span>`}
+    </div>
+  </div>`;
+}
+
+function rhEntriesPanel(tr) {
+  const es = tr.entries || [];
+  if (!es.length) return "";
+  const total = es.reduce((a, e) => a + e.costUsd, 0);
+  const mark = es.reduce((a, e) => a + (e.markUsd || 0), 0);
+  return `<div class="panel"><div class="panel-h"><h3>Taken today</h3>` +
+    `<span class="meta">${es.length} position${es.length > 1 ? "s" : ""} · $${total.toFixed(2)} committed · ` +
+    `mark <span class="${mark >= 0 ? "pos" : "neg"}">${mark >= 0 ? "+" : "−"}$${Math.abs(mark).toFixed(2)}</span></span></div>` +
+    `<div style="padding:14px 28px 18px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${es.map(rhEntry).join("")}</div>` +
+    `<div style="padding:0 28px 18px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
+    `These are frozen at the moment you pressed the button and stay here all day, even after the ` +
+    `signal moves out of range. Robinhood publishes no API for event contracts, so this is the only ` +
+    `record that the position exists — the mark is our own last-trade tape, not a broker statement.</div></div>`;
+}
+
 function rhToday(tr) {
   if (!tr || !tr.available) {
     return `<div class="panel"><div class="panel-h"><h3>Today's trades</h3><span class="meta">unavailable</span></div>` +
@@ -2125,7 +2192,7 @@ function rhToday(tr) {
     `<div style="padding:4px 28px 20px;font-size:12.5px;color:var(--text-lo);line-height:1.65">` +
     `<b style="color:var(--text-mid)">${esc(b.headline || "")}</b> ${esc(b.detail || "")}</div></div>`;
 
-  return cards + `<div class="grid g-2">${hoursPanel}${brokerPanel}</div>`;
+  return rhEntriesPanel(tr) + cards + `<div class="grid g-2">${hoursPanel}${brokerPanel}</div>`;
 }
 
 function renderForecastEx() {

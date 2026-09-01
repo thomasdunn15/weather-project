@@ -250,6 +250,103 @@ def preview_fit(ptl, station: str, today, init_time, conn):
     return _PREVIEW_CACHE[key]
 
 
+def record_entry(conn, payload: dict) -> dict:
+    """Freeze one pick as taken. Validates against OUR OWN data, never the body.
+
+    This is a write endpoint reached from a browser, so nothing in `payload` is
+    trusted for anything but identifying the row: the contract must exist in
+    `contracts` for today, and every number is re-read from the pick the server
+    just computed rather than from what the page sent. A page that is a few
+    seconds stale would otherwise write a price that was never on the tape.
+    """
+    ticker = str(payload.get("ticker") or "")
+    side = str(payload.get("side") or "")
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be yes|no, got {side!r}")
+
+    today = datetime.now(timezone.utc).date()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT station_id, strike_low FROM contracts
+                       WHERE ticker=%s AND platform='forecastex' AND target_date=%s""",
+                    (ticker, today))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"no forecastex contract {ticker!r} for {today}")
+    station, strike = row[0], float(row[1])
+
+    # Re-derive the pick server-side; the browser only says WHICH one.
+    # Capacity MUST come from the same place the tab's payload gets it. Passing
+    # [] here recorded 66 contracts for a Miami pick the card showed as 50 —
+    # the size cap silently absent from the only record of the position.
+    live = _trading(conn, _capacity(_backtest()), with_entries=False)
+    city = next((c for c in live["cities"] if c["code"] == station), None)
+    pick = next((p for p in (city or {}).get("picks", [])
+                 if p["ticker"] == ticker and p["side"] == side), None)
+    if pick is None:
+        raise ValueError(f"{ticker} {side} is not a current pick — it may have "
+                         f"moved out of range since the page rendered")
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO rh_entries (target_date, station_id, fx_contract_id, side,
+                strike, contracts, limit_price_cents, market_last_cents,
+                model_prob_yes, edge, emos_mu, emos_sigma, provisional, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (target_date, fx_contract_id, side) DO NOTHING
+            RETURNING id""",
+            (today, station, ticker, side, strike, pick["contracts"], pick["limit"],
+             pick["lastPx"], pick["pModel"], pick["edge"], city["mu"], city["sigma"],
+             bool(city["preview"]), (payload.get("note") or None)))
+        r = cur.fetchone()
+    conn.commit()
+    return {"ok": True, "id": r[0] if r else None,
+            "duplicate": r is None, "ticker": ticker, "side": side}
+
+
+def delete_entry(conn, entry_id: int) -> dict:
+    """Undo a mis-click. Today only — an old entry is a record, not a draft."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM rh_entries WHERE id=%s AND target_date=%s RETURNING id",
+                    (entry_id, datetime.now(timezone.utc).date()))
+        r = cur.fetchone()
+    conn.commit()
+    return {"ok": r is not None, "id": entry_id}
+
+
+def _entries(conn, today) -> list[dict]:
+    """Today's taken positions, newest first, with the CURRENT mark alongside."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT e.id, e.entered_at, e.station_id, e.fx_contract_id, e.side,
+                   e.strike, e.contracts, e.limit_price_cents, e.market_last_cents,
+                   e.model_prob_yes, e.edge, e.emos_mu, e.emos_sigma, e.provisional
+            FROM rh_entries e WHERE e.target_date=%s ORDER BY e.entered_at DESC""",
+            (today,))
+        rows = cur.fetchall()
+    if not rows:
+        return []
+    latest = {}
+    for st in {r[2] for r in rows}:
+        latest.update(_latest_prices(conn, st, today))
+    out = []
+    for (eid, at, st, tk, side, strike, n, lim, mkt, pm, edge, mu, sg, prov) in rows:
+        cur_px, cur_at = latest.get(tk, (None, None))
+        cur_entry = None if cur_px is None else (cur_px if side == "yes" else 100 - cur_px)
+        # `limit` is already the price of the side taken — signals() derives it
+        # from `entry`, which is px for a YES and 100-px for a NO.
+        out.append({
+            "id": eid, "enteredAt": at.isoformat(), "code": st, "name": CITY_NAMES.get(st, st),
+            "ticker": tk, "side": side, "strike": strike, "contracts": n,
+            "limit": lim, "lastPx": mkt, "pModel": pm, "edge": edge,
+            "mu": mu, "sigma": sg, "provisional": prov,
+            "costUsd": round(n * lim / 100.0, 2),
+            "currentPx": cur_px, "currentEntry": cur_entry,
+            "currentAt": cur_at.isoformat() if cur_at else None,
+            "markUsd": None if cur_entry is None else round(n * (cur_entry - lim) / 100.0, 2),
+        })
+    return out
+
+
 def pick_state(picks, now: datetime, decision: datetime) -> str:
     """Which KIND of nothing this is — "no trade" is a claim, not a fallback.
 
@@ -265,7 +362,7 @@ def pick_state(picks, now: datetime, decision: datetime) -> str:
     return "trade" if picks else "no-trade"
 
 
-def _trading(conn, capacity: list[dict]) -> dict:
+def _trading(conn, capacity: list[dict], with_entries: bool = True) -> dict:
     """Today's picks per city, sized, with the full ladder behind them.
 
     Picks come from live_trade_forecastex.signals() — the same function the live
@@ -419,7 +516,13 @@ def _trading(conn, capacity: list[dict]) -> dict:
             })
         cities.append(row)
 
+    taken = {(e["ticker"], e["side"]) for e in _entries(conn, today)} if with_entries else set()
+    for row in cities:
+        for p in row["picks"]:
+            p["taken"] = (p["ticker"], p["side"]) in taken
+
     return {"available": True, "date": today.isoformat(),
+            "entries": _entries(conn, today) if with_entries else [],
             "bankroll": ROBINHOOD_BANKROLL, "maxContracts": MAX_CONTRACTS_PER_DAY,
             "feeCents": FEE_CENTS, "cities": cities,
             # From the Robinhood event page, 2026-08-31.

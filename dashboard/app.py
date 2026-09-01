@@ -26,7 +26,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Response
+from fastapi import Body, FastAPI, Query, Response
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.data_live import get_live_data, _live_trade_config
@@ -163,6 +163,43 @@ def _forecastex_payload() -> dict:
 @app.get("/api/forecastex")
 def api_forecastex() -> Response:
     return _json(_forecastex_payload())
+
+
+# --- the only write endpoints on this dashboard --------------------------------
+# They exist because Robinhood publishes no API for event contracts, so nothing
+# can read back what was traded there. The operator presses a button on the pick
+# they just typed into the phone and the card is frozen as it read.
+#
+# Reachable only over the SSH tunnel: uvicorn binds 127.0.0.1 and there is no
+# proxy in front of it. record_entry() still trusts nothing in the body beyond
+# WHICH pick is meant — it re-derives every number server-side.
+@app.post("/api/robinhood/entry")
+def api_record_entry(body: dict = Body(...)) -> Response:
+    from weather_markets.db import get_connection
+    from dashboard.data_forecastex import record_entry
+    conn = get_connection()
+    try:
+        out = record_entry(conn, body)
+    except ValueError as e:
+        return Response(json.dumps({"ok": False, "error": str(e)}),
+                        status_code=400, media_type="application/json")
+    finally:
+        conn.close()
+    _forecastex_payload.cache_clear()   # the tab must show it on the next poll
+    return _json(out)
+
+
+@app.delete("/api/robinhood/entry/{entry_id}")
+def api_delete_entry(entry_id: int) -> Response:
+    from weather_markets.db import get_connection
+    from dashboard.data_forecastex import delete_entry
+    conn = get_connection()
+    try:
+        out = delete_entry(conn, entry_id)
+    finally:
+        conn.close()
+    _forecastex_payload.cache_clear()
+    return _json(out)
 
 
 @ttl_cache(300)
