@@ -2024,6 +2024,34 @@ function rhLadder(city) {
     ${body}</div>`;
 }
 
+// Three different nothings, and saying which one matters. "No trade" is a
+// RESULT — the threshold was applied and nothing cleared it. Before the 14:45Z
+// paper run there is no model for today at all, so nothing has been evaluated
+// and claiming otherwise is a lie the operator would act on. And once the
+// decision time has passed, a still-missing model is a broken cron, not calm.
+function rhEmpty(c) {
+  const pad = `padding:16px 28px 6px;font-size:12.5px;line-height:1.7`;
+  const link = c.rhUrl
+    ? `<div style="padding:0 28px 4px"><a class="rh-btn" style="margin-top:12px" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">View ${esc(c.name)} on Robinhood ↗</a></div>`
+    : "";
+  if (c.state === "pending") {
+    return `<div style="${pad};color:var(--text-lo)">` +
+      `<b style="color:var(--text-mid)">Not evaluated yet.</b> Today's model is fitted by the ` +
+      `${esc(c.decisionUtc)}Z paper run; picks appear within a minute of it. Nothing is wrong.` +
+      `<div style="color:var(--text-faint);font-size:11.5px;font-family:var(--mono);margin-top:6px">${esc(c.note || "")}</div></div>` + link;
+  }
+  if (c.state === "error") {
+    return `<div style="${pad}">` +
+      `<div class="halt-note"><b>No model past the decision time.</b> ${esc(c.note || "")}<br>` +
+      `Check <span style="font-family:var(--mono)">/var/log/weather/paper_trade.log</span> — the ` +
+      `${esc(c.decisionUtc)}Z paper cron should have written today's EMOS row.</div></div>` + link;
+  }
+  return `<div style="${pad};color:var(--text-lo)">` +
+    `<b style="color:var(--text-mid)">No trade.</b> The ${(c.edgeThreshold * 100).toFixed(0)}% edge ` +
+    `threshold was applied to today's ladder and nothing cleared it.` +
+    `<div style="color:var(--text-faint);font-size:11.5px;font-family:var(--mono);margin-top:6px">${esc(c.note || "")}</div></div>` + link;
+}
+
 function rhToday(tr) {
   if (!tr || !tr.available) {
     return `<div class="panel"><div class="panel-h"><h3>Today's trades</h3><span class="meta">unavailable</span></div>` +
@@ -2036,11 +2064,9 @@ function rhToday(tr) {
       `${c.mu != null ? ` · model ${c.mu.toFixed(1)}°F ±${c.sigma.toFixed(2)} (basis ${c.offset >= 0 ? "+" : "−"}${Math.abs(c.offset).toFixed(2)})` : ""}</span></div>`;
     const warn = c.warning
       ? `<div style="padding:10px 28px 0"><span class="pill-status halt">HEADS UP</span> <span style="color:var(--text-lo);font-size:12px">${esc(c.warning)}</span></div>` : "";
-    const body = c.picks.length
+    const body = c.state === "trade"
       ? `<div style="padding:14px 28px 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
-      : `<div style="padding:16px 28px 6px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">` +
-        `No trade — nothing cleared the ${(c.edgeThreshold * 100).toFixed(0)}% edge threshold. ${esc(c.note || "")}` +
-        `${c.rhUrl ? `<br><a class="rh-btn" style="margin-top:12px" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">View ${esc(c.name)} on Robinhood ↗</a>` : ""}</div>`;
+      : rhEmpty(c);
     const foot = `<div style="padding:10px 28px 16px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
       `Size = ${tr.maxContracts} contracts/day split evenly, then capped at this city's measured capacity ` +
       `(${c.capacity == null ? "unknown" : c.capacity.toLocaleString()}). Limit sits half the measured spread ` +

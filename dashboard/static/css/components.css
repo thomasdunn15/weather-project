@@ -101,8 +101,11 @@ svg[data-chart] { cursor: crosshair; }
 .rh-order { font: 600 15px/1.5 var(--mono); color: var(--text-hi); }
 .rh-order b { color: var(--temperate); }
 .rh-meta { font: 500 11.5px/1.7 var(--mono); color: var(--text-lo); }
+/* inline-block, not inline: vertical padding on an INLINE box does not grow
+   the line box, so the button drew straight over the text above it in the
+   no-trade state. Blockified anyway inside .rh-card's flex context. */
 .rh-btn {
-  align-self: flex-start; text-decoration: none;
+  display: inline-block; align-self: flex-start; text-decoration: none;
   font: 600 11px/1 var(--ui); letter-spacing: 0.08em; text-transform: uppercase;
   padding: 9px 13px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); color: var(--text-hi); background: var(--bg-3);

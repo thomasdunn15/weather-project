@@ -234,6 +234,21 @@ def _latest_prices(conn, station: str, target_date) -> dict:
         return {t: (int(px), snap) for t, px, snap in cur.fetchall()}
 
 
+def pick_state(picks, now: datetime, decision: datetime) -> str:
+    """Which KIND of nothing this is — "no trade" is a claim, not a fallback.
+
+    signals() returns None for "could not evaluate" and [] for "evaluated and
+    nothing qualified". Collapsing the two told the operator that nothing had
+    cleared the edge threshold at 11:41Z, on a morning when the threshold had
+    not been applied to anything: today's model does not exist until the paper
+    cron fits it at the decision time. Same missing model AFTER that time is the
+    opposite reading — a cron that failed.
+    """
+    if picks is None:
+        return "pending" if now < decision else "error"
+    return "trade" if picks else "no-trade"
+
+
 def _trading(conn, capacity: list[dict]) -> dict:
     """Today's picks per city, sized, with the full ladder behind them.
 
@@ -271,6 +286,7 @@ def _trading(conn, capacity: list[dict]) -> dict:
             "capacity": cap_by_code.get(station),
             "spreadCents": spreads.get(station),
             "picks": [], "ladder": [], "note": None, "mu": None, "sigma": None,
+            "state": "pending",
             # Miami is ALREADY traded live on Kalshi every day, so this is the
             # same forecast expressed twice — size for that. But it is NOT a
             # pure doubling: the two venues settle on DIFFERENT sources (WU here,
@@ -289,9 +305,13 @@ def _trading(conn, capacity: list[dict]) -> dict:
             picks, note = fx.signals(conn, station, cfg, today, spreads[station])
         except Exception as e:
             row["note"] = f"signal error: {type(e).__name__}: {e}"
+            row["state"] = "error"
             cities.append(row)
             continue
         row["note"] = note
+        row["state"] = pick_state(
+            picks, datetime.now(timezone.utc),
+            datetime(today.year, today.month, today.day, hh, mm, tzinfo=timezone.utc))
         latest = _latest_prices(conn, station, today)
 
         # Ladder + mu/sigma: reload rather than re-derive, so the numbers shown
