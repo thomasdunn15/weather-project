@@ -6,9 +6,11 @@ mid-trade. The trap is that Robinhood formats the two date halves DIFFERENTLY:
 the long half does not zero-pad the day, the short half does. Verified against
 live pages 2026-08-31; the zero-padded long form returns 404.
 """
+import pytest
 from datetime import date
 
-from dashboard.data_forecastex import RH_CITY_SLUG, ROBINHOOD_CITIES, rh_url
+from dashboard.data_forecastex import ROBINHOOD_CITIES
+from weather_markets.forecastex import RH_CITY_SLUG, rh_url
 
 BASE = "https://robinhood.com/us/en/prediction-markets/climate/events/"
 
@@ -41,3 +43,35 @@ def test_every_offered_city_has_a_slug():
 
 def test_unknown_station_is_none_not_a_broken_link():
     assert rh_url("KJFK", date(2026, 8, 31)) is None
+
+
+# --- tradeable edge -----------------------------------------------------------
+# The strategy prices every signal off the last trade, and ForecastEx's own feed
+# has no quotes to price it any other way. Robinhood's does, and on a wide market
+# the two are far apart: UHMIA_090226_89 last-traded at 45c against a 51/59 book
+# on 2026-09-02, so a +41% edge was +27% to anyone actually buying.
+from weather_markets.forecastex import rh_url as _rh_url  # noqa: E402,F401
+from dashboard.data_forecastex import tradeable  # noqa: E402
+
+
+def test_yes_edge_is_measured_against_the_yes_ask():
+    # model 86%, ask 59c -> +27%
+    assert tradeable(0.86, "yes", 59) == pytest.approx(0.27)
+
+
+def test_no_edge_uses_the_COMPLEMENT_of_the_model_probability():
+    """Buying NO wins when the event does NOT happen; using p_model here would
+    invert the sign of every NO pick."""
+    assert tradeable(0.59, "no", 23) == pytest.approx(0.18)
+
+
+def test_crossing_a_wide_spread_can_erase_the_edge():
+    """A tape edge is not a tradeable edge. 70% model, 45c tape, 88c ask."""
+    assert tradeable(0.70, "yes", 45) == pytest.approx(0.25)
+    assert tradeable(0.70, "yes", 88) == pytest.approx(-0.18)
+
+
+def test_no_book_is_none_not_zero():
+    """None must not be mistaken for a zero edge — one is unknown, the other is
+    a claim that the trade is exactly fair."""
+    assert tradeable(0.86, "yes", None) is None

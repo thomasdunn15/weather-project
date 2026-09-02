@@ -83,6 +83,16 @@
 # INSTALLED 2026-08-17.
 6-59/10 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_forecastex.py >> /var/log/weather/forecastex.log 2>&1
 
+# Robinhood top-of-book for ForecastEx, every 5 min (offset 4 to spread the
+# 5-minute jobs). THIS COLLECTS SOMETHING THE REPO ELSEWHERE CALLS IMPOSSIBLE:
+# forecastex.com's download endpoint is a trade tape with no quotes, so every
+# other comment says "no public order book, depth needs IBKR". Robinhood renders
+# each climate event server-side with a `quotes` object keyed by the same
+# ForecastEx contract id, carrying bid/ask/sizes.
+# Rows go to `prices` with last_price NULL, so tape readers are unaffected.
+# KMIA + KLAX only — each page is ~450 KB and no other city has a signal path.
+4-59/5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ingest_robinhood_book.py >> /var/log/weather/robinhood_book.log 2>&1
+
 # Perp funding snapshots: hourly at :04 (offset clear of the :00/:01/:02/:03 5-min
 # snapshot slots). READ-ONLY public GETs, no auth: Kalshi /margin funding history
 # (finalized 8h rates, 3-day lookback, self-healing) + Coinbase perp products

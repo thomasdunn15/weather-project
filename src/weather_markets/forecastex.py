@@ -184,6 +184,35 @@ from datetime import date as _date
 
 FEE_CENTS_PER_CONTRACT = 1.0        # ForecastEx: flat $0.01/contract/side
 
+RH_CITY_SLUG = {"KLAX": "los-angeles", "KMIA": "miami", "KDFW": "dallas",
+                "KSFO": "san-francisco", "KMDW": "chicago", "KAUS": "austin",
+                "KPHX": "phoenix", "KSEA": "seattle", "KLAS": "las-vegas",
+                "KMSY": "new-orleans"}
+
+# Built by hand rather than strftime("%B"): %B is locale-dependent, and a locale
+# surprise here would silently emit a 404 link instead of failing loudly.
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december")
+
+# Robinhood's weather markets are view-only on the web and tradeable only in the
+# mobile app, so this link is for checking the book, not for placing the order.
+def rh_url(station: str, d) -> str | None:
+    """Deep link to the Robinhood event page for one city-day.
+
+    Slug verified 2026-08-31 across LA/Miami/Chicago/Dallas/SF. Note the two
+    date halves are formatted DIFFERENTLY — the long half does not zero-pad the
+    day (`september-1-2026`) while the short half does (`sep-01-2026`). The
+    zero-padded long form 404s.
+    """
+    slug = RH_CITY_SLUG.get(station)
+    if not slug:
+        return None
+    mon = _MONTHS[d.month - 1]
+    return ("https://robinhood.com/us/en/prediction-markets/climate/events/"
+            f"{slug}-daily-temperature-high-{mon}-{d.day}-{d.year}"
+            f"-{mon[:3]}-{d.day:02d}-{d.year}/")
+
+
 
 def norm_sf(x: float) -> float:
     """P(Z > x) for a standard normal."""

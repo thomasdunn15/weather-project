@@ -19,7 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from weather_markets.db import get_connection
-from weather_markets.forecastex import FEE_CENTS_PER_CONTRACT as FEE_CENTS, PRODUCT_TO_STATION
+from weather_markets.forecastex import (FEE_CENTS_PER_CONTRACT as FEE_CENTS,
+                                        PRODUCT_TO_STATION, RH_CITY_SLUG, rh_url)
 
 _REPO = Path(__file__).resolve().parents[1]
 BACKTEST_JSON = _REPO / "data" / "forecastex_backtest.json"
@@ -179,35 +180,6 @@ ROBINHOOD_BANKROLL = 2500.0
 # mirroring budget_counts()'s even-split choice.
 MAX_CONTRACTS_PER_DAY = 200
 
-RH_CITY_SLUG = {"KLAX": "los-angeles", "KMIA": "miami", "KDFW": "dallas",
-                "KSFO": "san-francisco", "KMDW": "chicago", "KAUS": "austin",
-                "KPHX": "phoenix", "KSEA": "seattle", "KLAS": "las-vegas",
-                "KMSY": "new-orleans"}
-
-# Built by hand rather than strftime("%B"): %B is locale-dependent, and a locale
-# surprise here would silently emit a 404 link instead of failing loudly.
-_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
-           "august", "september", "october", "november", "december")
-
-# Robinhood's weather markets are view-only on the web and tradeable only in the
-# mobile app, so this link is for checking the book, not for placing the order.
-def rh_url(station: str, d) -> str | None:
-    """Deep link to the Robinhood event page for one city-day.
-
-    Slug verified 2026-08-31 across LA/Miami/Chicago/Dallas/SF. Note the two
-    date halves are formatted DIFFERENTLY — the long half does not zero-pad the
-    day (`september-1-2026`) while the short half does (`sep-01-2026`). The
-    zero-padded long form 404s.
-    """
-    slug = RH_CITY_SLUG.get(station)
-    if not slug:
-        return None
-    mon = _MONTHS[d.month - 1]
-    return ("https://robinhood.com/us/en/prediction-markets/climate/events/"
-            f"{slug}-daily-temperature-high-{mon}-{d.day}-{d.year}"
-            f"-{mon[:3]}-{d.day:02d}-{d.year}/")
-
-
 BROKER = {
     "connected": False,
     "headline": "Balance and positions cannot be linked",
@@ -220,6 +192,39 @@ BROKER = {
                "read path for this balance, official or otherwise: the number "
                "below is the figure entered in ROBINHOOD_BANKROLL by hand."),
 }
+
+
+def _latest_book(conn, station: str, target_date) -> dict:
+    """Newest Robinhood top-of-book per contract: ticker -> (yb, ya, nb, na, at).
+
+    Separate query from _latest_prices because these are different KINDS of row:
+    a trade is an event with the tape's timestamp, a quote is a snapshot with the
+    poll's. They live in the same table only because `prices` already had the
+    columns; nothing but the poll time links them.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (c.ticker) c.ticker, p.yes_bid, p.yes_ask,
+                   p.no_bid, p.no_ask, p.snapshot_at
+            FROM contracts c JOIN prices p ON p.ticker = c.ticker
+            WHERE c.platform='forecastex' AND c.station_id=%s AND c.target_date=%s
+              AND (p.yes_bid IS NOT NULL OR p.yes_ask IS NOT NULL)
+            ORDER BY c.ticker, p.snapshot_at DESC""", (station, target_date))
+        return {r[0]: (r[1], r[2], r[3], r[4], r[5]) for r in cur.fetchall()}
+
+
+def tradeable(p_model: float, side: str, ask: int | None) -> float | None:
+    """Edge against the price you can ACTUALLY pay, not the last print.
+
+    The strategy prices every signal off `last_price`, and its own docs concede
+    the spread is never charged. With a real book that stops being a caveat and
+    becomes a number: on 2026-09-02 UHMIA_090226_89 last-traded at 45c against a
+    51/59 market, so a "+25% edge" was +11% to anyone actually buying.
+    """
+    if ask is None:
+        return None
+    win = p_model if side == "yes" else 1.0 - p_model
+    return win - ask / 100.0
 
 
 def _latest_prices(conn, station: str, target_date) -> dict:
@@ -425,6 +430,7 @@ def _trading(conn, capacity: list[dict], with_entries: bool = True) -> dict:
             cities.append(row)
             continue
         row["note"] = note
+        book = _latest_book(conn, station, today)
         decision = datetime(today.year, today.month, today.day, hh, mm,
                             tzinfo=timezone.utc)
         row["state"] = pick_state(picks, datetime.now(timezone.utc), decision)
@@ -474,7 +480,9 @@ def _trading(conn, capacity: list[dict], with_entries: bool = True) -> dict:
                 for ticker, strike, px, snap in sorted(live, key=lambda r: r[1]):
                     pm = fx.prob_above(strike, mu, sg)
                     cur_px, cur_at = latest.get(ticker, (None, None))
+                    lyb, lya, _lnb, _lna, _lat = book.get(ticker, (None,) * 5)
                     row["ladder"].append({
+                        "bid": lyb, "ask": lya,
                         "ticker": ticker, "strike": strike, "decisionPx": px,
                         "currentPx": cur_px, "pModel": round(pm, 4),
                         "edge": round(pm - px / 100.0, 4),
@@ -492,6 +500,8 @@ def _trading(conn, capacity: list[dict], with_entries: bool = True) -> dict:
             if row["capacity"]:
                 count = min(count, row["capacity"])
             cur_px, cur_at = latest.get(p["ticker"], (None, None))
+            yb, ya, nb, na, book_at = book.get(p["ticker"], (None, None, None, None, None))
+            bid, ask = (yb, ya) if p["side"] == "yes" else (nb, na)
             # `entry` is what we pay for the side we take; on a NO that is
             # 100 - last. Mark it the same way so drift is comparable.
             cur_entry = None if cur_px is None else (cur_px if p["side"] == "yes" else 100 - cur_px)
@@ -513,6 +523,11 @@ def _trading(conn, capacity: list[dict], with_entries: bool = True) -> dict:
                 "currentPx": cur_px, "currentEntry": cur_entry,
                 "currentAt": cur_at.isoformat() if cur_at else None,
                 "drift": None if cur_entry is None else cur_entry - p["entry"],
+                # Robinhood's book for the side being bought.
+                "bid": bid, "ask": ask,
+                "bookAt": book_at.isoformat() if book_at else None,
+                "askEdge": tradeable(p["p_model"], p["side"], ask),
+                "askCostUsd": None if ask is None else round(count * ask / 100.0, 2),
             })
         cities.append(row)
 

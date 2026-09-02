@@ -1977,6 +1977,27 @@ function rhWhen(dateStr, hhmm) {
   return { text: `${local} local · ${span(-mins)} ago`, cls: "muted" };
 }
 
+// The book, and what it costs to actually take this side. ForecastEx's own feed
+// is a trade tape with no quotes, so the strategy prices every signal off the
+// last print — but Robinhood publishes the book, and on a wide market the two
+// are far apart. A "+41% edge" at a 45c last print is +27% to anyone paying the
+// 59c ask. Showing only the first number would be showing an edge nobody can
+// take.
+function bookLine(p) {
+  if (p.ask == null && p.bid == null) {
+    return `<span class="warn">no book</span> — edge above is a tape price, spread unknown<br>`;
+  }
+  const bid = p.bid == null ? "–" : p.bid + "¢";
+  const ask = p.ask == null ? "–" : p.ask + "¢";
+  const lost = (p.askEdge != null) ? Math.abs(p.edge) - p.askEdge : null;
+  const real = p.askEdge == null ? "" :
+    ` · real edge <b class="${p.askEdge > 0 ? "pos" : "neg"}">${p.askEdge >= 0 ? "+" : "−"}${(Math.abs(p.askEdge) * 100).toFixed(0)}%</b>` +
+    (lost == null ? "" : ` <span style="font-size:11px;color:var(--text-faint)">(${(lost * 100).toFixed(0)} pts to the spread)</span>`);
+  const cost = p.askCostUsd == null ? "" : ` · $${p.askCostUsd.toFixed(2)} if you cross`;
+  return `<b style="color:var(--text-mid)">book ${bid} / ${ask}</b>` +
+    `${p.ask == null ? "" : ` — you pay <b style="color:var(--text-hi)">${p.ask}¢</b> to cross`}${real}${cost}<br>`;
+}
+
 function rhPick(p, city) {
   const side = p.side === "yes" ? "YES" : "NO";
   // The Robinhood app quotes each rung from the YES side, so a NO limit of 28c
@@ -2002,9 +2023,10 @@ function rhPick(p, city) {
     <div class="rh-order"><b>${p.contracts.toLocaleString()}</b> contracts &nbsp;·&nbsp; limit <b>${p.limit}¢</b>
       <span style="color:var(--text-lo);font-size:12px">(${side} side; the YES quote reads ${side === "NO" ? otherSide : p.limit}¢)</span></div>
     <div class="rh-meta">
-      cost <b style="color:var(--text-mid)">$${p.costUsd.toFixed(2)}</b> · max loss $${p.maxLossUsd.toFixed(2)} · max win $${p.maxWinUsd.toFixed(2)} · fee $${p.feeUsd.toFixed(2)}<br>
-      model ${(p.pModel * 100).toFixed(0)}% · market implies ${p.lastPx}% &nbsp;${edgeCell(p.edge)}<br>
-      decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}${age}
+      cost <b style="color:var(--text-mid)">$${p.costUsd.toFixed(2)}</b> at the limit · max win $${p.maxWinUsd.toFixed(2)} · fee $${p.feeUsd.toFixed(2)}<br>
+      model ${(p.pModel * 100).toFixed(0)}% · tape ${p.lastPx}% &nbsp;${edgeCell(p.edge)} <span style="font-size:11px">(what the signal is priced on)</span><br>
+      ${bookLine(p)}
+      <span style="color:var(--text-faint)">decision mark ${p.entry}¢ · now ${p.currentEntry == null ? "–" : p.currentEntry + "¢"}${drift}${age}</span>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       ${city.rhUrl ? `<a class="rh-btn" href="${esc(city.rhUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(city.name)} on Robinhood ↗</a>` : ""}
@@ -2029,6 +2051,8 @@ function rhLadder(city) {
     const sig = r.pick
       ? `<span class="side ${r.pick}">BUY ${r.pick.toUpperCase()}</span>`
       : fires ? `<span class="muted" title="clears the edge threshold but was filtered: price outside 5–95¢, entry under the city minimum, or ranked below the day's max picks">filtered</span>` : `<span class="muted">—</span>`;
+    const quote = (r.bid == null && r.ask == null) ? null
+      : `${r.bid == null ? "–" : r.bid}/${r.ask == null ? "–" : r.ask}`;
     const moved = r.currentPx != null && r.currentPx !== r.decisionPx;
     return `<div class="rung${r.pick ? " fires" : ""}" style="--tc:${tc};--ri:${k}">
       <div class="rung-label"><span class="rung-dot"></span>&gt; ${r.strike}°F</div>
@@ -2036,11 +2060,11 @@ function rhLadder(city) {
       <div class="rung-prob">${fill.toFixed(0)}%</div>
       <div class="rung-edge">${edgeCell(r.edge)}</div>
       <div class="rung-sig">${sig}</div>
-      <div class="rung-res" style="font:600 12px/1 var(--mono);color:${moved ? "var(--text-hi)" : "var(--text-lo)"}">${r.currentPx == null ? "–" : r.currentPx + "¢"}</div>
+      <div class="rung-res" style="font:600 11.5px/1 var(--mono);color:${quote ? "var(--text-hi)" : "var(--text-lo)"}" title="${quote ? "bid / ask" : "last trade — no book"}">${quote || (r.currentPx == null ? "–" : r.currentPx + "¢")}</div>
     </div>`;
   }).join("");
   return `<div class="ladder">
-    <div class="rung rung-head"><div class="rung-label">Threshold</div><div class="rung-track-h">model P · ▮ market at decision</div><div class="rung-prob">P</div><div class="rung-edge">Edge</div><div class="rung-sig">Signal</div><div class="rung-res">Now</div></div>
+    <div class="rung rung-head"><div class="rung-label">Threshold</div><div class="rung-track-h">model P · ▮ market at decision</div><div class="rung-prob">P</div><div class="rung-edge">Edge</div><div class="rung-sig">Signal</div><div class="rung-res">Bid/Ask</div></div>
     ${body}</div>`;
 }
 
