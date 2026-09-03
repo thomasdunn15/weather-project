@@ -87,6 +87,9 @@ svg[data-chart] { cursor: crosshair; }
    Event contracts are tradeable only in the Robinhood mobile app (web is
    view-only), so this tab's job is to be READ OFF while typing an order into
    a phone. Hence the oversized strike/side and the explicit limit price. */
+/* Horizontal padding for the Robinhood tab's inline-styled sections. A custom
+   property so the phone breakpoint can pull it in without touching the JS. */
+.panel { --rh-x: 28px; }
 .rh-card {
   border: 1px solid var(--border-strong); border-radius: var(--r);
   background: var(--bg-2); padding: 14px 16px;
@@ -112,4 +115,6 @@ svg[data-chart] { cursor: crosshair; }
   transition: background var(--dur-1) var(--ease-soft), border-color var(--dur-1) var(--ease-soft);
 }
 .rh-btn:hover { background: var(--bg-inset); border-color: var(--text-faint); }
+/* Touch has no hover; the press is the only feedback a thumb gets. */
+.rh-btn:active { transform: scale(0.97); background: var(--bg-inset); transition-duration: var(--dur-0); }
 .rh-when { font: 600 11px/1 var(--mono); letter-spacing: 0.04em; }

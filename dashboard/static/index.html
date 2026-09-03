@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- viewport-fit=cover: without it env(safe-area-inset-*) is 0 and the fixed
+     bottom nav sits under the iPhone home indicator. theme-color paints
+     Safari's own chrome the page colour instead of white. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#090D15" />
 <title>weather · kalshi trading desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -32,12 +36,14 @@
   </header>
 
   <nav class="tabbar" role="tablist" aria-label="Dashboard views">
-    <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')">Live Trading</button>
-    <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')">Backtest</button>
-    <button id="tab-polymarket" role="tab" aria-selected="false" aria-controls="section-polymarket" onclick="switchTab('polymarket')">Polymarket</button>
-    <button id="tab-forecastex" role="tab" aria-selected="false" aria-controls="section-forecastex" onclick="switchTab('forecastex')">Robinhood</button>
-    <button id="tab-accounting" role="tab" aria-selected="false" aria-controls="section-accounting" onclick="switchTab('accounting')">Accounting</button>
-    <button id="tab-digest" role="tab" aria-selected="false" aria-controls="section-digest" onclick="switchTab('digest')">Digest</button>
+    <!-- data-short: the label the phone bottom bar shows (six tabs in 430px
+         leaves ~67px each). responsive.css swaps .lbl for it under 520px. -->
+    <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')" data-short="Live"><span class="lbl">Live Trading</span></button>
+    <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')" data-short="Backtest"><span class="lbl">Backtest</span></button>
+    <button id="tab-polymarket" role="tab" aria-selected="false" aria-controls="section-polymarket" onclick="switchTab('polymarket')" data-short="Poly"><span class="lbl">Polymarket</span></button>
+    <button id="tab-forecastex" role="tab" aria-selected="false" aria-controls="section-forecastex" onclick="switchTab('forecastex')" data-short="Robinhood"><span class="lbl">Robinhood</span></button>
+    <button id="tab-accounting" role="tab" aria-selected="false" aria-controls="section-accounting" onclick="switchTab('accounting')" data-short="Acct"><span class="lbl">Accounting</span></button>
+    <button id="tab-digest" role="tab" aria-selected="false" aria-controls="section-digest" onclick="switchTab('digest')" data-short="Digest"><span class="lbl">Digest</span></button>
   </nav>
 
   <main>

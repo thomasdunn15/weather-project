@@ -91,6 +91,9 @@
 * { box-sizing: border-box; }
 
 html { color-scheme: dark; }
+/* iOS Safari inflates text it judges "too small" when a phone rotates to
+   landscape, which turns a 12px mono table into a ragged mess. 100% = off. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body {
   margin: 0;
   background: var(--bg-0);

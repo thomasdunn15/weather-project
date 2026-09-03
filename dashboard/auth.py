@@ -133,19 +133,24 @@ router = APIRouter()
 # Inline CSS on purpose: /static is behind the login, and the login page must
 # render for someone who is, by definition, not logged in.
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#090D15">
 <title>Sign in</title>
 <style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;
-       font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  form{width:min(360px,90vw);padding:28px;border:1px solid #232b35;border-radius:12px;background:#111821}
-  h1{margin:0 0 18px;font-size:17px;letter-spacing:.06em;text-transform:uppercase;color:#9aa7b5}
-  label{display:block;font-size:12px;color:#9aa7b5;margin:12px 0 4px}
-  input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #2a3440;border-radius:8px;
-        background:#0b0f14;color:#e6edf3;font-size:15px}
-  input:focus{outline:2px solid #5ee6c0;outline-offset:1px;border-color:#5ee6c0}
-  button{margin-top:18px;width:100%;padding:12px;border:0;border-radius:8px;background:#5ee6c0;color:#062018;
+  body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;background:#090D15;color:#EAF0FB;
+       padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+       font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-text-size-adjust:100%}
+  form{width:min(380px,calc(100vw - 32px));padding:28px 24px;border:1px solid rgba(180,200,230,.16);border-radius:16px;background:#111826}
+  h1{margin:0 0 18px;font-size:13px;letter-spacing:.13em;text-transform:uppercase;color:#8E9CB4}
+  label{display:block;font-size:12px;color:#8E9CB4;margin:14px 0 5px}
+  /* 16px is the floor: below it iOS Safari zooms the page on focus and never
+     zooms back, leaving the form half off-screen. */
+  input{width:100%;box-sizing:border-box;padding:13px 12px;border:1px solid rgba(180,200,230,.16);border-radius:8px;
+        background:#090D15;color:#EAF0FB;font-size:16px}
+  input:focus{outline:2px solid #38BDF8;outline-offset:1px;border-color:#38BDF8}
+  button{margin-top:20px;width:100%;min-height:48px;padding:13px;border:0;border-radius:8px;background:#38BDF8;color:#06131C;
          font-weight:700;font-size:14px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+  button:active{transform:scale(.98)}
   .err{margin-top:12px;padding:10px 12px;border-radius:8px;background:#3a1518;color:#ff8f8f;font-size:13px}
 </style></head><body>
 <form method="post" action="/login" autocomplete="on">

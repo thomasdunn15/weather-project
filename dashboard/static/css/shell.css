@@ -106,7 +106,11 @@
    340px floor a 21px JetBrains Mono "+$4,360.31" (0.6em advance = 126px) could
    not fit its 113px third — the row grew past the card and clipped the last
    column. 400px gives each metric ~109px of text room. */
-.city-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+/* min(400px, 100%): on a 406px phone column a bare 400px floor still fits, but
+   on anything narrower auto-fit would overflow the container rather than
+   shrink. The min() makes the floor "400px or the whole width, whichever is
+   smaller", which is the responsive-grid idiom that never needs a breakpoint. */
+.city-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); }
 
 /* ---------- panel primitive ---------- */
 .panel { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }

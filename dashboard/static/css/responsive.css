@@ -1,6 +1,13 @@
 /* =====================================================================
    ISOBAR · RESPONSIVE — breakpoint overrides. Loaded LAST so these win.
    Targets classes owned by shell/live/backtest; cascade resolves globally.
+
+   Breakpoints are where the content breaks, not device names:
+     1180  six-up metric rows stop fitting
+      720  two-column layouts stop fitting; the six-tab bar starts to
+      520  a phone in portrait (iPhone 14 Pro Max = 430 CSS px). Below this
+           the tab bar moves to the bottom where a thumb is, and the ladder
+           drops to the four columns that matter on a 406px column.
    ===================================================================== */
 
 @media (max-width: 1180px) {
@@ -20,4 +27,91 @@
   .grid { grid-template-columns: 1fr !important; }
   .bt-metrics { grid-template-columns: repeat(2, 1fr); }
   .wrap { padding: 12px; }
+  /* Six tabs are ~570px of buttons. Between 520 and 720 they scroll inside
+     the bar (the page body must never scroll sideways); below 520 the bar
+     moves to the bottom and they share the width instead. */
+  .tabbar { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .tabbar::-webkit-scrollbar { display: none; }
+  .tabbar button { flex: none; }
+  .status-strip { flex-wrap: wrap; }
+}
+
+/* ---------- phone, portrait ---------- */
+@media (max-width: 520px) {
+  /* Safe areas: the notch/Dynamic Island in landscape sits at the sides, the
+     home indicator at the bottom. env() is 0 everywhere else, so these cost
+     nothing on desktop. */
+  .topbar {
+    height: auto; min-height: 52px; gap: 10px;
+    padding: env(safe-area-inset-top) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+  }
+  .brand .sub, .clock .utc, .refresh-pill #refresh-label { display: none; }
+  .brand .name { font-size: 13px; }
+  .refresh-pill { padding: 5px; gap: 0; }   /* the dot alone carries the state */
+  .clock { font-size: 12px; }
+
+  /* Bottom tab bar. Where a thumb is on a 6.7" phone, and it stays put while
+     the content scrolls — the top-of-page sticky bar disappears behind
+     Safari's own collapsing chrome the moment you scroll. */
+  .tabbar {
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0; z-index: 30;
+    overflow: visible; gap: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-bottom: 0; border-top: 1px solid var(--border-strong);
+    background: color-mix(in srgb, var(--bg-0) 92%, transparent);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  .tabbar button {
+    flex: 1 1 0; min-width: 0; min-height: 54px; padding: 8px 2px;
+    font-size: 10.5px; letter-spacing: 0.02em;
+  }
+  .tabbar button .lbl { display: none; }
+  .tabbar button::before { content: attr(data-short); }
+  /* the active indicator moves to the top edge of a bottom bar */
+  .tabbar button::after { top: -1px; bottom: auto; left: 14px; right: 14px; border-radius: 0 0 2px 2px; }
+  /* room for the bar under the last panel */
+  .app { padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
+
+  .wrap {
+    gap: 12px;
+    padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left));
+  }
+  .panel { --rh-x: 14px; }
+  /* Panel headers carry "PREVIEW · UHLAX · decision 14:45Z · 10:45 AM local ·
+     in 3h" in one line — let the meta drop under the title and wrap. */
+  .panel-h { flex-wrap: wrap; row-gap: 6px; padding: 10px 14px; }
+  .panel-h h3 { white-space: normal; text-wrap: balance; }
+  .panel-h .meta { margin-left: 0; flex-basis: 100%; white-space: normal; line-height: 1.5; }
+  .city-grid { grid-template-columns: 1fr; }
+  .fc-stats { grid-template-columns: 1fr 1fr; }
+  .tbl-scroll { max-height: 60vh; }
+
+  /* The ladder: keep the four columns a decision needs — strike, edge, signal,
+     bid/ask — and drop the probability bar. Both ladders (Kalshi brackets on
+     Backtest, ForecastEx thresholds on Robinhood) share this markup. The
+     520px min-width that made it scroll sideways goes with it. */
+  .rung { min-width: 0; grid-template-columns: 72px 84px 1fr 56px; gap: 10px; padding: 8px 10px; }
+  .rung-track, .rung-track-h, .rung-prob { display: none; }
+  .rung-label { font-size: 12px; }
+
+  /* Robinhood ticket, phone sizes. Buttons go full width so the thumb never
+     has to aim. */
+  .rh-strike { font-size: 20px; }
+  .rh-order { font-size: 14px; }
+  .rh-meta { font-size: 11.5px; }
+  .rh-btn { flex: 1 1 100%; text-align: center; padding: 13px 14px; }
+  .rh-card > div:last-child { gap: 8px; }
+}
+
+/* ---------- touch, any width ----------
+   Screen size does not say how it is pointed at: an iPad with a keyboard, a
+   laptop with a touchscreen. 44px is Apple's minimum target; these enlarge
+   without changing layout. */
+@media (pointer: coarse) {
+  .tabbar button { min-height: 44px; }
+  .rh-btn { padding: 12px 14px; }
+  .rh-head a[title^="Remove"] { padding: 10px; margin: -10px -10px -10px auto; font-size: 17px; }
+  .rung:not(.rung-head):active { background: var(--bg-2); }
+  .tabbar button:hover { color: inherit; }      /* no sticky hover on touch */
+  .tabbar button.on:hover { color: var(--text-hi); }
 }

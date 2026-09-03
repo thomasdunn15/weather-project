@@ -2076,7 +2076,7 @@ function rhLadder(city) {
 function rhEmpty(c) {
   const pad = `padding:16px 28px 6px;font-size:12.5px;line-height:1.7`;
   const link = c.rhUrl
-    ? `<div style="padding:0 28px 4px"><a class="rh-btn" style="margin-top:12px" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">View ${esc(c.name)} on Robinhood ↗</a></div>`
+    ? `<div style="padding:0 var(--rh-x) 4px"><a class="rh-btn" style="margin-top:12px" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">View ${esc(c.name)} on Robinhood ↗</a></div>`
     : "";
   if (c.state === "pending") {
     return `<div style="${pad};color:var(--text-lo)">` +
@@ -2158,8 +2158,8 @@ function rhEntriesPanel(tr) {
   return `<div class="panel"><div class="panel-h"><h3>Taken today</h3>` +
     `<span class="meta">${es.length} position${es.length > 1 ? "s" : ""} · $${total.toFixed(2)} committed · ` +
     `mark <span class="${mark >= 0 ? "pos" : "neg"}">${mark >= 0 ? "+" : "−"}$${Math.abs(mark).toFixed(2)}</span></span></div>` +
-    `<div style="padding:14px 28px 18px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${es.map(rhEntry).join("")}</div>` +
-    `<div style="padding:0 28px 18px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
+    `<div style="padding:14px var(--rh-x) 18px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${es.map(rhEntry).join("")}</div>` +
+    `<div style="padding:0 var(--rh-x) 18px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
     `These are frozen at the moment you pressed the button and stay here all day, even after the ` +
     `signal moves out of range. Robinhood publishes no API for event contracts, so this is the only ` +
     `record that the position exists — the mark is our own last-trade tape, not a broker statement.</div></div>`;
@@ -2168,7 +2168,7 @@ function rhEntriesPanel(tr) {
 function rhToday(tr) {
   if (!tr || !tr.available) {
     return `<div class="panel"><div class="panel-h"><h3>Today's trades</h3><span class="meta">unavailable</span></div>` +
-      `<div style="padding:14px 28px 22px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">${esc((tr && tr.error) || "no payload")}</div></div>`;
+      `<div style="padding:14px var(--rh-x) 22px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">${esc((tr && tr.error) || "no payload")}</div></div>`;
   }
   const cards = (tr.cities || []).map(c => {
     const when = rhWhen(tr.date, c.decisionUtc);
@@ -2176,18 +2176,18 @@ function rhToday(tr) {
       `<span class="meta">${c.preview ? `<span class="pill-status">PREVIEW</span> · ` : ""}${esc(c.product)} · decision ${esc(c.decisionUtc)}Z · <span class="rh-when ${when.cls}">${esc(when.text)}</span>` +
       `${c.mu != null ? ` · model ${c.mu.toFixed(1)}°F ±${c.sigma.toFixed(2)} (basis ${c.offset >= 0 ? "+" : "−"}${Math.abs(c.offset).toFixed(2)})` : ""}</span></div>`;
     const warn = c.warning
-      ? `<div style="padding:10px 28px 0"><span class="pill-status halt">HEADS UP</span> <span style="color:var(--text-lo);font-size:12px">${esc(c.warning)}</span></div>` : "";
+      ? `<div style="padding:10px var(--rh-x) 0"><span class="pill-status halt">HEADS UP</span> <span style="color:var(--text-lo);font-size:12px">${esc(c.warning)}</span></div>` : "";
     const banner = c.preview
-      ? `<div style="padding:12px 28px 0"><div style="border:1px solid var(--border-strong);background:var(--bg-2);border-radius:var(--r-sm);padding:10px 12px;font-size:12px;color:var(--text-lo);line-height:1.6">` +
+      ? `<div style="padding:12px var(--rh-x) 0"><div style="border:1px solid var(--border-strong);background:var(--bg-2);border-radius:var(--r-sm);padding:10px 12px;font-size:12px;color:var(--text-lo);line-height:1.6">` +
         `<b style="color:var(--text-mid)">Preview — ${esc(c.decisionUtc)}Z has not run yet.</b> ` +
         `The model is already final: it comes from this morning's 00Z forecast and a training window that ` +
         `closed yesterday, so the μ/σ below is the one the paper cron will write. Only the MARKET price ` +
         `moves between now and then, which moves the edge and can add or drop a pick.</div></div>`
       : "";
     const body = (c.state === "trade" || c.state === "preview")
-      ? banner + `<div style="padding:14px 28px 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
+      ? banner + `<div style="padding:14px var(--rh-x) 4px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))">${c.picks.map(p => rhPick(p, c)).join("")}</div>`
       : rhEmpty(c);
-    const foot = `<div style="padding:10px 28px 16px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
+    const foot = `<div style="padding:10px var(--rh-x) 16px;color:var(--text-faint);font-size:11.5px;line-height:1.6">` +
       `Size = ${tr.maxContracts} contracts/day split evenly, then capped at this city's measured capacity ` +
       `(${c.capacity == null ? "unknown" : c.capacity.toLocaleString()}). Limit sits half the measured spread ` +
       `(${c.spreadCents == null ? "–" : c.spreadCents.toFixed(2) + "¢"}) inside the last print — it is a POST, so it may not fill.</div>`;
@@ -2197,7 +2197,7 @@ function rhToday(tr) {
   const hoursPanel =
     `<div class="panel"><div class="panel-h"><h3>Placing the order</h3>` +
     `<span class="meta">web is view-only · trade in the Robinhood app</span></div>` +
-    `<div style="padding:14px 28px 20px;font-size:12.5px;color:var(--text-lo);line-height:1.75">` +
+    `<div style="padding:14px var(--rh-x) 20px;font-size:12.5px;color:var(--text-lo);line-height:1.75">` +
     `<b style="color:var(--text-mid)">Trading hours:</b> ${esc(tr.tradingHours)}.<br>` +
     `<b style="color:var(--text-mid)">Settlement:</b> Weather Underground's station high — the same source ForecastEx uses, ` +
     `and <i>not</i> the NWS CLI report Kalshi settles on.<br>` +
@@ -2210,10 +2210,10 @@ function rhToday(tr) {
   const brokerPanel =
     `<div class="panel"><div class="panel-h"><h3>Account</h3>` +
     `<span class="pill-status halt">NOT LINKED</span></div>` +
-    `<div style="padding:14px 28px 8px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
+    `<div style="padding:14px var(--rh-x) 8px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
     `Bankroll (entered by hand): <b>$${tr.bankroll.toLocaleString(undefined, { minimumFractionDigits: 2 })}</b><br>` +
     `Day's budget: <b>${tr.maxContracts}</b> contracts</div>` +
-    `<div style="padding:4px 28px 20px;font-size:12.5px;color:var(--text-lo);line-height:1.65">` +
+    `<div style="padding:4px var(--rh-x) 20px;font-size:12.5px;color:var(--text-lo);line-height:1.65">` +
     `<b style="color:var(--text-mid)">${esc(b.headline || "")}</b> ${esc(b.detail || "")}</div></div>`;
 
   return rhEntriesPanel(tr) + cards + `<div class="grid g-2">${hoursPanel}${brokerPanel}</div>`;
@@ -2232,7 +2232,7 @@ function renderForecastEx() {
   const collectorPanel =
     `<div class="panel"><div class="panel-h"><h3>Public data collector</h3>` +
     `<span class="meta">${pill} · no auth / no IBKR needed · every 10 min · ${col.cities} mapped cities</span></div>` +
-    `<div style="padding:14px 28px 20px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
+    `<div style="padding:14px var(--rh-x) 20px;font-family:var(--mono);font-size:13px;line-height:1.9">` +
     `Ticks last 24h: <b>${col.ticks24h.toLocaleString()}</b><br>` +
     `Contracts tracked: <b>${col.contracts.toLocaleString()}</b><br>` +
     `Coverage: <b>${esc(col.firstDay || "–")}</b> → <b>${esc(col.lastDay || "–")}</b><br>` +
@@ -2244,8 +2244,8 @@ function renderForecastEx() {
   const basisPanel =
     `<div class="panel"><div class="panel-h"><h3>⚠ Settlement basis</h3>` +
     `<span class="meta">${esc(basis.headline)}</span></div>` +
-    `<div style="padding:12px 28px 4px;font-size:12.5px;color:var(--text-lo);line-height:1.65">${esc(basis.detail)}</div>` +
-    `<div style="padding:8px 28px 4px;font-size:12.5px;color:var(--text-lo);line-height:1.65">${esc(basis.correlation)}</div>` +
+    `<div style="padding:12px var(--rh-x) 4px;font-size:12.5px;color:var(--text-lo);line-height:1.65">${esc(basis.detail)}</div>` +
+    `<div style="padding:8px var(--rh-x) 4px;font-size:12.5px;color:var(--text-lo);line-height:1.65">${esc(basis.correlation)}</div>` +
     `<div class="tbl-scroll" style="max-height:220px"><table class="dt"><thead><tr>` +
     `<th class="l">City</th><th>CLI→WU offset</th></tr></thead><tbody>${offRows}</tbody></table></div></div>`;
 
@@ -2253,7 +2253,7 @@ function renderForecastEx() {
   let btPanel;
   if (!bt.available) {
     btPanel = `<div class="panel"><div class="panel-h"><h3>Backtest</h3><span class="meta">not generated yet</span></div>` +
-      `<div style="padding:14px 28px 22px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">${esc(bt.note || "")}</div></div>`;
+      `<div style="padding:14px var(--rh-x) 22px;color:var(--text-lo);font-size:12.5px;font-family:var(--mono)">${esc(bt.note || "")}</div></div>`;
   } else {
     const v = (c, k) => (c.variants || {})[k] || {};
     const cell = (x) => x.n == null ? `<td>–</td><td>–</td>` :
@@ -2275,7 +2275,7 @@ function renderForecastEx() {
       `<th class="l">City</th><th>Events</th><th>n</th><th>Win%</th>` +
       `<th>naive $</th><th>Sh</th><th>fixed $</th><th>Sh</th><th>roll45 $</th><th>Sh</th><th>offset</th>` +
       `</tr></thead><tbody>${rows}</tbody></table></div>` +
-      `<div style="padding:8px 28px 18px;color:var(--text-lo);font-size:11.5px;line-height:1.6">` +
+      `<div style="padding:8px var(--rh-x) 18px;color:var(--text-lo);font-size:11.5px;line-height:1.6">` +
       `<b>rolling45</b> is the config to read — a fixed offset over-corrects cities whose basis drifts (LA, Austin). ` +
       `<b>No fill model:</b> ForecastEx publishes no public order book, so spread and slippage are unmodeled and these are optimistic.</div></div>`;
   }
@@ -2297,7 +2297,7 @@ function renderForecastEx() {
     `<div class="tbl-scroll"><table class="dt"><thead><tr><th class="l">City</th><th class="l">Product</th><th>Decision</th>` +
     `<th>Median</th><th>p25</th><th>p10</th><th>0-vol picks</th><th>Suggested size</th><th>vs backtest 500</th></tr></thead>` +
     `<tbody>${capRows}</tbody></table></div>` +
-    `<div style="padding:8px 28px 18px;color:var(--text-lo);font-size:11.5px;line-height:1.6">` +
+    `<div style="padding:8px var(--rh-x) 18px;color:var(--text-lo);font-size:11.5px;line-height:1.6">` +
     `City-wide volume is <b>misleading</b> — it aggregates ~30 strikes, but a signal is one strike. ` +
     `Miami's city median is ~2,100/2h yet its traded-strike median is ~240, so the backtest's 500-lot is ~10× too big there. ` +
     `LA is the only city with genuine depth. No order book is published, so these are realized-volume lower bounds — ` +
