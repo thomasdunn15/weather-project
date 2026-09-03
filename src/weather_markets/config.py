@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # Generate with `claude setup-token`. Falls back to the process env.
     claude_code_oauth_token: str | None = None
 
+    # Dashboard login — single operator, see dashboard/auth.py. All three must be
+    # set or the dashboard refuses every request (fails closed). The hash comes
+    # from `uv run python -m dashboard.auth hash`, the secret from `... secret`.
+    dashboard_user: str | None = None
+    dashboard_password_hash: str | None = None   # scrypt$<salt>$<hash>
+    dashboard_secret: str | None = None          # HMAC key for the session cookie
+
     model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

@@ -35,6 +35,7 @@ from dashboard.data_accounting import get_accounting_data
 from dashboard.data_digest import get_digest_data
 from dashboard.kalshi_ws import service as live_service
 from dashboard.ttl_cache import ttl_cache
+from dashboard.auth import AuthMiddleware, router as auth_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -55,6 +56,10 @@ async def lifespan(app: "FastAPI"):
 
 app = FastAPI(title="weather-project dashboard", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Login wraps EVERYTHING, /static included — see dashboard/auth.py for why it
+# fails closed rather than defaulting to open when unconfigured.
+app.add_middleware(AuthMiddleware)
+app.include_router(auth_router)
 
 
 def _json(payload) -> Response:
