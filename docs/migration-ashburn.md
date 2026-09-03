@@ -226,6 +226,11 @@ Nuremberg cannot learn about them from the venue either. Consequences:
 - **The Phase 8 delta-sync must NOT copy `pm_live_trades` from Nuremberg.** It
   would overwrite the only copy of the new rows with a stale one. Sync the
   Kalshi-side tables only.
+- **`rh_entries` (manual Robinhood positions, migration 012) is written by
+  whichever box's dashboard the operator pressed the button on.** Before
+  Tailscale (2026-09-03) that was Nuremberg over the SSH tunnel; after, it is
+  Ashburn. Rows were copied 2026-09-03. At cutover, copy any Nuremberg rows
+  newer than that — they are the only record those positions exist.
 
 ## Phase 7c — MOVE `halt/`. IT IS GITIGNORED. ⚠️
 
