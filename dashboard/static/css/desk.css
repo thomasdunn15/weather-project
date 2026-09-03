@@ -1,0 +1,68 @@
+/* =====================================================================
+   ISOBAR · DESK — the phone-first first screen.
+   Five blocks, one column, read at arm's length on a 430px phone, often
+   while the other hand is typing an order into a broker app. So the type
+   runs one step larger than the rest of the dashboard everywhere, and the
+   numbers you act on (strike, side, size, limit, the price you will pay)
+   run two. Nothing here is decorative; every larger size is a thing that
+   has to be read across a desk or a thumb has to hit.
+   ===================================================================== */
+
+.desk { display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; }
+
+/* ---- health line: one row, coloured by the worst thing on it ---- */
+.desk-health {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; border-radius: var(--r); border: 1px solid var(--border-strong);
+  background: var(--bg-1); font: 500 14px/1.4 var(--mono); color: var(--text-mid);
+}
+.desk-health .dot { width: 10px; height: 10px; flex: none; }
+.desk-health.ok   { border-color: var(--up-line); }
+.desk-health.warn { border-color: var(--warn-line); color: var(--warn); }
+.desk-health.bad  { border-color: var(--down-line); color: var(--down); }
+.desk-health .sep { color: var(--text-faint); }
+
+/* ---- block: a heading row and a body; no nested cards ---- */
+.desk-block { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
+.desk-block > .h {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+}
+.desk-block > .h h2 { margin: 0; font: 700 15px/1.2 var(--ui); letter-spacing: 0.02em; color: var(--text-hi); }
+.desk-block > .h .m { margin-left: auto; font: 500 13px/1.4 var(--mono); color: var(--text-lo); }
+.desk-block > .b { padding: 6px 16px 14px; }
+.desk-block .empty { padding: 14px 0 6px; font: 500 15px/1.5 var(--ui); color: var(--text-lo); }
+.desk-block .empty b { color: var(--text-mid); font-weight: 600; }
+.desk-block .empty small { display: block; margin-top: 4px; font: 500 12.5px/1.5 var(--mono); color: var(--text-faint); }
+
+/* ---- a pick or a position: the numbers you act on, big ---- */
+.desk-row { padding: 14px 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.desk-row:last-child { border-bottom: 0; }
+.desk-row .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-row .strike { font: 700 26px/1 var(--mono); color: var(--text-hi); letter-spacing: -0.01em; }
+.desk-row .side { font-size: 13px; padding: 6px 10px; }
+.desk-row .tag { font: 600 11px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-lo); }
+.desk-row .order { font: 600 18px/1.4 var(--mono); color: var(--text-hi); }
+.desk-row .order b { color: var(--temperate); }
+.desk-row .order .pay { color: var(--text-hi); }
+.desk-row .fine { font: 500 13px/1.6 var(--mono); color: var(--text-lo); }
+.desk-row .fine b { color: var(--text-mid); font-weight: 600; }
+.desk-row .actions { display: flex; gap: 8px; margin-top: 4px; }
+.desk-row .actions .rh-btn { flex: 1 1 0; text-align: center; padding: 14px 12px; font-size: 12px; }
+.desk-row .took { flex: 1 1 0; text-align: center; padding: 14px 12px; font: 600 12px/1 var(--ui); letter-spacing: 0.08em; text-transform: uppercase; color: var(--up); background: var(--up-dim); border-radius: var(--r-sm); }
+
+/* ---- money pair: label over a big number ---- */
+.desk-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 14px; padding: 12px 0 4px; }
+.desk-kv .k { font: 600 11px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-lo); }
+.desk-kv .v { margin-top: 6px; font: 700 24px/1 var(--mono); letter-spacing: -0.01em; }
+.desk-kv .v small { font-size: 13px; color: var(--text-lo); font-weight: 500; margin-left: 4px; }
+
+/* ---- a broker order line (Polymarket) ---- */
+.desk-order { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 4px; font: 500 15px/1.5 var(--mono); color: var(--text-mid); }
+.desk-order .state { font: 700 20px/1.2 var(--mono); color: var(--text-hi); }
+.desk-order .state.filled { color: var(--up); }
+.desk-order .state.none { color: var(--text-lo); }
+.desk-order .state.failed { color: var(--down); }
+.desk-order .id { font-size: 12px; color: var(--text-faint); }
+
+.desk .rh-when { font-size: 13px; }

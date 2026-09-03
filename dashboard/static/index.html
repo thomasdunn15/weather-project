@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="/static/css/backtest.css?v=8">
 <link rel="stylesheet" href="/static/css/accounting.css?v=10">
 <link rel="stylesheet" href="/static/css/digest.css?v=1">
+<link rel="stylesheet" href="/static/css/desk.css?v=1">
 <link rel="stylesheet" href="/static/css/responsive.css?v=8">
 </head>
 <body>
@@ -38,7 +39,10 @@
   <nav class="tabbar" role="tablist" aria-label="Dashboard views">
     <!-- data-short: the label the phone bottom bar shows (six tabs in 430px
          leaves ~67px each). responsive.css swaps .lbl for it under 520px. -->
-    <button id="tab-live" class="on" role="tab" aria-selected="true" aria-controls="section-live" onclick="switchTab('live')" data-short="Live"><span class="lbl">Live Trading</span></button>
+    <!-- Desk is the default: the five things the operator acts on, phone-sized.
+         Everything else is one tab away. -->
+    <button id="tab-desk" class="on" role="tab" aria-selected="true" aria-controls="section-desk" onclick="switchTab('desk')" data-short="Desk"><span class="lbl">Desk</span></button>
+    <button id="tab-live" role="tab" aria-selected="false" aria-controls="section-live" onclick="switchTab('live')" data-short="Live"><span class="lbl">Live Trading</span></button>
     <button id="tab-backtest" role="tab" aria-selected="false" aria-controls="section-backtest" onclick="switchTab('backtest')" data-short="Backtest"><span class="lbl">Backtest</span></button>
     <button id="tab-polymarket" role="tab" aria-selected="false" aria-controls="section-polymarket" onclick="switchTab('polymarket')" data-short="Poly"><span class="lbl">Polymarket</span></button>
     <button id="tab-forecastex" role="tab" aria-selected="false" aria-controls="section-forecastex" onclick="switchTab('forecastex')" data-short="Robinhood"><span class="lbl">Robinhood</span></button>
@@ -47,7 +51,10 @@
   </nav>
 
   <main>
-    <section id="section-live" role="tabpanel" aria-label="Live trading">
+    <section id="section-desk" role="tabpanel" aria-label="Desk">
+      <div id="desk-root"><div class="wrap"><div class="loading">Loading desk…</div></div></div>
+    </section>
+    <section id="section-live" role="tabpanel" aria-label="Live trading" hidden>
       <div class="wrap" id="live-root"><div class="loading">Loading live data…</div></div>
     </section>
     <section id="section-backtest" role="tabpanel" aria-label="Backtest" hidden>

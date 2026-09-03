@@ -1722,7 +1722,8 @@ function switchTab(name) {
   activeTab = name;
   const applyTab = () => {
     if (name !== "forecastex") stopFxPolling();
-    ["live", "backtest", "polymarket", "forecastex", "accounting", "digest"].forEach(n => {
+    if (name !== "desk") stopDeskPolling();
+    ["desk", "live", "backtest", "polymarket", "forecastex", "accounting", "digest"].forEach(n => {
       const sec = document.getElementById("section-" + n);
       if (sec) sec.hidden = n !== name;
       const btn = document.getElementById("tab-" + n);
@@ -1750,6 +1751,9 @@ function switchTab(name) {
     else if (!btIntroDone) { _btLastKey = null; renderBacktest(); }
   } else if (name === "polymarket") {
     loadPolymarket();   // lazy-load fresh each open (60s server cache bounds cost)
+  } else if (name === "desk") {
+    loadDesk();
+    startDeskPolling();
   } else if (name === "forecastex") {
     loadForecastEx();
     startFxPolling();   // this is a trading surface — a frozen price is a wrong price
@@ -2115,14 +2119,14 @@ async function rhTake(ticker, side) {
     const j = await r.json();
     if (!j.ok) { alert(`Could not record it:\n\n${j.error || r.status}`); return; }
   } catch (e) { alert(`Could not record it:\n\n${e}`); return; }
-  loadForecastEx();
+  loadForecastEx(); loadDesk();
 }
 
 async function rhUntake(id) {
   if (!confirm("Remove this entry? Use this only for a mis-click — it is the\nonly record that the position exists.")) return;
   try { await fetch(`/api/robinhood/entry/${id}`, { method: "DELETE" }); }
   catch (e) { alert(`Could not remove it:\n\n${e}`); return; }
-  loadForecastEx();
+  loadForecastEx(); loadDesk();
 }
 
 // One taken position, frozen. Everything left of "now" is what the card read
@@ -2219,6 +2223,133 @@ function rhToday(tr) {
   return rhEntriesPanel(tr) + cards + `<div class="grid g-2">${hoursPanel}${brokerPanel}</div>`;
 }
 
+// ====================================================================
+// DESK — the phone's first screen. Five blocks, one column, composed
+// server-side in dashboard/data_desk.py from payloads the other tabs own.
+// Sizes are a step up from the rest of the dashboard on purpose: this is
+// read at arm's length while the other hand types an order.
+// ====================================================================
+let DESK = null, deskTimer = null;
+function startDeskPolling() { if (!deskTimer) deskTimer = setInterval(loadDesk, 15000); }
+function stopDeskPolling() { if (deskTimer) { clearInterval(deskTimer); deskTimer = null; } }
+
+async function loadDesk() {
+  const root = document.getElementById("desk-root");
+  if (!root) return;
+  if (!DESK) root.innerHTML = `<div class="wrap"><div class="loading">Loading desk…</div></div>`;
+  try {
+    const r = await fetch("/api/desk");
+    if (r.status === 401) { location.href = "/login?next=/"; return; }
+    DESK = await r.json();
+    renderDesk();
+  } catch (e) {
+    root.innerHTML = `<div class="wrap"><div class="loading">Failed to load desk: ${esc(String(e))}</div></div>`;
+  }
+}
+
+const usd = (v) => v == null ? "–" : `${v < 0 ? "−" : "+"}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const usdCls = (v) => v > 0 ? "pos" : v < 0 ? "neg" : "muted";
+
+function deskHealth(h) {
+  const items = h.items.map(i => `<span class="${i.level === "ok" ? "" : i.level === "warn" ? "warn" : "neg"}">${esc(i.text)}</span>`)
+    .join(`<span class="sep">·</span>`);
+  return `<div class="desk-health ${h.level}"><span class="dot ${h.level === "ok" ? "live" : h.level === "warn" ? "stale" : "dead"}"></span>${items}</div>`;
+}
+
+function deskPick(p, c) {
+  const side = p.side === "yes" ? "YES" : "NO";
+  const pay = p.ask == null ? null : p.ask;
+  const real = p.askEdge == null ? "" :
+    ` · real edge <b class="${p.askEdge > 0 ? "pos" : "neg"}">${p.askEdge >= 0 ? "+" : "−"}${(Math.abs(p.askEdge) * 100).toFixed(0)}%</b>`;
+  const ageMin = p.bookAt == null ? null : Math.round((Date.now() - new Date(p.bookAt)) / 60000);
+  return `<div class="desk-row">
+    <div class="top"><span class="strike">&gt; ${p.strike}°F</span><span class="side rh-side ${p.side}">BUY ${side}</span><span class="tag">${esc(c.name)}</span></div>
+    <div class="order"><b>${p.contracts.toLocaleString()}</b> contracts · limit <b>${p.limit}¢</b>${pay == null ? "" : ` · book ${p.bid == null ? "–" : p.bid}/${pay} → pay <span class="pay">${pay}¢</span>`}</div>
+    <div class="fine">$${p.costUsd.toFixed(2)} at the limit${p.askCostUsd == null ? "" : ` · $${p.askCostUsd.toFixed(2)} to cross`} · model ${(p.pModel * 100).toFixed(0)}% vs tape ${p.lastPx}%${real}${ageMin == null ? "" : ` <span class="${ageMin >= 10 ? "warn" : ""}">(book ${ageMin < 1 ? "just now" : ageMin + "m ago"})</span>`}${side === "NO" ? `<br>NO side — the YES quote reads ${100 - p.limit}¢` : ""}</div>
+    <div class="actions">
+      ${c.rhUrl ? `<a class="rh-btn" href="${esc(c.rhUrl)}" target="_blank" rel="noopener noreferrer">Robinhood ↗</a>` : ""}
+      ${p.taken ? `<span class="took">✓ recorded</span>` : `<a class="rh-btn" href="#" onclick="rhTake('${esc(p.ticker)}','${esc(p.side)}');return false">I took this</a>`}
+    </div>
+  </div>`;
+}
+
+function deskEmptyPick(c) {
+  const t = c.decisionUtc;
+  const msg = c.state === "pending" ? `<b>Not evaluated yet.</b> Model is fitted at ${esc(t)}Z.`
+    : c.state === "preview-no-trade" ? `<b>Nothing yet.</b> Model is ready; nothing clears the threshold on the current book. Re-checks until ${esc(t)}Z.`
+    : c.state === "error" ? `<b class="neg">No model past ${esc(t)}Z.</b> Check paper_trade.log.`
+    : `<b>No trade.</b> Nothing cleared the threshold at ${esc(t)}Z.`;
+  return `<div class="empty">${esc(c.name)} — ${msg}${c.note ? `<small>${esc(c.note)}</small>` : ""}</div>`;
+}
+
+function deskEntry(e) {
+  const side = e.side === "yes" ? "YES" : "NO";
+  return `<div class="desk-row">
+    <div class="top"><span class="strike">&gt; ${e.strike}°F</span><span class="side rh-side ${e.side}">${side}</span><span class="tag">${esc(e.name)} · ${esc(e.enteredAt.slice(11, 16))}Z</span>${e.provisional ? `<span class="pill-status halt">pre-decision</span>` : ""}</div>
+    <div class="order"><b>${e.contracts.toLocaleString()}</b> @ <b>${e.limit}¢</b> · now ${e.currentEntry == null ? "–" : e.currentEntry + "¢"} · mark <span class="${usdCls(e.markUsd)}">${usd(e.markUsd)}</span></div>
+    <div class="fine">at entry: model ${(e.pModel * 100).toFixed(0)}% · market ${e.lastPx}% · edge ${(e.edge * 100).toFixed(0)}% · cost $${e.costUsd.toFixed(2)}</div>
+  </div>`;
+}
+
+function deskPolymarket(pm) {
+  const orders = pm.orders || [];
+  let state, cls;
+  if (pm.state === "halted") { state = "HALTED"; cls = "failed"; }
+  else if (pm.state === "pending") { state = `Fires at ${pm.decisionUtc}Z`; cls = "none"; }
+  else if (pm.state === "none") { state = "No order today"; cls = "none"; }
+  else if (pm.state === "placed") { state = "Placed · not filled"; cls = ""; }
+  else if (pm.state === "partial") { state = "Partially filled"; cls = "filled"; }
+  else { state = "Filled"; cls = "filled"; }
+  const lines = orders.map(o =>
+    `<div>${o.count.toLocaleString()}× BUY ${o.side} @ ≤${o.limit}¢ · filled <b>${o.filled.toLocaleString()}</b>${o.fillAvg ? ` @ ${o.fillAvg.toFixed(1)}¢` : ""}` +
+    `${o.settlement ? ` · ${esc(o.settlement)} ${usd((o.realizedCents || 0) / 100)}` : ""}` +
+    `<div class="id">${esc(o.ticker)} · ${esc(o.orderId || "no id")} · ${esc(o.placedAt.slice(11, 16))}Z</div></div>`).join("");
+  const kill = pm.killUsd == null ? "" : ` · cumulative ${usd(pm.cumulativeUsd)} vs kill $${Math.abs(pm.killUsd)}`;
+  return `<div class="desk-order"><div class="state ${cls}">${state}</div>${lines}${pm.state === "halted" && pm.haltText ? `<div class="neg">${esc(pm.haltText)}</div>` : ""}<div class="fine" style="color:var(--text-lo)">${orders.length ? "" : (pm.state === "pending" ? "Cron on Ashburn, 150 contracts if a signal clears 25%." : "The 14:47Z run found no signal above the 25% threshold.")}${kill}</div></div>`;
+}
+
+function deskKalshi(k) {
+  const kv = (label, v, sub) => `<div><div class="k">${label}</div><div class="v ${usdCls(v)}">${usd(v)}${sub ? `<small>${sub}</small>` : ""}</div></div>`;
+  const halt = k.haltNote ? `<div class="empty"><b class="warn">Halted.</b> ${esc(k.haltNote)}</div>` : "";
+  return halt + `<div class="desk-kv">
+    ${kv("Today", k.today, k.ordersToday ? `${k.ordersToday} orders` : "")}
+    ${kv("Unrealized", k.unrealized, k.openContracts ? `${k.openContracts.toLocaleString()} open` : "")}
+    ${kv("Realized", k.realized, "settled")}
+  </div>
+  <div class="fine" style="padding-top:8px;font:500 13px/1.6 var(--mono);color:var(--text-lo)">
+    balance $${k.balance == null ? "–" : k.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })} · ${k.openOrders ?? 0} open orders · decision ${esc(k.decisionUtc)}Z
+    ${k.cumKill != null ? ` · kill $${k.cumUsed ?? 0} / $${k.cumKill}` : ""}
+  </div>`;
+}
+
+function renderDesk() {
+  const root = document.getElementById("desk-root");
+  if (!DESK) { root.innerHTML = `<div class="wrap"><div class="loading">Loading desk…</div></div>`; return; }
+  const p = DESK.picks;
+  const pickBlocks = !p.available
+    ? `<div class="empty"><b class="neg">Picks unavailable.</b><small>${esc(p.error || "")}</small></div>`
+    : p.cities.map(c => {
+        const when = rhWhen(p.date, c.decisionUtc);
+        const head = `<div class="fine" style="padding:10px 0 0;color:var(--text-lo)">${esc(c.name)} · decision ${esc(c.decisionUtc)}Z · <span class="rh-when ${when.cls}">${esc(when.text)}</span>${c.preview ? ` · <span class="pill-status">PREVIEW</span>` : ""}</div>`;
+        return head + (c.picks.length ? c.picks.map(x => deskPick(x, c)).join("") : deskEmptyPick(c));
+      }).join("");
+  const entries = DESK.entries || [];
+  const mark = entries.reduce((a, e) => a + (e.markUsd || 0), 0);
+  const cost = entries.reduce((a, e) => a + e.costUsd, 0);
+  const block = (title, meta, body) =>
+    `<div class="desk-block"><div class="h"><h2>${title}</h2><span class="m">${meta}</span></div><div class="b">${body}</div></div>`;
+
+  root.innerHTML = `<div class="wrap"><div class="desk">
+    ${deskHealth(DESK.health)}
+    ${block("Today's picks", esc(p.date || ""), pickBlocks)}
+    ${block("Taken", entries.length ? `${entries.length} · $${cost.toFixed(2)} · mark <span class="${usdCls(mark)}">${usd(mark)}</span>` : "none today",
+        entries.length ? entries.map(deskEntry).join("") : `<div class="empty">Nothing recorded today. Press <b>I took this</b> on a pick after you enter it.</div>`)}
+    ${block("Polymarket", `Miami · ${esc(DESK.polymarket.decisionUtc)}Z`, deskPolymarket(DESK.polymarket))}
+    ${block("Kalshi Miami", `${esc(DESK.kalshi.status || "")}`, deskKalshi(DESK.kalshi))}
+    <div class="fine" style="text-align:center;color:var(--text-faint);font:500 12px var(--mono);padding:4px 0 8px">as of ${esc((DESK.asOf || "").slice(11, 19))}Z · refreshes every 15s</div>
+  </div></div>`;
+}
+
 function renderForecastEx() {
   const root = document.getElementById("forecastex-root");
   if (!FX_DATA) { root.innerHTML = `<div class="wrap"><div class="loading">Loading Robinhood…</div></div>`; return; }
@@ -2313,7 +2444,9 @@ function renderForecastEx() {
 
 async function init() {
   await loadCities();
-  loadLive();
+  loadDesk();            // the default tab
+  startDeskPolling();
+  loadLive();            // still needed: it feeds the topbar clock/feed dot
   startLivePolling();
   setInterval(tickClocks, 1000);
   tickClocks();

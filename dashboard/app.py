@@ -23,7 +23,7 @@ import contextlib
 import json
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Query, Response
@@ -168,6 +168,25 @@ def _forecastex_payload() -> dict:
 @app.get("/api/forecastex")
 def api_forecastex() -> Response:
     return _json(_forecastex_payload())
+
+
+@ttl_cache(15)
+def _desk_payload() -> dict:
+    """The phone's first screen. Composed from the three cached payloads above
+    plus one small query, so it costs nothing they did not already."""
+    from weather_markets.db import get_connection
+    from dashboard.data_desk import compose, pm_today_orders
+    conn = get_connection()
+    try:
+        orders = pm_today_orders(conn, datetime.now(timezone.utc).date())
+    finally:
+        conn.close()
+    return compose(_live_payload(), _forecastex_payload(), _polymarket_payload(), orders)
+
+
+@app.get("/api/desk")
+def api_desk() -> Response:
+    return _json(_desk_payload())
 
 
 # --- the only write endpoints on this dashboard --------------------------------
