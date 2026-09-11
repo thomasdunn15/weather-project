@@ -301,3 +301,29 @@ depth data is a live capture that cannot be recreated.
 4. **Cron verification takes a full 24 h cycle.** 44 jobs, 27 distinct scripts —
    you will not know they all fire until a day has passed. This is why Phase 7
    exists and why cutover happens after, not during.
+
+---
+
+## Executed 2026-09-11 — consolidation onto Ashburn
+
+Ashburn had run the full pipeline in parallel since 08-31 (identical crontab
+minus the Kalshi trader, own copy of every ingest, dashboard as systemd, schema
+fingerprints and secrets byte-identical, health check green daily). The delta
+that still lived only in Nuremberg, and what was done with it:
+
+| item | action |
+|---|---|
+| 22 unpushed branches + today's threshold commit | pushed; origin holds 24 heads |
+| `rh_entries` ids 13–37 (phone entries after 09-03) | staged + inserted on Ashburn, sequence advanced; both boxes 26 rows / max 37 |
+| `paper_trades` gaps since 08-31 | insert-where-missing both ways of the diff: Ashburn 491 vs Nuremberg 486 |
+| `live_trades` ids 189–212 (Kalshi orders since 08-31) | copied at cutover (Phase 8 below) |
+| `~/ibkr-gateway`, `~/.notebooklm`, `~/.claude-mem`, Claude memory, `outputs/`, `halt/`, `data/` | rsync'd (`--update` where Ashburn writes too) |
+| `/var/log/weather` (709 MB) | `archive-weather-01-2026-09-11.tar.gz` (16 MB) on Ashburn |
+| Tailscale | installed on Ashburn; `tailscale up` + `tailscale serve --bg 8000` are operator steps (browser auth) |
+| phone SSH key | added to Ashburn `authorized_keys` |
+| `docs/crontab-ashburn.txt` | deleted; `docs/crontab.txt` now arms both traders and is the only crontab |
+
+**Not merged, deliberately:** the snapshot hypertables differ by 0.07–0.2% since
+08-31 (timing noise; Ashburn's own capture is complete and it has MORE
+forecasts). `pm_live_trades` was never copied from Nuremberg (Phase 7b rule).
+IB Gateway is copied but not started — ForecastEx is retired (`halt/FX_*`).

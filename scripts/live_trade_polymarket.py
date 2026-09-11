@@ -243,7 +243,7 @@ def main() -> int:
                 except Exception as e:
                     # A rejected LIVE order is silent otherwise — one line in a
                     # log nobody reads. On 2026-08-30 Polymarket began geo-gating
-                    # this server (Hetzner, Nuremberg) with 403 GEO_BLOCKED_STATE
+                    # the old Nuremberg box (moved to Ashburn 2026-08-31) with 403 GEO_BLOCKED_STATE
                     # and the whole venue went offline with no notification; the
                     # operator found it by asking why nothing had fired.
                     print(f"    ORDER FAILED: {e}")

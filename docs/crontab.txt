@@ -154,13 +154,11 @@
 # cap, cumulative kill -$300 -> writes halt/PMKMIA. touch halt/PMKMIA to stop.
 # INSTALLED 2026-08-12; first fire 2026-08-13 14:47 UTC. See
 # docs/decisions/2026-08-12-polymarket-live-probe.md for rationale + scaling ladder.
-# MOVED TO ASHBURN 2026-08-31. Polymarket geo-gates ORDER PLACEMENT by IP and
-# this host is in Bavaria: every attempt since 08-29 returned 403
-# GEO_BLOCKED_STATE. It is disarmed HERE rather than left to fail, because a
-# cron that always fails is noise that hides a cron that has started failing.
-# Armed on Ashburn via docs/crontab-ashburn.txt. Reconcile stays on BOTH: it
-# only UPDATEs existing rows, so it is a no-op here once orders stop landing.
-# 47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
+# CUTOVER 2026-09-11: this crontab now runs on Ashburn (5.161.92.205) and the
+# Nuremberg box is decommissioned. Polymarket geo-gates ORDER PLACEMENT by IP;
+# Ashburn is in Virginia so the live probe is ARMED here. docs/crontab-ashburn.txt
+# (the split-role file used during the parallel run) is deleted.
+47 14 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/live_trade_polymarket.py --live >> /var/log/weather/live_trade_pm.log 2>&1
 
 # Reconcile Polymarket fills + settlement. WITHOUT THIS THE PM KILL SWITCH IS
 # DEAD: live_trade_polymarket reads cumulative realized_pnl_cents to decide
