@@ -327,3 +327,34 @@ that still lived only in Nuremberg, and what was done with it:
 08-31 (timing noise; Ashburn's own capture is complete and it has MORE
 forecasts). `pm_live_trades` was never copied from Nuremberg (Phase 7b rule).
 IB Gateway is copied but not started — ForecastEx is retired (`halt/FX_*`).
+
+### Phase 8 executed 2026-09-11 23:30 UTC
+
+Window: after the 20:00 cancel-unfilled, before the 04:00 reconcile — no Kalshi
+order in flight. Nuremberg crontab emptied (saved at
+`~/crontab-weather-01-final-2026-09-11.txt`), dashboard tmux killed, uvicorn
+stopped; Tailscale serve could not be reset without sudo and dies with the box.
+`live_trades` 189–212 staged + inserted on Ashburn, sequence advanced;
+`rh_entries` and `halt/` re-synced; `docs/crontab.txt` installed on Ashburn
+(40 active lines, Kalshi 15:30 and Polymarket 14:47 both armed; pre-cutover
+copy at `~/crontab-ashburn-pre-cutover-2026-09-11.txt`).
+
+**Verify:** both boxes 208 `live_trades` rows / max id 212, 26 `rh_entries`,
+6 `fx_live_trades`. Kalshi realized did NOT tie at first: 210,111c Nuremberg vs
+198,322c Ashburn. Cause: rows 187 and 188 (the 08-31 15:30 orders) were managed
+by BOTH boxes that evening — each box's 20:00 cancel finalized one row and left
+the other `partial_resting`, which `reconcile_live_trades.py` never settles.
+Ashburn's 187 was repaired from Nuremberg's settled copy; Ashburn now holds both
+(187 yes +264.61, 188 no +146.72) and sums to **224,783c ($2,247.83)**, 174
+settled. This is the number the Kalshi kill switch reads.
+
+**Found en route, NOT fixed (separate decision):** `reconcile_one` computes
+`per_contract_pnl * count` with `lt.count` = ORDER size, not `fill_count`. Row
+187 filled 22 of 500 yet is booked as 500 contracts (+$264.61 instead of
+~+$11). Every partial fill is overstated the same way, and the cumulative kill
+switch sums this column.
+
+**Still operator:** `sudo tailscale up` + `sudo tailscale serve --bg 8000` on
+Ashburn (phone dashboard → `https://weather-ashburn.tailde76e8.ts.net`); watch
+the first Kalshi fire from Ashburn at 15:30 UTC 2026-09-12; Hetzner snapshot +
+delete of Nuremberg after a few clean days (Phase 9).
