@@ -8,7 +8,7 @@ and never rest on the book.
 
 Hard rails (change deliberately, log in docs/decisions/):
   - 150 contracts/signal, max 2 signals/day (largest |edge| first)
-  - entry bound 5..95 cents; edge threshold 0.25
+  - entry bound 5..95 cents; edge threshold 0.10 (0.25 until 2026-09-11)
   - halt file halt/PMKMIA aborts every run (touch it to stop trading)
   - cumulative realized P&L < -$300 -> writes halt/PMKMIA itself and aborts
   - daily spend cap $300 notional
@@ -39,7 +39,9 @@ STATION = "KMIA"
 MODELS = ["gefs", "ifs"]
 INIT_HOUR = 0
 WINDOW_DAYS = 45
-EDGE_THRESHOLD = 0.25
+EDGE_THRESHOLD = 0.10        # 2026-09-11: lowered from 0.25 on the forward PM v2 paper sweep
+                             # (Miami 0.10-0.25 band: 21 trades, 76% win, +17.9c/contract).
+                             # See docs/decisions/2026-09-11-pm-miami-threshold-010.md
 # v2: inclusive-pair brackets (2026-08-23). Rows tagged with the old label
 # were priced off P(low degree only) and may sit on the wrong side.
 MODEL_SOURCE = "PM live probe Miami combined 00Z v2"

@@ -73,7 +73,7 @@ def test_signal_appears_only_once_it_clears_the_threshold():
 
 def test_signal_disappears_when_the_edge_decays_and_nothing_was_placed():
     assert lst.merge(_pm_row(0.80), []) != []
-    assert lst.merge(_pm_row(0.55), []) == []       # edge 0.05 < 0.25 -> gone
+    assert lst.merge(_pm_row(0.55), []) == []       # edge 0.05 < EDGE_THRESHOLD -> gone
 
 
 def test_merge_orders_by_absolute_edge_with_pins_first():
