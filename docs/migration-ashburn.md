@@ -354,7 +354,7 @@ settled. This is the number the Kalshi kill switch reads.
 ~+$11). Every partial fill is overstated the same way, and the cumulative kill
 switch sums this column.
 
-**Still operator:** `sudo tailscale up` + `sudo tailscale serve --bg 8000` on
+**Done 2026-09-12:** Tailscale joined via auth key, `serve --bg 8000` live and verified over the tailnet (weather-ashburn 100.78.200.80). **Still operator:** on
 Ashburn (phone dashboard → `https://weather-ashburn.tailde76e8.ts.net`); watch
 the first Kalshi fire from Ashburn at 15:30 UTC 2026-09-12; Hetzner snapshot +
 delete of Nuremberg after a few clean days (Phase 9).
