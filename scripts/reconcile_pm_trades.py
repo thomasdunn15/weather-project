@@ -101,25 +101,21 @@ def collect_resolutions(client: PolymarketClient, max_pages: int = 25) -> dict:
             before, after = pr["beforePosition"], pr["afterPosition"]
             fee_c = float((before.get("fees") or {}).get("value") or 0) * 100.0
 
-            # WINS AND LOSSES LIVE IN DIFFERENT FIELDS. A losing position puts
-            # the loss in afterPosition.realized and leaves afterPosition.cost
-            # at 0. A WINNING one does the opposite: realized stays 0.0000 and
-            # the gain lands in afterPosition.cost as (payout - cost + fees).
-            #
-            # Reading only `realized` therefore books every win as a $0.00 loss,
-            # which is exactly what happened to 08-26 and both 08-27 legs — all
-            # three won, all three were recorded as settled losses of nothing,
-            # and the dashboard showed -$49.13 against a real +$93.52. Verified
-            # against afterPosition.cost on all three, to the cent:
-            #   08-26  150.00 - 95.074 = 54.926 + 2.110 = 57.036
-            #   08-27  125.39 - 39.026 = 86.364 + 1.585 = 87.949
-            #   08-27    3.00 -  0.780 =  2.220 + 0.030 =  2.250
-            loss_c = float(after["realized"]["value"]) * 100.0
-            gain_c = float((after.get("cost") or {}).get("value") or 0) * 100.0
+            # 2026-09-16, fourth correction: the after-position fields are NOT
+            # a P&L. A losing LONG leaves after.realized at 0 and after.cost at
+            # its pre-fee basis, which the previous reading booked as a GAIN
+            # (09-01 and 09-12 Miami longs, +$115 booked on -$123 lost; ledger
+            # +$420.44 against venue cash +$166.34). What the venue does state
+            # consistently is on the BEFORE record: cashValue is the payout at
+            # resolution (0 on a loss, |net| on a win) and cost is the full
+            # basis including fees. payout - cost reproduces all 15 settled
+            # markets and ties to the account balance to the cent.
+            payout_c = float((before.get("cashValue") or {}).get("value") or 0) * 100.0
+            cost_c = float(before["cost"]["value"]) * 100.0
             out[pr["marketSlug"]] = {
                 "net": float(before.get("netPositionDecimal") or 0),
-                "cost_c": float(before["cost"]["value"]) * 100.0,
-                "realized_c": loss_c if loss_c else (gain_c - fee_c if gain_c else 0.0),
+                "cost_c": cost_c,
+                "realized_c": payout_c - cost_c,
                 "fee_c": fee_c,
             }
         cursor = resp.get("nextCursor")
@@ -132,7 +128,7 @@ def collect_resolutions(client: PolymarketClient, max_pages: int = 25) -> dict:
 
 # The operator's own cash is readable from the venue; only the promo credit is
 # not (it arrives outside the deposit feed), so it stays a constant here.
-PROMO_CREDIT_CENTS = 1_000       # 2026-08-25: $10 free from Polymarket
+PROMO_CREDIT_CENTS = 0           # 2026-09-16: the credit is a $20 REFERRAL_BONUS in the venue feed, counted with deposits
 DRIFT_ALERT_CENTS = 200          # $2 — above fee-rounding, below a real miss
 
 
@@ -148,7 +144,8 @@ def venue_deposits_cents(client, max_pages: int = 25) -> float:
         resp = client._request("GET", "/v1/portfolio/activities",
                                params={"cursor": cursor} if cursor else None)
         for a in resp.get("activities", []):
-            if a.get("type") != "ACTIVITY_TYPE_ACCOUNT_DEPOSIT":
+            if a.get("type") not in ("ACTIVITY_TYPE_ACCOUNT_DEPOSIT",
+                                     "ACTIVITY_TYPE_REFERRAL_BONUS"):
                 continue
             ch = a["accountBalanceChange"]
             if ch.get("status") == "ACCOUNT_BALANCE_CHANGE_STATUS_COMPLETED":
