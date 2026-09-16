@@ -16,6 +16,7 @@ Maps Polymarket's USD-decimal prices to our cents convention:
   NO  ask = (1 - bestBid) * 100
 """
 import argparse
+import time
 from datetime import datetime, timedelta, timezone
 
 from weather_markets.db import get_connection
@@ -130,6 +131,7 @@ def main():
     import json
     n_inserted = 0
     n_failed = 0
+    first_error = None
     with get_connection() as conn, conn.cursor() as cur:
         for i, m in enumerate(markets, 1):
             slug = m.get("slug","")
@@ -142,11 +144,27 @@ def main():
             parsed_td = _parse_polymarket_slug(slug)
             if parsed_td and parsed_td[2] < (now.date() - timedelta(days=1)):
                 continue
+            # The gateway rate-limits (429) at roughly 20 req/s and the client
+            # has no throttle: 2026-09-13..16 every run lost 115 of 120 quotes
+            # this way, silently. Pace the calls and retry a 429 once.
+            time.sleep(0.15)
             try:
                 bbo = client.get_bbo(slug)
             except Exception as e:
-                n_failed += 1
-                continue
+                if "429" in str(e):
+                    time.sleep(3)
+                    try:
+                        bbo = client.get_bbo(slug)
+                    except Exception as e2:
+                        e = e2
+                        bbo = None
+                else:
+                    bbo = None
+                if bbo is None:
+                    n_failed += 1
+                    if first_error is None:
+                        first_error = f"{slug}: {type(e).__name__}: {str(e)[:160]}"
+                    continue
             md = bbo.get("marketData", {})
             best_bid = md.get("bestBid", {}).get("value") if md.get("bestBid") else None
             best_ask = md.get("bestAsk", {}).get("value") if md.get("bestAsk") else None
@@ -176,7 +194,8 @@ def main():
             if i % 50 == 0:
                 print(f"  [{i}/{len(markets)}] {slug[:50]:<50} bid={yes_bid_c} ask={yes_ask_c}", flush=True)
 
-    print(f"\nDone: {n_inserted} snapshots inserted, {n_failed} failed")
+    print(f"\nDone: {n_inserted} snapshots inserted, {n_failed} failed"
+          + (f"; first failure: {first_error}" if first_error else ""))
 
 
 if __name__ == "__main__":
