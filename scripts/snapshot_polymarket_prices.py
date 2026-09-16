@@ -135,6 +135,13 @@ def main():
             slug = m.get("slug","")
             if not slug.startswith("tc-temp-"):
                 continue
+            # The venue lists every ladder it ever issued as "active" (4,000+ by
+            # 2026-09-16). Polling the dead ones burns the whole 5-minute slot
+            # and today's brackets go stale at decision time. Only ladders for
+            # yesterday onward can still move.
+            parsed_td = _parse_polymarket_slug(slug)
+            if parsed_td and parsed_td[2] < (now.date() - timedelta(days=1)):
+                continue
             try:
                 bbo = client.get_bbo(slug)
             except Exception as e:
