@@ -147,12 +147,12 @@ def main():
             # The gateway rate-limits (429) at roughly 20 req/s and the client
             # has no throttle: 2026-09-13..16 every run lost 115 of 120 quotes
             # this way, silently. Pace the calls and retry a 429 once.
-            time.sleep(0.15)
+            time.sleep(0.3)
             try:
                 bbo = client.get_bbo(slug)
             except Exception as e:
                 if "429" in str(e):
-                    time.sleep(3)
+                    time.sleep(5)
                     try:
                         bbo = client.get_bbo(slug)
                     except Exception as e2:
