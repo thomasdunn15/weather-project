@@ -26,6 +26,14 @@ COINBASE_URL = (
     "https://api.coinbase.com/api/v3/brokerage/market/products"
     "?product_type=FUTURE&contract_expiry_type=PERPETUAL"
 )
+# Coinbase Derivatives Exchange (cde) -- the US-LEGAL leg. The INTX products above are
+# Coinbase International (offshore, not tradeable by US persons). CDE's perp-style
+# contracts are classified EXPIRING (expiry 2030/2089) and carry funding at the TOP
+# level of future_product_details, NOT in perpetual_details (which is empty for them).
+COINBASE_CDE_URL = (
+    "https://api.coinbase.com/api/v3/brokerage/market/products"
+    "?product_type=FUTURE&contract_expiry_type=EXPIRING"
+)
 
 # Kalshi ticker -> normalized symbol (the 13 assets live on both venues).
 KALSHI_SYMBOLS = {
@@ -39,6 +47,8 @@ KALSHI_SYMBOLS = {
 COINBASE_SYMBOLS = {f"{s}-PERP-INTX": s for s in KALSHI_SYMBOLS.values() if s != "kSHIB"}
 COINBASE_SYMBOLS["1000SHIB-PERP-INTX"] = "kSHIB"
 COINBASE_SYMBOLS["GOLD-PERP-INTX"] = "GOLD"
+CDE_ROOT_TO_SYMBOL = {s: s for s in KALSHI_SYMBOLS.values() if s != "kSHIB"}
+CDE_ROOT_TO_SYMBOL["SHIB"] = "kSHIB"
 
 INSERT_SQL = """
 INSERT INTO perp_funding_snapshots (venue, symbol, funding_time, funding_rate, mark_price)
@@ -75,8 +85,27 @@ def coinbase_rows(payload: dict) -> list[tuple]:
     return rows
 
 
+def cde_rows(payload: dict) -> list[tuple]:
+    """US-legal CDE perp-style products -> insert rows, venue 'coinbase_cde'.
+
+    Reads the TOP-LEVEL funding_rate. Checks the raw string, never the float: CDE BTC
+    often prints "0", and a falsy 0.0 must not be dropped -- it is the reading that
+    matters most when Kalshi BTC is paying double-digit carry.
+    """
+    rows = []
+    for p in payload.get("products", []):
+        fpd = p.get("future_product_details") or {}
+        sym = CDE_ROOT_TO_SYMBOL.get(fpd.get("contract_root_unit"))
+        rate, ftime = fpd.get("funding_rate"), fpd.get("funding_time")
+        if sym is None or rate in (None, "") or not ftime:
+            continue
+        price = float(p["price"]) if p.get("price") else None
+        rows.append(("coinbase_cde", sym, ftime, float(rate), price))
+    return rows
+
+
 def main() -> int:
-    inserted = {"kalshi": 0, "coinbase": 0}
+    inserted = {"kalshi": 0, "coinbase": 0, "coinbase_cde": 0}
     with httpx.Client(timeout=30.0, headers={"User-Agent": "weather-project/1.0"}) as http:
         # Kalshi: 3-day lookback re-pull (9 windows/market); ON CONFLICT dedupes.
         min_ts = int((datetime.now(timezone.utc) - timedelta(days=3)).timestamp())
@@ -91,9 +120,11 @@ def main() -> int:
             if not cursor or not payload.get("funding_rates"):
                 break
         cb_rows = coinbase_rows(http.get(COINBASE_URL).raise_for_status().json())
+        cde_rows_ = cde_rows(http.get(COINBASE_CDE_URL).raise_for_status().json())
 
     with get_connection() as conn, conn.cursor() as cur:
-        for venue, batch in (("kalshi", rows), ("coinbase", cb_rows)):
+        for venue, batch in (("kalshi", rows), ("coinbase", cb_rows),
+                             ("coinbase_cde", cde_rows_)):
             for row in batch:
                 cur.execute(INSERT_SQL, row)
                 inserted[venue] += cur.rowcount
@@ -101,7 +132,9 @@ def main() -> int:
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     print(f"{now} perp funding: kalshi +{inserted['kalshi']} (of {len(rows)} pulled), "
-          f"coinbase +{inserted['coinbase']} (of {len(cb_rows)} products)")
+          f"coinbase(INTX) +{inserted['coinbase']} (of {len(cb_rows)}), "
+          f"coinbase_cde +{inserted['coinbase_cde']} (of {len(cde_rows_)} "
+          f"of {len(CDE_ROOT_TO_SYMBOL)} tracked)")
     return 0
 
 

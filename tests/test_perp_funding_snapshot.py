@@ -36,3 +36,47 @@ def test_coinbase_rows_maps_shib_and_skips_missing_funding():
     ]}
     rows = mod.coinbase_rows(payload)
     assert rows == [("coinbase", "kSHIB", "2026-08-05T16:00:00Z", -0.000003, 4.9)]
+
+
+def test_cde_rows_reads_top_level_funding_and_keeps_zero():
+    """CDE (US-legal) carries funding at the TOP level; perpetual_details is empty.
+
+    Regression guard for the bug where the collector read only the nested field and
+    silently recorded nothing for the tradeable US leg. The "0" case is the important
+    one: CDE BTC often prints 0, and a falsy 0.0 must not be dropped.
+    """
+    payload = {"products": [
+        {"product_id": "BIP-20DEC30-CDE", "price": "76125",
+         "future_product_details": {
+             "contract_root_unit": "BTC", "funding_rate": "0",
+             "funding_time": "2026-09-16T18:00:00Z", "funding_interval": "3600s",
+             "perpetual_details": {"funding_rate": ""}}},          # nested is EMPTY
+        {"product_id": "SHP-20DEC30-CDE", "price": "0.00001",
+         "future_product_details": {
+             "contract_root_unit": "SHIB", "funding_rate": "0.000013",
+             "funding_time": "2026-09-16T18:00:00Z"}},             # SHIB -> kSHIB
+        {"product_id": "BIT-26SEP26-CDE", "price": "76000",
+         "future_product_details": {
+             "contract_root_unit": "BTC", "funding_rate": "",
+             "funding_time": ""}},                                 # dated future: no funding
+        {"product_id": "AVE-20DEC30-CDE", "price": "300",
+         "future_product_details": {
+             "contract_root_unit": "AAVE", "funding_rate": "0.000022",
+             "funding_time": "2026-09-16T18:00:00Z"}},             # untracked asset
+    ]}
+    rows = mod.cde_rows(payload)
+    assert rows == [
+        ("coinbase_cde", "BTC", "2026-09-16T18:00:00Z", 0.0, 76125.0),
+        ("coinbase_cde", "kSHIB", "2026-09-16T18:00:00Z", 0.000013, 0.00001),
+    ]
+
+
+def test_cde_rows_never_uses_the_empty_nested_field():
+    """A product with ONLY the nested field populated must not be read as CDE funding."""
+    payload = {"products": [
+        {"product_id": "BIP-20DEC30-CDE", "price": "1",
+         "future_product_details": {
+             "contract_root_unit": "BTC",
+             "perpetual_details": {"funding_rate": "0.5", "funding_time": "2026-09-16T18:00:00Z"}}},
+    ]}
+    assert mod.cde_rows(payload) == []
