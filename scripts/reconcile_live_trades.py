@@ -1,92 +1,83 @@
-"""Daily reconciliation cron for live_trades. Fires at 04:00 UTC.
+"""Daily reconciliation cron for live_trades. Fires at 12:00 UTC.
 
-For each live_trades row that's:
-  - filled (or partial) AND
-  - settlement IS NULL AND
-  - target_date < today (the contract should have resolved)
+Books every unsettled row (target_date < today) from KALSHI'S OWN RECORDS:
+  - the market's settled result (GET /markets/{ticker} -> result), and
+  - the order's final fill, cost and fees (GET /portfolio/orders/{id}).
+    realized = (fill_count if outcome_side == result else 0) - fill_cost - fees
 
-we:
-  1. Pull the day's observed daily high from our observations table
-  2. Determine whether the contract resolved YES or NO using existing
-     contract_resolved_yes() logic
-  3. Compute realized P&L:
-       won = (settled YES if side='yes', settled NO if side='no')
-       payoff = 100 if won else 0
-       realized_pnl_cents = payoff - fill_price - kalshi_fee
-  4. Update the live_trades row
+Why not our observations / stored fill_count (the old method):
+  - observations settled Chicago on KORD while Kalshi settles KMDW, and a bad
+    KMIA row (85F vs Kalshi's 90F on 08-29) flipped two $500 outcomes;
+  - fill_count is a snapshot -- resting orders kept filling after it was taken;
+  - fill_price_cents is mixed YES/NO-leg convention on some rows.
+Checked 2026-09-16: this formula ties to /portfolio/settlements to the cent.
 
-Then prints a daily summary: yesterday's trades, fills, P&L; 7-day rolling
-stats. This same output is what the alerts cron sends to Discord/email.
+Kalshi finalizes weather markets ~11:15 UTC the next day; a row whose market
+isn't finalized is left for the next run. Orders Kalshi no longer returns
+(404, roughly pre-07-12) are left untouched.
 
-Idempotent: only updates rows where settlement IS NULL, so re-running is
-safe. Exits nonzero if any DB or Kalshi error.
+--rebuild re-books already-settled rows too (idempotent: venue truth is final).
 """
 import argparse
-import math
 import sys
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
+
+import httpx
 
 from weather_markets.db import get_connection
-from weather_markets.evaluation import contract_resolved_yes
+from weather_markets.kalshi_api import KalshiClient
 
 
-def kalshi_fee_cents(entry_price_cents: int) -> int:
-    if entry_price_cents <= 0 or entry_price_cents >= 100:
-        return 0
-    p = entry_price_cents / 100.0
-    return max(1, math.ceil(0.07 * p * (1.0 - p) * 100))
+def venue_booking(client, ticker: str, order_id: str) -> dict:
+    """What Kalshi says one order made. status: settled | not_finalized | venue_unavailable."""
+    try:
+        order = client._request("GET", f"/portfolio/orders/{order_id}")["order"]
+        result = client.get_market(ticker)["market"].get("result")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"status": "venue_unavailable"}
+        raise
+    if result not in ("yes", "no"):
+        return {"status": "not_finalized"}
+    f = lambda k: float(order.get(k) or 0)
+    filled = f("fill_count_fp")
+    cost = f("maker_fill_cost_dollars") + f("taker_fill_cost_dollars")
+    fees = f("maker_fees_dollars") + f("taker_fees_dollars")
+    payout = filled if order["outcome_side"] == result else 0.0
+    return {
+        "status": "settled",
+        "settlement": result,
+        "won": filled > 0 and order["outcome_side"] == result,
+        "pnl_cents": round((payout - cost - fees) * 100),
+        "fee_cents": round(fees * 100),
+        "fill_count": round(filled),
+        "fill_status": ("cancelled" if filled == 0 else
+                        "filled" if filled >= f("initial_count_fp") else "partial"),
+    }
 
 
-def reconcile_one(conn, row) -> dict:
-    """Reconcile one live_trades row. Returns updated fields."""
-    (id_, target_date, ticker, side, count, fill_price_cents,
-     bracket_type, strike_low, strike_high, high_temp_f) = row
-
-    if high_temp_f is None:
-        return {"id": id_, "status": "no_observation_yet"}
-
-    contract = {"bracket_type": bracket_type, "strike_low": strike_low, "strike_high": strike_high}
-    resolved_yes = contract_resolved_yes(int(high_temp_f), contract)
-    settlement = "yes" if resolved_yes else "no"
-    won = (side == settlement)
-
-    # Kalshi stores fill_price in YES-side cents (VWAP after monitor_fills fix).
-    # What we actually paid depends on which side we bought:
-    #   - BUY_YES at fill X:  paid X per contract
-    #   - BUY_NO at fill X:   paid (100 - X) per contract (the NO-side equiv)
-    # P&L per contract: payoff - paid. Won = $1 payoff, lost = $0.
-    if side == "yes":
-        paid_per_contract = int(fill_price_cents)
-    else:  # "no"
-        paid_per_contract = 100 - int(fill_price_cents)
-    per_contract_pnl = (100 - paid_per_contract) if won else -paid_per_contract
-
-    # Prefer kalshi_fee_cents already stored (actual fees from Kalshi fills).
-    # Fall back to formula only if monitor_fills hasn't populated it yet.
-    with conn.cursor() as cur:
-        cur.execute("SELECT kalshi_fee_cents FROM live_trades WHERE id=%s", (id_,))
-        stored_fee = cur.fetchone()[0]
-    if stored_fee is not None:
-        total_fee_cents = int(stored_fee)
-    else:
-        total_fee_cents = kalshi_fee_cents(paid_per_contract) * int(count)
-    realized_pnl_cents = per_contract_pnl * int(count) - total_fee_cents
-
+def reconcile_one(conn, client, row, dry_run: bool = False) -> dict:
+    """Book one live_trades row from the venue. Returns the booking."""
+    id_, ticker, order_id = row[0], row[1], row[2]
+    b = {"id": id_, **venue_booking(client, ticker, order_id)}
+    if b["status"] != "settled" or dry_run:
+        return b
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE live_trades
             SET settlement = %s,
-                settlement_time = NOW(),
+                settlement_time = COALESCE(settlement_time, NOW()),
                 realized_pnl_cents = %s,
-                kalshi_fee_cents = COALESCE(kalshi_fee_cents, %s)
-            WHERE id = %s AND settlement IS NULL
+                kalshi_fee_cents = %s,
+                fill_count = %s,
+                fill_status = %s
+            WHERE id = %s
             """,
-            (settlement, realized_pnl_cents, total_fee_cents, id_),
+            (b["settlement"], b["pnl_cents"], b["fee_cents"], b["fill_count"],
+             b["fill_status"], id_),
         )
-    return {"id": id_, "status": "settled",
-            "settlement": settlement, "won": won,
-            "pnl_cents": realized_pnl_cents}
+    return b
 
 
 def print_daily_summary(conn) -> None:
@@ -97,7 +88,7 @@ def print_daily_summary(conn) -> None:
     with conn.cursor() as cur:
         # Yesterday's activity
         cur.execute("""
-            SELECT COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')) AS filled,
+            SELECT COUNT(*) FILTER (WHERE fill_status IN ('filled','partial','partial_resting')) AS filled,
                    COUNT(*) FILTER (WHERE fill_status = 'pending') AS pending,
                    COUNT(*) FILTER (WHERE fill_status IN ('cancelled','expired')) AS unfilled,
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl
@@ -110,7 +101,7 @@ def print_daily_summary(conn) -> None:
         # Last 7 days
         cur.execute("""
             SELECT COUNT(*) AS attempted,
-                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')) AS filled,
+                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial','partial_resting')) AS filled,
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl
             FROM live_trades
             WHERE placed_at >= NOW() - INTERVAL '7 days'
@@ -125,7 +116,7 @@ def print_daily_summary(conn) -> None:
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl_total,
                    COALESCE(AVG(realized_pnl_cents), 0) AS pnl_avg
             FROM live_trades
-            WHERE fill_status IN ('filled','partial') AND settlement IS NOT NULL
+            WHERE fill_status IN ('filled','partial','partial_resting') AND settlement IS NOT NULL
         """)
         total_f, pnl_total, pnl_avg = cur.fetchone()
         print(f"  Lifetime: {total_f} settled trades. Cumulative P&L: ${int(pnl_total)/100:+,.2f}, "
@@ -152,42 +143,51 @@ def print_daily_summary(conn) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-summary", action="store_true", help="Skip the daily summary print")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Compute bookings but write nothing")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="Also re-book rows that are already settled")
     args = parser.parse_args()
 
+    client = KalshiClient()
     with get_connection() as conn:
-        # Find unsettled filled trades whose observation is in
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT lt.id, lt.target_date, lt.ticker, lt.side, lt.count, lt.fill_price_cents,
-                       c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
-                FROM live_trades lt
-                JOIN contracts c ON c.ticker = lt.ticker
-                LEFT JOIN observations o ON o.date = lt.target_date AND o.station_id = c.station_id
-                WHERE lt.fill_status IN ('filled','partial')
-                  AND lt.settlement IS NULL
-                  AND lt.target_date < CURRENT_DATE
-                ORDER BY lt.target_date
+            cur.execute(f"""
+                SELECT id, ticker, kalshi_order_id, fill_count, count,
+                       realized_pnl_cents, fill_status
+                FROM live_trades
+                WHERE fill_status IN ('filled','partial','partial_resting','pending')
+                  AND kalshi_order_id IS NOT NULL
+                  AND target_date < CURRENT_DATE
+                  {"" if args.rebuild else "AND settlement IS NULL"}
+                ORDER BY target_date, id
             """)
             rows = cur.fetchall()
 
-        print(f"=== reconcile_live_trades ({datetime.now(timezone.utc).isoformat()}) ===")
-        print(f"  unsettled filled trades to process: {len(rows)}")
+        print(f"=== reconcile_live_trades ({datetime.now(timezone.utc).isoformat()}) "
+              f"{'REBUILD ' if args.rebuild else ''}{'DRY-RUN' if args.dry_run else ''} ===")
+        print(f"  rows to process: {len(rows)}")
 
-        settled = pending = 0
-        total_pnl = 0
+        settled = skipped = 0
+        total_pnl = delta = 0
         for row in rows:
-            result = reconcile_one(conn, row)
-            if result["status"] == "settled":
-                settled += 1
-                total_pnl += result["pnl_cents"]
-                print(f"  {row[2]} ({row[3]}x{row[4]}): {result['settlement']}, "
-                      f"P&L ${result['pnl_cents']/100:+.2f}")
-            else:
-                pending += 1
-                print(f"  {row[2]}: {result['status']} (target_date={row[1]})")
+            id_, ticker, _, old_fill, count, old_pnl, old_status = row
+            b = reconcile_one(conn, client, row, dry_run=args.dry_run)
+            if b["status"] != "settled":
+                skipped += 1
+                print(f"  #{id_} {ticker}: {b['status']}")
+                continue
+            settled += 1
+            total_pnl += b["pnl_cents"]
+            delta += b["pnl_cents"] - (old_pnl or 0)
+            old = f"${old_pnl/100:+.2f}" if old_pnl is not None else "unbooked"
+            print(f"  #{id_} {ticker} {b['fill_count']}/{count} {b['fill_status']}: "
+                  f"{b['settlement']}, P&L ${b['pnl_cents']/100:+.2f}"
+                  + ("" if old_pnl == b["pnl_cents"] else
+                     f"  (was {old}, {old_status} {old_fill})"))
 
-        print(f"\n  settled: {settled}, still-pending: {pending}, "
-              f"total P&L this run: ${total_pnl/100:+,.2f}")
+        print(f"\n  booked: {settled}, skipped: {skipped}, "
+              f"P&L of booked rows: ${total_pnl/100:+,.2f}, change vs table: ${delta/100:+,.2f}")
 
         if not args.no_summary:
             print_daily_summary(conn)

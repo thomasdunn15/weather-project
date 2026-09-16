@@ -276,11 +276,12 @@
 # EOD fill cleanup: 20:00 UTC daily. Cancels any still-pending orders so we don't carry them overnight.
 0 20 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/monitor_fills.py --cancel-unfilled >> /var/log/weather/monitor_fills.log 2>&1
 
-# Reconciliation: 04:00 UTC daily. Pulls settlement results for yesterday's filled trades,
+# Reconciliation: 12:00 UTC daily (Kalshi finalizes weather markets ~11:15 UTC next day).
+# Books yesterday's trades from Kalshi's own order + market records,
 # computes realized P&L, prints daily summary to log.
-0 4 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_live_trades.py >> /var/log/weather/reconcile.log 2>&1
+0 12 * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/reconcile_live_trades.py >> /var/log/weather/reconcile.log 2>&1
 
-# Account-equity snapshot: 04:15 UTC daily (just after reconcile). Upserts one row/day
+# Account-equity snapshot: 04:15 UTC daily. Upserts one row/day
 # into account_equity_snapshots (true equity: cash + open MTM, and reconciliation P&L)
 # so the live-tab P&L graph can overlay realized-plus-open equity. Balance-based, read-only
 # vs Kalshi. NOTE: requires scripts/snapshot_account_equity.py present in the main worktree
@@ -325,8 +326,8 @@
 # now empty and closed — alert fatigue on a venue we no longer trade.
 # */5 * * * * cd /home/tdunn/weather-project && /home/tdunn/.local/bin/uv run python scripts/ibkr_keepalive.py --quiet >> /var/log/weather/ibkr_keepalive.log 2>&1
 
-# Ops-copilot digest: 04:30 UTC daily (after reconcile 04:00 + equity snapshot
-# 04:15, so settlement + equity data for yesterday is fresh). READ-ONLY —
+# Ops-copilot digest: 04:30 UTC daily (after the 04:15 equity snapshot; realized P&L
+# runs through D-2 since reconcile moved to 12:00 on 2026-09-16). READ-ONLY —
 # reasons over our own DB + Kalshi's read-only portfolio endpoints via the B0
 # reasoning engine (src/weather_markets/copilot/) to flag calibration drift,
 # regime shifts, execution anomalies, config drift, and data-health gaps.

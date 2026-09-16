@@ -219,7 +219,7 @@ def get_live_data(cfg: dict) -> dict:
             SELECT
                 COALESCE(SUM(realized_pnl_cents) FILTER (WHERE settlement IS NOT NULL), 0) AS cum_realized,
                 COALESCE(SUM(realized_pnl_cents) FILTER (WHERE target_date = %s AND settlement IS NOT NULL), 0) AS today_realized,
-                COUNT(*) FILTER (WHERE target_date = %s AND fill_status IN ('filled','partial')) AS today_trades,
+                COUNT(*) FILTER (WHERE target_date = %s AND fill_status IN ('filled','partial','partial_resting')) AS today_trades,
                 COUNT(*) FILTER (WHERE settlement IS NOT NULL) AS n_settled,
                 COUNT(*) FILTER (WHERE settlement IS NOT NULL AND realized_pnl_cents > 0) AS n_won
             FROM live_trades

@@ -16,7 +16,7 @@
 | 06/12/18 | `ingest_observations_daily.py` | NWS CF6 actual highs |
 | 07:00, 13:00 | `ingest_ecmwf_daily.py --run-hour 0` | ECMWF/IFS 00Z (+retry) |
 | 18:30 | `ingest_ecmwf_daily.py` | ECMWF 12Z |
-| 04:00 | `reconcile_live_trades.py` | settle yesterday's fills → realized P&L |
+| 12:00 | `reconcile_live_trades.py` | book yesterday's fills from Kalshi orders + results → realized P&L |
 | 14:30 | `discover_kalshi_contracts.py` | new daily-high contracts |
 | */5 | `snapshot_kalshi_prices.py` | top-of-book → `prices` (open markets only) |
 | */5 (offset +1) | `snapshot_kalshi_orderbook.py` | full depth → `orderbook_snapshots` |
