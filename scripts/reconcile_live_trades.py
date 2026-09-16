@@ -37,10 +37,13 @@ def kalshi_fee_cents(entry_price_cents: int) -> int:
     return max(1, math.ceil(0.07 * p * (1.0 - p) * 100))
 
 
-def reconcile_one(conn, row) -> dict:
+def reconcile_one(conn, row, dry_run: bool = False) -> dict:
     """Reconcile one live_trades row. Returns updated fields."""
-    (id_, target_date, ticker, side, count, fill_price_cents,
+    (id_, target_date, ticker, side, count, fill_count, fill_price_cents,
      bracket_type, strike_low, strike_high, high_temp_f) = row
+    # P&L must be booked on what actually FILLED. Using `count` (the ordered
+    # size) overstated every partial fill -- one 22/500 fill booked 23x.
+    filled = int(fill_count) if fill_count is not None else int(count)
 
     if high_temp_f is None:
         return {"id": id_, "status": "no_observation_yet"}
@@ -69,9 +72,12 @@ def reconcile_one(conn, row) -> dict:
     if stored_fee is not None:
         total_fee_cents = int(stored_fee)
     else:
-        total_fee_cents = kalshi_fee_cents(paid_per_contract) * int(count)
-    realized_pnl_cents = per_contract_pnl * int(count) - total_fee_cents
+        total_fee_cents = kalshi_fee_cents(paid_per_contract) * filled
+    realized_pnl_cents = per_contract_pnl * filled - total_fee_cents
 
+    if dry_run:
+        return {"id": id_, "status": "settled", "settlement": settlement,
+                "won": won, "pnl_cents": realized_pnl_cents}
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -97,7 +103,7 @@ def print_daily_summary(conn) -> None:
     with conn.cursor() as cur:
         # Yesterday's activity
         cur.execute("""
-            SELECT COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')) AS filled,
+            SELECT COUNT(*) FILTER (WHERE fill_status IN ('filled','partial','partial_resting')) AS filled,
                    COUNT(*) FILTER (WHERE fill_status = 'pending') AS pending,
                    COUNT(*) FILTER (WHERE fill_status IN ('cancelled','expired')) AS unfilled,
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl
@@ -110,7 +116,7 @@ def print_daily_summary(conn) -> None:
         # Last 7 days
         cur.execute("""
             SELECT COUNT(*) AS attempted,
-                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial')) AS filled,
+                   COUNT(*) FILTER (WHERE fill_status IN ('filled','partial','partial_resting')) AS filled,
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl
             FROM live_trades
             WHERE placed_at >= NOW() - INTERVAL '7 days'
@@ -125,7 +131,7 @@ def print_daily_summary(conn) -> None:
                    COALESCE(SUM(realized_pnl_cents), 0) AS pnl_total,
                    COALESCE(AVG(realized_pnl_cents), 0) AS pnl_avg
             FROM live_trades
-            WHERE fill_status IN ('filled','partial') AND settlement IS NOT NULL
+            WHERE fill_status IN ('filled','partial','partial_resting') AND settlement IS NOT NULL
         """)
         total_f, pnl_total, pnl_avg = cur.fetchone()
         print(f"  Lifetime: {total_f} settled trades. Cumulative P&L: ${int(pnl_total)/100:+,.2f}, "
@@ -152,18 +158,21 @@ def print_daily_summary(conn) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-summary", action="store_true", help="Skip the daily summary print")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Compute settlements but write nothing")
     args = parser.parse_args()
 
     with get_connection() as conn:
         # Find unsettled filled trades whose observation is in
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT lt.id, lt.target_date, lt.ticker, lt.side, lt.count, lt.fill_price_cents,
+                SELECT lt.id, lt.target_date, lt.ticker, lt.side, lt.count,
+                       lt.fill_count, lt.fill_price_cents,
                        c.bracket_type, c.strike_low, c.strike_high, o.high_temp_f
                 FROM live_trades lt
                 JOIN contracts c ON c.ticker = lt.ticker
                 LEFT JOIN observations o ON o.date = lt.target_date AND o.station_id = c.station_id
-                WHERE lt.fill_status IN ('filled','partial')
+                WHERE lt.fill_status IN ('filled','partial','partial_resting')
                   AND lt.settlement IS NULL
                   AND lt.target_date < CURRENT_DATE
                 ORDER BY lt.target_date
@@ -176,11 +185,11 @@ def main() -> int:
         settled = pending = 0
         total_pnl = 0
         for row in rows:
-            result = reconcile_one(conn, row)
+            result = reconcile_one(conn, row, dry_run=args.dry_run)
             if result["status"] == "settled":
                 settled += 1
                 total_pnl += result["pnl_cents"]
-                print(f"  {row[2]} ({row[3]}x{row[4]}): {result['settlement']}, "
+                print(f"  {row[2]} ({row[3]} {row[5] if row[5] is not None else row[4]}/{row[4]}): {result['settlement']}, "
                       f"P&L ${result['pnl_cents']/100:+.2f}")
             else:
                 pending += 1
